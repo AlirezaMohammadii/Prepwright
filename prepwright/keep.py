@@ -218,10 +218,16 @@ def _backup_is_sound(path):
 def recover_track(track_id, lib=None):
     """A corrupt track.db is moved aside, never deleted, then restored.
 
-    The candidate is told the exact gap: the backup's own sequence and the
-    turns that were in the live file and are not in the backup. A silent
-    continuation from a backup is how a person discovers three weeks later that
-    an evening is missing.
+    The candidate is told which backup was restored, how many turns it holds,
+    and which newer backups were rejected as unreadable. Not the gap: the live
+    file is corrupt, which is why recovery is running, so counting the turns it
+    held is exactly the query that cannot be trusted. The quarantined copy is
+    kept so the gap can be established by hand later. Saying "the exact gap"
+    here promised an accounting this function has no sound way to produce.
+
+    A silent continuation from a backup is how a person discovers three weeks
+    later that an evening is missing, so the record names what was lost track of
+    rather than implying nothing was.
     """
     own = lib is None
     library = lib or S.open_library()
