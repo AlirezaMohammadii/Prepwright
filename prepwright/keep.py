@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import sqlite3
+import tempfile
 import time
 
 from prepwright import config as C
@@ -162,13 +163,55 @@ def backup_track(track_id, lib=None, force=True):
             library.close()
 
 
-def newest_backup(track_id):
+def all_backups(track_id):
+    """Every backup for a track, newest first.
+
+    Recovery walks this list. Taking only the newest made one bad newest backup
+    enough to lose a track that had an intact older one sitting beside it.
+    """
     backups = os.path.join(C.TRACKS_ROOT, track_id, "backup")
     try:
         names = sorted(n for n in os.listdir(backups) if n.endswith(".track.db"))
     except OSError:
+        return []
+    return [os.path.join(backups, n) for n in reversed(names)]
+
+
+def newest_backup(track_id):
+    candidates = all_backups(track_id)
+    return candidates[0] if candidates else None
+
+
+def _backup_is_sound(path):
+    """Open a COPY of a backup and prove it reads before anything is overwritten.
+
+    On a copy, not the original: an open can create -wal and -shm beside the
+    file, and a backup directory is not a place to leave sidecars. Returns the
+    turn count on success and None when the candidate cannot be trusted.
+    """
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".verify-", suffix=".track.db",
+                                   dir=os.path.dirname(path))
+        os.close(fd)
+        shutil.copy2(path, tmp)
+        conn = S.connect(tmp)
+        try:
+            if not S.quick_check(conn):
+                return None
+            return int(conn.execute(
+                "SELECT COUNT(*) c FROM turn").fetchone()["c"])
+        finally:
+            conn.close()
+    except (sqlite3.Error, S.StoreError, OSError):
         return None
-    return os.path.join(backups, names[-1]) if names else None
+    finally:
+        if tmp:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.remove(tmp + suffix)
+                except OSError:
+                    pass
 
 
 # ---- corruption ------------------------------------------------------------
@@ -203,26 +246,70 @@ def recover_track(track_id, lib=None):
                 " left exactly where it is, in %s, and nothing was deleted."
                 % (track_id, directory))
 
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        # Choose a backup that PROVES it reads, before the live file is touched.
+        # The old order copied the newest over track.db and only then ran
+        # quick_check, so a corrupt newest backup destroyed the live path and
+        # every later open re-entered recovery and quarantined one more copy.
+        chosen, n_turns, rejected = None, 0, []
+        for candidate in all_backups(track_id):
+            count = _backup_is_sound(candidate)
+            if count is None:
+                rejected.append(os.path.basename(candidate))
+                continue
+            chosen, n_turns = candidate, count
+            break
+        if chosen is None:
+            library.execute("UPDATE track SET lifecycle='lost' WHERE track_id=?",
+                            (track_id,))
+            S.library_event(library, "corrupt_no_backup",
+                            "%s is corrupt and no backup verified (%d tried)"
+                            % (track_id, len(rejected)), track_id=track_id)
+            raise S.CorruptStore(
+                "track.db for %s is corrupt and none of its %d backup(s) could be"
+                " read either. The file was left exactly where it is, in %s, and"
+                " nothing was deleted or moved."
+                % (track_id, len(rejected), directory))
+        backup = chosen
+
+        # One directory per recovery, created exclusively. A second-granularity
+        # name plus shutil.move silently REPLACED an earlier quarantine, so two
+        # recoveries in the same second destroyed the only copy of the damaged
+        # original. os.makedirs without exist_ok is the refusal.
+        for attempt in range(1, 1000):
+            slot = os.path.join(quarantine, "db-%04d-%s" % (
+                attempt, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
+            try:
+                os.makedirs(slot, C.DIR_MODE)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise S.CorruptStore(
+                "%s has too many quarantined copies to add another" % track_id)
+
         moved = []
+        # The sidecars are named off the DATABASE's destination, so SQLite still
+        # pairs them: it only ever looks for "<db path>-wal". Naming the main
+        # file db.db and its log db-wal orphaned the log that held exactly the
+        # turns recovery exists to account for.
+        dest_db = os.path.join(slot, "track.db")
         for suffix in ("", "-wal", "-shm"):
             src = db + suffix
             if os.path.exists(src):
-                dest = os.path.join(quarantine, "db-%s%s" % (stamp, suffix or ".db"))
-                shutil.move(src, dest)
-                moved.append(dest)
+                shutil.move(src, dest_db + suffix)
+                moved.append(dest_db + suffix)
+
         shutil.copy2(backup, db)
         os.chmod(db, C.FILE_MODE)
         conn = S.connect(db)
         try:
-            if not S.quick_check(conn):
-                raise S.CorruptStore(
-                    "the newest backup for %s is also corrupt" % track_id)
-            n_turns = conn.execute("SELECT COUNT(*) c FROM turn").fetchone()["c"]
             conn.execute(
                 "INSERT INTO recovery_log(at_utc,kind,detail) VALUES (?,?,?)",
                 (S.utc_now(), "restored_from_backup",
-                 "restored %s; %d turns present" % (os.path.basename(backup), n_turns)))
+                 "restored %s; %d turns present; %d newer backup(s) rejected as"
+                 " unreadable: %s"
+                 % (os.path.basename(backup), n_turns, len(rejected),
+                    ", ".join(rejected) or "none")))
         finally:
             conn.close()
         S.library_history(library, track_id, "recovered",
@@ -483,8 +570,15 @@ def _sweep_writing_docs(lib, track_id):
         ).fetchall()
         for row in rows:
             try:
-                born = time.mktime(time.strptime(
-                    row["fetched_utc"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+                # calendar.timegm, not mktime: mktime reads the struct as
+                # LOCAL time and applies the CURRENT DST offset, while
+                # time.timezone is the non-DST offset, so the pair is an hour
+                # early through every summer. An hour early here means a
+                # document still being written looks old enough to sweep.
+                # track.py's own docstring says exactly this; this was the one
+                # site in the package that did not follow it.
+                born = calendar.timegm(time.strptime(
+                    row["fetched_utc"], "%Y-%m-%dT%H:%M:%SZ"))
             except (ValueError, TypeError):
                 born = 0
             if born > cutoff:

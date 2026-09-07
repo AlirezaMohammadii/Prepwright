@@ -1399,11 +1399,20 @@ async function pushState(opts){
    * limit on one delta, so a long offline session produced a slice that was
    * refused every time it was retried and never got saved at all. */
   const SLICE_OPS=400, SLICE_BYTES=1048576;
+  /* The budget is bytes, so it must be measured in bytes. String.length counts
+   * UTF-16 code units: one CJK character is 1 there and 3 in UTF-8, one emoji
+   * is 2 and 4. Measuring the budget in code units lets the page build a slice
+   * three times the size it believes, which the bridge then refuses on every
+   * retry, so the work never saves. TextEncoder is the exact measure the
+   * bridge applies on the other side. */
+  const BYTES = (typeof TextEncoder === "function")
+    ? (s => new TextEncoder().encode(s).length)
+    : (s => unescape(encodeURIComponent(s)).length);
   try{
     for(let at=0; at<ops.length; ){
       let end=at, bytes=0;
       while(end<ops.length && end-at<SLICE_OPS){
-        const size=JSON.stringify(ops[end]).length;
+        const size=BYTES(JSON.stringify(ops[end]));
         if(end>at && bytes+size>SLICE_BYTES) break;   // never emit an empty slice
         bytes+=size; end++;
       }
@@ -1440,7 +1449,14 @@ async function applySliceReply(r,d,last,sending,opts){
       if(d.regression && d.state){
         adoptFromBridge(d);
         toast("Merged with the saved copy on disk");
-        return await pushState({force:true,reconciling:!reconciled});
+        // Carry the caller's intent and keepalive through the retry. Dropping
+        // intent turned a refused "replace" into a silent "update", so the
+        // designed 409 refusal became cosmetic: the bulk write it exists to
+        // stop was folded in on the very next request. Dropping keepalive
+        // cancelled a close-time flush at unload, which is the one moment the
+        // flag exists for.
+        return await pushState({intent:opts.intent,keepalive:opts.keepalive,
+                                reconciling:!reconciled});
       }
       stashPending();
       setSync("error");
@@ -1475,7 +1491,7 @@ async function applySliceReply(r,d,last,sending,opts){
 function flushOnExit(){
   if(syncState==="pending"||syncState==="saving"||syncState==="error"){
     clearTimeout(syncTimer);
-    pushState({keepalive:true,force:true});
+    pushState({keepalive:true});
   }
 }
 window.addEventListener("pagehide",flushOnExit);
@@ -1521,7 +1537,7 @@ async function reconcileWithDisk(){
     state=hydrate(local);
     ackState=null;
     reconciled=true;
-    await pushState({force:true,reconciling:true});
+    await pushState({reconciling:true});
     render(state.lastView||"continue",{silent:true,keepScroll:true});
     return;
   }
@@ -1541,7 +1557,7 @@ async function reconcileWithDisk(){
   reconciled=true;
   render(state.lastView||"continue",{silent:true,keepScroll:true});
   if(computeOps(state,ackState,diskRevision).length){
-    await pushState({force:true,reconciling:true});
+    await pushState({reconciling:true});
   }else{
     // Nothing of ours to add: the store already holds everything.
     clearPending();
@@ -3004,7 +3020,7 @@ function importData(file){
        * replace belongs to the track switcher, as a new track built from the
        * file, and that is not built yet. */
       savePrefs();
-      pushState({force:true,intent:"replace",reconciling:!reconciled});
+      pushState({intent:"replace",reconciling:!reconciled});
       if(state.theme)document.documentElement.setAttribute("data-theme",state.theme);
       recapQueue=[]; render(state.lastView||"overview");
       toast("Progress merged in from the file");

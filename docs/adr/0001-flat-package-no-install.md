@@ -22,9 +22,11 @@ The bridge runs under `/usr/bin/python3 -I -S`. Isolated, no user site packages,
 startup customisation, no pip. Starting the app is `prep`, not create a virtualenv
 and install a package.
 
-The domain has fifteen real concerns: configuration, intake, diagnosis, research, corpus,
-curriculum, teaching, assessment, state, tracks, housekeeping, serving, security,
-provider invocation. One file cannot hold them.
+The domain has sixteen real concerns: configuration, intake, diagnosis, research,
+corpus, curriculum, teaching, assessment, prompt assembly, page state, state,
+tracks, housekeeping, serving, security, provider invocation. One file cannot
+hold them. The count said fifteen and the list held fourteen, which is the sort
+of drift a manifest over the package is meant to make visible.
 
 ## Decision
 

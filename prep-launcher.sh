@@ -57,15 +57,17 @@ else
 fi
 PYTHON_BIN="/usr/bin/python3"
 
-# TODO(prepwright): PIN BEFORE INSTALL.
-# These are the SHA-256 integrity pins for the two files this launcher starts.
-# They are deliberately EMPTY while bridge.py and index.html are still being
-# written: a stale pin would refuse to run correct code. While a pin is empty
-# the corresponding check is skipped and the launcher says so on stderr.
-# To re-pin, run this in $DIR and paste the two hashes below:
-#   /usr/bin/shasum -a 256 bridge.py index.html
-BRIDGE_SHA256=""
-INDEX_SHA256=""
+# Integrity is pinned by MANIFEST.sha256, not by two hashes in this file.
+#
+# The old pin named bridge.py and index.html and called them "the two files this
+# launcher starts". That stopped being true when the bridge grew a package: a
+# `prep` start now loads nineteen files, and six of the prepwright modules carry
+# the security envelope, the storage caps and the redaction rules. Pinning two of
+# nineteen checked the wrapper and left the contents unsigned.
+#
+# Regenerate after any change to the runtime set, and commit it with the change:
+#   ./tools/make_manifest.sh
+MANIFEST="$DIR/MANIFEST.sha256"
 
 case "$PORT" in
   ''|*[!0-9]*)
@@ -78,38 +80,53 @@ if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
   exit 2
 fi
 
-if [ ! -f "$DIR/bridge.py" ] || [ ! -f "$DIR/index.html" ]; then
-  echo "prep: the Prepwright implementation is incomplete at:" >&2
-  echo "  $DIR" >&2
-  exit 1
-fi
+# Completeness is checked against the manifest, so this fires for a missing
+# prepwright module too. Testing only bridge.py and index.html meant the message
+# never printed for the files that actually go missing.
+for required in bridge.py index.html prepwright/__init__.py prepwright/config.py \
+                prepwright/state.py prepwright/track.py prepwright/keep.py \
+                prepwright/pagestate.py prepwright/corpus.py; do
+  if [ ! -f "$DIR/$required" ]; then
+    echo "prep: the Prepwright implementation is incomplete at:" >&2
+    echo "  $DIR (missing $required)" >&2
+    exit 1
+  fi
+done
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "prep: trusted system Python was not found at $PYTHON_BIN" >&2
   exit 1
 fi
 
-verify_sha256() {
-  verify_path="$1"
-  verify_expected="$2"
-  verify_line="$(/usr/bin/shasum -a 256 "$verify_path")" || return 1
-  verify_actual="${verify_line%% *}"
-  if [ "$verify_actual" != "$verify_expected" ]; then
-    echo "prep: integrity check failed for $verify_path" >&2
-    echo "Refusing to run modified code. Reinstall the approved Prepwright launcher." >&2
-    return 1
+# Verify every pinned file, and refuse to start on any mismatch. shasum -c reads
+# the manifest and reports per file; --strict makes a malformed line an error
+# rather than a skip, so a truncated manifest cannot silently check nothing.
+if [ -f "$MANIFEST" ]; then
+  # shasum -c writes its per-file "FAILED" lines to STDOUT and only the summary
+  # warning to stderr, so stdout is what has to be captured to name the file.
+  if ! ( cd "$DIR" && /usr/bin/shasum -a 256 --strict -c MANIFEST.sha256 \
+         >"$DIR/.manifest-check.err" 2>&1 ); then
+    echo "prep: integrity check FAILED." >&2
+    echo "One or more runtime files differ from MANIFEST.sha256:" >&2
+    sed -n 's/^\(.*\): FAILED.*$/  \1/p' "$DIR/.manifest-check.err" >&2 || true
+    rm -f "$DIR/.manifest-check.err"
+    echo "Refusing to run modified code. If YOU changed these files, run:" >&2
+    echo "  ./tools/make_manifest.sh" >&2
+    exit 1
   fi
-}
-
-# See the TODO above: an empty pin means "not pinned yet", not "trusted".
-if [ -n "$BRIDGE_SHA256" ]; then
-  verify_sha256 "$DIR/bridge.py" "$BRIDGE_SHA256"
+  rm -f "$DIR/.manifest-check.err"
+  # A file present on disk but absent from the manifest is unsigned code sitting
+  # in the import path. shasum -c cannot see it, so it is counted here.
+  manifest_n="$(grep -c '^[0-9a-f]' "$MANIFEST" || echo 0)"
+  ondisk_n="$(cd "$DIR" && ls bridge.py index.html prepwright/*.py 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$manifest_n" != "$ondisk_n" ]; then
+    echo "prep: $ondisk_n runtime files on disk but $manifest_n pinned." >&2
+    echo "Refusing to start with unsigned code in the import path. Run:" >&2
+    echo "  ./tools/make_manifest.sh" >&2
+    exit 1
+  fi
 else
-  echo "prep: bridge.py is not integrity-pinned yet (see TODO in this launcher)" >&2
-fi
-if [ -n "$INDEX_SHA256" ]; then
-  verify_sha256 "$DIR/index.html" "$INDEX_SHA256"
-else
-  echo "prep: index.html is not integrity-pinned yet (see TODO in this launcher)" >&2
+  echo "prep: MANIFEST.sha256 is missing, so nothing is integrity-checked." >&2
+  echo "  Generate it with ./tools/make_manifest.sh" >&2
 fi
 
 # The bridge never consumes raw API-key/proxy/Python startup variables. Remove

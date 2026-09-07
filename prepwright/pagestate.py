@@ -46,7 +46,11 @@ from . import state as S
 # newline, so "1:topic:T1\n" passed the old inline copy of this pattern and was
 # then stored WITH the newline. A validated string and a stored string that
 # differ is not a validation.
-STEP_KEY_RE = re.compile(r"^\d{1,2}:(?:topic|practice|check):[A-Za-z0-9]+\Z")
+# Bounded, and not only shaped. The trailing run used to be unbounded, so a
+# turn could carry a step key of any size: the turn branch charges `text` and
+# `meta_json` and never the key, so the key rode into storage free and the delta
+# budget could be evaded up to the HTTP request cap.
+STEP_KEY_RE = re.compile(r"^\d{1,2}:(?:topic|practice|check):[A-Za-z0-9]{1,64}\Z")
 
 # Ids are client-minted and land in a UNIQUE column, so they are checked here
 # rather than trusted. Bounded length, and no characters that would make a log
@@ -179,7 +183,15 @@ def materialise(handle):
             except ValueError:
                 extra = None
             if isinstance(extra, dict):
-                entry.update(extra)
+                # The store owns these three. client_meta is client-supplied
+                # display data, and a plain update() let it overwrite `text`,
+                # so the document the page rendered could differ from the
+                # append-only body the triggers exist to protect. Everything
+                # else it carries (provider, model, effort, tokens, cost, the
+                # page's own role word) is display-only and passes through.
+                for k, v in extra.items():
+                    if k not in _STORE_OWNED_TURN_FIELDS:
+                        entry[k] = v
         doc.setdefault("stepLog", {}).setdefault(row["step_id"], []).append(entry)
         newest_utc = row["at_utc"] if newest_utc is None else max(
             newest_utc, row["at_utc"])
@@ -191,6 +203,10 @@ def materialise(handle):
     if newest_utc:
         doc["savedAt"] = _utc_to_ms(newest_utc)
     return doc
+
+
+# What the store, not the client, decides about a rendered turn.
+_STORE_OWNED_TURN_FIELDS = frozenset({"text", "seq", "at"})
 
 
 def _utc_to_ms(stamp):
@@ -228,10 +244,21 @@ def validate_ops(raw_ops):
             _require(isinstance(step, str) and STEP_KEY_RE.match(step),
                      "op %d names a step key that is not in the contract" % i)
             page_role = op.get("pageRole")
-            _require(page_role in PAGE_ROLE_TO_TURN,
+            # `in` on a dict hashes the key, and an unhashable one (a list, a
+            # dict) raises TypeError straight out of this function, past the
+            # OpRejected contract, so the request dies with no named refusal.
+            _require(isinstance(page_role, str) and page_role in PAGE_ROLE_TO_TURN,
                      "op %d carries an unknown chat role" % i)
             text = op.get("text")
             _require(isinstance(text, str), "op %d has no text" % i)
+            # turn.body_bytes carries CHECK (body_bytes <= 8192). Without this
+            # the oversized body reaches that CHECK from inside apply_ops, which
+            # has no enclosing transaction, so every op before it in the batch is
+            # already committed and this function's promise to "refuse the whole
+            # write" is broken by the one case it does not check.
+            text_bytes = len(text.encode("utf-8"))
+            _require(text_bytes <= C.TURN_MAX_BYTES,
+                     "op %d is larger than one turn holds" % i)
             title = op.get("title")
             _require(title is None or isinstance(title, str),
                      "op %d has a non-text step title" % i)
@@ -245,14 +272,19 @@ def validate_ops(raw_ops):
                 meta_json = _json_dump(carry)
                 _require(len(meta_json.encode("utf-8")) <= C.TURN_META_MAX_BYTES,
                          "op %d carries more display metadata than a turn holds" % i)
-            total += len(text.encode("utf-8")) + len(meta_json or "")
+            # Bytes on every term. MAX_DELTA_BYTES is a byte cap, and meta_json
+            # is a str: charging its character count undercounts a non-ASCII
+            # value by up to four times.
+            total += text_bytes + len(step.encode("utf-8"))
+            if meta_json:
+                total += len(meta_json.encode("utf-8"))
             out.append({"op": "turn", "id": op_id, "step": step,
                         "title": (title or step)[:160],
                         "role": PAGE_ROLE_TO_TURN[page_role],
                         "text": text, "meta_json": meta_json})
         elif kind == "mark":
             mark_kind = op.get("kind")
-            _require(mark_kind in MARK_KINDS,
+            _require(isinstance(mark_kind, str) and mark_kind in MARK_KINDS,
                      "op %d names an unknown mark kind" % i)
             key = op.get("key")
             _require(isinstance(key, str) and MARK_KEY_RE.match(key),
@@ -267,7 +299,7 @@ def validate_ops(raw_ops):
                 raise OpRejected("op %d has a value that is not JSON" % i)
             _require(len(value_json.encode("utf-8")) <= C.MARK_MAX_BYTES,
                      "op %d is larger than one mark holds" % i)
-            total += len(value_json)
+            total += len(value_json.encode("utf-8")) + len(key.encode("utf-8"))
             out.append({"op": "mark", "id": op_id, "kind": mark_kind,
                         "key": key, "value_json": value_json})
         else:

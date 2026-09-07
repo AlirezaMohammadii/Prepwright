@@ -1,8 +1,10 @@
 # ADR 0002 — SQLite per track, with published caps and a published eviction order
 
 Date: 2026-09-07
-Status: Accepted. Implemented in `prepwright/{config,state,track,keep}.py`;
-not yet called by `bridge.py`.
+Status: Accepted. Implemented in `prepwright/{config,state,track,keep}.py`.
+Amended by ADR 0003, which wired the store into `bridge.py` and replaced
+`progress/state.json` with per-track delta writes. The Status field below the
+Context describes the position before that cutover.
 
 ## Context
 
@@ -48,10 +50,12 @@ it is a strong draft rather than a settled answer.
 
 ## Consequences
 
-`read_state` and `write_state` in `bridge.py` still use the JSON scheme described
-above. They keep working and are the thing this design replaces, and they stay
-until the bridge is cut over. Until that cutover Prepwright serves one track,
-even though the store beside it already holds many.
+The cutover happened in ADR 0003. `read_state` and `write_state` are gone from
+`bridge.py`, along with the revision hash, the rotating snapshots and the
+high-water file, and `/api/state` now reads and writes `track.db` through
+`prepwright/pagestate.py`. Prepwright still serves one track at a time, chosen by
+`current_track_id()`, even though the store beside it already holds many; the
+track switcher is the piece that is still missing.
 
 Anything not written by the candidate can be regenerated, so it is not backed up.
 That is the whole reason the numbers stay small, and it is a bet: it assumes research
