@@ -238,27 +238,52 @@ def text_of(fetched):
 # ---- HTML to prose ---------------------------------------------------------
 import re  # noqa: E402  (kept beside the only functions that use it)
 
-_SCRIPT = re.compile(r"(?is)<(script|style|template|noscript)\b.*?</\1\s*>")
+_SCRIPT = re.compile(
+    r"(?is)<(script|style|template|noscript|nav|footer|header|aside|form|svg)\b.*?</\1\s*>")
 _COMMENT = re.compile(r"(?s)<!--.*?-->")
 _BREAK = re.compile(r"(?i)<br\s*/?>")
-_BLOCK_END = re.compile(r"(?i)</(p|li|ul|ol|div|section|article|tr|h[1-6]|blockquote)\s*>")
+_TITLE_TAG = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
+# Headings become markdown headings, because that is what the store parses.
+_H1 = re.compile(r"(?is)<h1\b[^>]*>(.*?)</h1\s*>")
+_HN = re.compile(r"(?is)<h([2-6])\b[^>]*>(.*?)</h\1\s*>")
+_BLOCK_END = re.compile(r"(?i)</(p|li|ul|ol|div|section|article|tr|blockquote|dd|dt)\s*>")
 _LI = re.compile(r"(?i)<li\b[^>]*>")
 _TAG = re.compile(r"(?s)<[^>]+>")
-_WS = re.compile(r"[ \t ]+")
+_WS = re.compile("[ \t\u00a0]+")
 _BLANKS = re.compile(r"\n\s*\n\s*\n+")
 
 
-def html_to_text(markup):
-    """Readable prose from markup, with structure kept as newlines and dashes.
+def _flatten(fragment):
+    import html as _html
+    return " ".join(_html.unescape(_TAG.sub(" ", fragment)).split())
 
-    Deliberately not a parser. It has to survive whatever a job board serves,
+
+def html_to_text(markup):
+    """Readable markdown from markup, with headings kept AS headings.
+
+    Headings are the whole point. `corpus.parse_loose` splits on `## ` and drops
+    everything before the first one, because the store addresses every byte it
+    serves by (doc_id, sec_id) and text that cannot be cited cannot be taught
+    from. The first version of this function stripped every tag including the
+    headings, so a fetched page arrived as one unbroken block of prose, produced
+    zero citable sections, and was refused with "nothing citable: the page has no
+    headings". Every real page failed that way: the research pipeline could
+    fetch and could not store a single thing.
+
+    Deliberately not a parser. It has to survive whatever a site serves,
     including markup that never closes a tag, and the failure mode of a strict
-    parser here is losing a posting the candidate can see in their browser.
+    parser here is losing a source the candidate can read in their own browser.
+    Navigation, headers and footers are dropped by tag name first, so a menu
+    does not become a section.
     """
     import html as _html
     s = str(markup or "")
+    found = _TITLE_TAG.search(s)
+    title = _flatten(found.group(1)) if found else ""
     s = _SCRIPT.sub(" ", s)
     s = _COMMENT.sub(" ", s)
+    s = _H1.sub(lambda m: "\n\n# %s\n\n" % _flatten(m.group(1)), s)
+    s = _HN.sub(lambda m: "\n\n## %s\n\n" % _flatten(m.group(2)), s)
     s = _BREAK.sub("\n", s)
     s = _LI.sub("\n- ", s)
     s = _BLOCK_END.sub("\n", s)
@@ -266,5 +291,9 @@ def html_to_text(markup):
     s = _html.unescape(s)
     s = _WS.sub(" ", s)
     s = "\n".join(line.strip() for line in s.split("\n"))
-    s = _BLANKS.sub("\n\n", s)
-    return s.strip()
+    s = _BLANKS.sub("\n\n", s).strip()
+    # A page with no h1 still needs a title, or every such document is stored as
+    # "(untitled)" and nothing downstream can tell two of them apart.
+    if title and not s.startswith("# "):
+        s = "# %s\n\n%s" % (title[:200], s)
+    return s

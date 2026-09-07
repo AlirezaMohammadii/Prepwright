@@ -214,8 +214,10 @@ def current_track_id():
 # candidate to guess which one they are in. `flow_state` derives the answer from
 # the store rather than storing it, for the same reason staleness is derived:
 # a stage recorded in a row is a stage that can disagree with the track.
-STAGES = ("welcome", "intake", "confirm", "diagnose", "approve", "research",
-          "curriculum", "learn")
+# "confirm" was in this list and `flow_state` never returns it. A stage the
+# contract advertises and the code cannot reach is a rail step the candidate
+# waits for and never sees.
+STAGES = ("intake", "diagnose", "approve", "research", "curriculum", "learn")
 
 MAX_RESEARCH_URLS = 12
 # Twelve hosts at the per-fetch ceiling is nine minutes. Handler.timeout bounds
@@ -277,8 +279,15 @@ def flow_state(handle):
             "excerpt": (intake["body"][:600] if intake else ""),
         },
         "gaps": summary,
+        # The list itself, only while the candidate is deciding it. Sending it
+        # on every call would put the whole gap list on the wire behind every
+        # poll of a cheap read; withholding it at the approve stage would make
+        # the screen that exists to show it fetch twice to draw once.
+        "gapList": gaps if stage == "approve" else [],
         "corpus": {"documents": docs},
         "curriculum": {"steps": len(steps),
+                       "minutes": sum(int(x["est_minutes"] or 0) for x in steps),
+                       "done": sum(1 for x in steps if x["status"] == "done"),
                        "tiers": {t: sum(1 for x in steps if x["tier"] == t)
                                  for t in PCURR.TIERS}},
         "turns": turns,

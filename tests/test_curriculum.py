@@ -136,6 +136,26 @@ class ASliceIsChosenForTheStepThatTeachesFromIt(Base):
             self.assertLessEqual(len(K.slices_of(handle, step["step_id"])),
                                  C.PACK_MAX_SECTIONS)
 
+    def test_every_step_id_is_a_step_key_the_teaching_route_accepts(self):
+        """The contract that makes a plan teachable. The first version minted
+        "s01", which pagestate.STEP_KEY_RE rejects, so every route that teaches
+        refused the step before reading the body: a plan nothing could open."""
+        from prepwright import pagestate as PS
+        handle = self._track()
+        built = K.build(handle, D.approved(handle))
+        self.assertTrue(built["steps"], "the fixture built no steps")
+        for step in built["steps"]:
+            self.assertTrue(PS.STEP_KEY_RE.match(step["step_id"]),
+                            "%r is not a step key" % step["step_id"])
+        for step in K.steps_of(handle):
+            self.assertTrue(PS.STEP_KEY_RE.match(step["step_id"]))
+
+    def test_step_keys_stay_valid_to_the_store_cap(self):
+        from prepwright import pagestate as PS
+        for i in range(1, C.MAX_STEPS + 1):
+            self.assertTrue(PS.STEP_KEY_RE.match(K.step_key(i)),
+                            "step %d mints an unusable key" % i)
+
     def test_the_stored_slice_is_exactly_what_the_step_chose(self):
         handle = self._track()
         built = K.build(handle, D.approved(handle))

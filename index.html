@@ -464,6 +464,80 @@ textarea.inp{resize:vertical;min-height:80px}
 .ground.none{font-style:italic}
 .ground .gsha{float:right;opacity:.5;font-family:var(--ff-mono);font-size:.9em}
 @media (max-width:640px){.ground .gsha{display:none}}
+
+/* ---- the guided path -----------------------------------------------------
+   Built from the tokens already defined above. No new colours, no second type
+   scale: a flow that looked like a different product would read as a different
+   product. Generous space and one action per card is the whole design. */
+.muted{color:var(--text-muted);margin-top:10px;max-width:70ch;line-height:1.6}
+.muted.small{font-size:.85rem;color:var(--text-faint)}
+.muted.next{margin-top:18px;padding-top:14px;border-top:1px solid var(--line-soft)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:18px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+@media (max-width:560px){.two{grid-template-columns:1fr}}
+.stagecard{max-width:760px}
+.stagecard h2{font-size:1.28rem;font-weight:700;letter-spacing:-.01em}
+.card.busy{max-width:760px;margin-bottom:16px;color:var(--text-muted);display:flex;
+  align-items:center;gap:12px}
+.card.busy .dots{display:inline-flex;gap:5px}
+.card.busy .dots i{width:7px;height:7px;border-radius:50%;background:var(--signal);
+  opacity:.4;animation:blink 1.2s infinite}
+.card.busy .dots i:nth-child(2){animation-delay:.2s}
+.card.busy .dots i:nth-child(3){animation-delay:.4s}
+
+.fl{display:block;margin-top:18px;margin-bottom:7px;font-size:.78rem;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint)}
+.fl.inline{margin-top:0;margin-bottom:0;margin-right:10px}
+.in{width:100%;background:var(--ink);border:1px solid var(--line);border-radius:var(--radius-sm);
+  color:var(--text);padding:11px 13px;font-size:.95rem;font-family:inherit;
+  transition:border-color var(--dur),box-shadow var(--dur)}
+.in:focus{outline:none;border-color:var(--signal-dim);box-shadow:0 0 0 3px var(--signal-glow)}
+.in::placeholder{color:var(--text-faint)}
+.in.ta{resize:vertical;min-height:96px;line-height:1.55}
+.in.sel{width:auto;min-width:280px}
+.fold{margin-top:20px;border-top:1px solid var(--line-soft);padding-top:14px}
+.fold summary{cursor:pointer;color:var(--text-muted);font-size:.88rem;font-weight:600}
+.fold summary::marker{color:var(--text-faint)}
+
+/* The rail. Passed stages are not links: going back would re-propose a gap list
+   over one the store already holds, which it refuses, so it would be a button
+   that only ever produces an error. */
+.rail-flow{display:flex;flex-wrap:wrap;gap:6px 4px;list-style:none;margin:0 0 26px;padding:0}
+.rf{display:flex;align-items:center;gap:8px;padding:7px 13px 7px 8px;border-radius:999px;
+  border:1px solid var(--line-soft);font-size:.82rem;color:var(--text-faint);background:transparent}
+.rf .rfdot{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;
+  border:1px solid var(--line);font-size:.68rem;font-weight:700;flex:none}
+.rf.done{color:var(--text-muted);border-color:var(--line)}
+.rf.done .rfdot{background:var(--pass);border-color:var(--pass);color:var(--ink)}
+.rf.now{color:var(--text);border-color:var(--signal-dim);background:var(--signal-glow)}
+.rf.now .rfdot{background:var(--signal);border-color:var(--signal);color:#04222a}
+@media (max-width:640px){.rf.next{display:none}}
+
+.gaplist{list-style:none;margin:20px 0 0;padding:0;display:flex;flex-direction:column;gap:12px}
+.gap{border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px;
+  background:var(--surface-2);transition:border-color var(--dur),opacity var(--dur)}
+.gap.approved{border-color:var(--signal-dim)}
+.gap.declined{opacity:.55}
+.gtop{display:flex;gap:10px;align-items:center;margin-bottom:7px}
+.gtag{font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;font-weight:700;
+  padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+.gtag.jd{color:var(--signal);border-color:var(--signal-dim);background:var(--signal-glow)}
+.gtag.cv{color:var(--win);border-color:var(--win);background:var(--win-glow)}
+.glvl{font-size:.7rem;color:var(--text-faint);letter-spacing:.05em;text-transform:uppercase}
+.glabel2{font-weight:650;line-height:1.45}
+.gwhy{color:var(--text-faint);font-size:.85rem;margin-top:5px;line-height:1.5}
+.grow{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.gdone{font-size:.8rem;font-weight:600;color:var(--text-muted)}
+.gdone.approved{color:var(--signal)}
+
+.reslist{list-style:none;margin:18px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;
+  font-size:.84rem}
+.reslist li{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:var(--surface-2)}
+.reslist li.ok{border-left:2px solid var(--pass)}
+.reslist li.bad{border-left:2px solid var(--alert)}
+.reslist code{font-family:var(--ff-mono);font-size:.92em;color:var(--text-muted);word-break:break-all}
+.reslist span{color:var(--text-faint)}
 /* Session-review bubble. Full width and its own accent because it is not
    conversation: it reads a session back rather than adding a turn to it. */
 .bubble.review{background:var(--surface-2);border-left:2px solid var(--gate);border-top-left-radius:4px;align-self:stretch;max-width:100%}
@@ -745,6 +819,7 @@ textarea.inp{resize:vertical;min-height:80px}
           </button>
         </div>
 
+        <section id="view-start" class="view"></section>
         <section id="view-continue" class="view"></section>
         <section id="view-overview" class="view"></section>
         <section id="view-stages" class="view"></section>
@@ -1391,7 +1466,7 @@ function adoptFromBridge(d){
      * tab added on top is still unsent and must show up in the next diff. */
     ackState=JSON.parse(JSON.stringify(d.state));
     savePrefs();
-    render(state.lastView||"continue",{silent:true,keepScroll:true});
+    render(currentView(),{silent:true,keepScroll:true});
   }
 }
 
@@ -1534,7 +1609,7 @@ async function reconcileWithDisk(){
     const carried=mergeStates(state,pendingState||{});
     if(chatVolume(carried)>chatVolume(state)||progressWeight(carried)>progressWeight(state)){
       state=hydrate(carried);
-      render(state.lastView||"continue",{silent:true,keepScroll:true});
+      render(currentView(),{silent:true,keepScroll:true});
     }
     stashPending();
     setSync("error");
@@ -1553,7 +1628,7 @@ async function reconcileWithDisk(){
     ackState=null;
     reconciled=true;
     await pushState({reconciling:true});
-    render(state.lastView||"continue",{silent:true,keepScroll:true});
+    render(currentView(),{silent:true,keepScroll:true});
     return;
   }
 
@@ -1570,7 +1645,7 @@ async function reconcileWithDisk(){
   ackState=JSON.parse(JSON.stringify(disk));
   savePrefs();
   reconciled=true;
-  render(state.lastView||"continue",{silent:true,keepScroll:true});
+  render(currentView(),{silent:true,keepScroll:true});
   if(computeOps(state,ackState,diskRevision).length){
     await pushState({reconciling:true});
   }else{
@@ -1771,7 +1846,7 @@ function render(view,opts){
   $$(".view").forEach(v=>v.classList.remove("active"));
   const el=$("#view-"+view); if(!el) return;
   el.classList.add("active");
-  ({continue:renderContinue,overview:renderOverview,stages:renderStages,curriculum:renderCurriculum,
+  ({start:renderStart,continue:renderContinue,overview:renderOverview,stages:renderStages,curriculum:renderCurriculum,
     practice:renderPractice,sessions:renderSessions,qa:renderQA,recap:renderRecap,
     questions:renderQuestions,story:renderStory}[view])(el);
   $$("#nav .navlink").forEach(a=>a.classList.toggle("active",a.dataset.view===view));
@@ -2199,6 +2274,357 @@ async function recheckProgress(){
   }
   assessing=false; save(); renderContinue($("#view-continue"));
 }
+
+/* ============================================================================
+ * The guided path.
+ *
+ * Ten sibling views with no entry point is what this replaces. A first-time
+ * reader landed inside a working tutoring session for a job that does not
+ * exist, with nothing on screen saying so and no way to reach intake.
+ *
+ * One decision per screen. The stage comes from GET /api/flow, which derives it
+ * from the store rather than holding it, so the page cannot disagree with the
+ * track about where the candidate is. Every screen says where you are, what
+ * this stage is for, the one thing to do, and what happens next.
+ *
+ * Nothing here is optimistic. A stage advances because the bridge said so in
+ * the reply to the action that advanced it, never because the click succeeded.
+ * ==========================================================================*/
+let flow=null, flowErr="", flowBusy="";
+const STAGE_LABEL={
+  intake:"Add the job", confirm:"Check what we read", diagnose:"A short conversation",
+  approve:"Approve the gaps", research:"Add your sources", curriculum:"Your plan",
+  learn:"Learn"
+};
+const STAGE_BLURB={
+  intake:"Paste the link to the job, or the description itself. Either works, and neither is better.",
+  diagnose:"A few questions about what the job asks for, and about what your own application claims. What you can already explain is not something you will be taught.",
+  approve:"Here is what the conversation found. Nothing is planned or taught until you have been through this list.",
+  research:"Paste links to sources you trust. Prepwright fetches them and studies from those. It never goes looking for its own.",
+  curriculum:"Your gaps and your sources, ordered so nothing is taught before the thing it depends on.",
+  learn:"One step at a time, grounded in the sections pinned to it."
+};
+
+async function apiPost(path, body){
+  const r=await fetch(API+path,{method:"POST",
+    headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+    body:JSON.stringify(body||{})});
+  let d={}; try{ d=await r.json(); }catch(_){}
+  if(!r.ok) throw Object.assign(new Error(d.error||("HTTP "+r.status)),{status:r.status,data:d});
+  return d;
+}
+async function loadFlow(quiet){
+  try{
+    const r=await fetch(API+"/api/flow",{cache:"no-store",
+      headers:{"x-tutor-bridge":"1"}});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    flow=await r.json(); flowErr="";
+  }catch(e){ flow=null; flowErr=String(e.message||e); }
+  if(!quiet && $("#view-start").classList.contains("active")) renderStart($("#view-start"));
+}
+
+/* The rail. Where you are, what is behind you, what is left. Stages you have
+ * passed are not links: going back would mean re-proposing a gap list over one
+ * the store already holds, which it refuses, so offering it would be a button
+ * that only ever produces an error. */
+function stageRail(current){
+  const order=["intake","diagnose","approve","research","curriculum","learn"];
+  const at=order.indexOf(current);
+  return `<ol class="rail-flow" aria-label="Where you are">`+order.map((id,i)=>{
+    const st=i<at?"done":(i===at?"now":"next");
+    return `<li class="rf ${st}"${i===at?' aria-current="step"':""}>`
+      +`<span class="rfdot">${i<at?"&#10003;":String(i+1)}</span>`
+      +`<span class="rftxt">${esc(STAGE_LABEL[id]||id)}</span></li>`;
+  }).join("")+`</ol>`;
+}
+
+function renderStart(el){
+  if(flowErr||!flow){
+    el.innerHTML=`<div class="vhead"><h1>Prepwright</h1></div>
+      <div class="card pad">
+        <p class="muted">The bridge is not answering, so this page cannot tell you
+        what state your work is in. It is not lost: everything lives in
+        <code>~/.prepwright</code>.</p>
+        <p class="muted">Open a terminal and run <code>./prep-launcher.sh</code> from the
+        Prepwright folder, then reload.</p>
+        ${flowErr?`<p class="muted small">${esc(flowErr)}</p>`:""}
+        <div class="row"><button class="btn" onclick="loadFlow()">Try again</button></div>
+      </div>`;
+    return;
+  }
+  const stage=flow.stage, t=flow.track||{};
+  const name=(t.role_title&&t.employer)?`${t.role_title} at ${t.employer}`:(t.title||"");
+  el.innerHTML=`<div class="vhead">
+      <h1>${stage==="intake"?"Prepwright":esc(name||"Your track")}</h1>
+      <p class="sub">${stage==="intake"
+        ?"A tutor for one job at a time. It teaches only from sources you chose, and tells you when it has none."
+        :esc(showingReceipt(stage)?STAGE_BLURB.research:(STAGE_BLURB[stage]||""))}</p>
+    </div>
+    ${stage==="intake"?"":stageRail(stage)}
+    ${flowBusy?`<div class="card pad busy"><span class="dots"><i></i><i></i><i></i></span> ${esc(flowBusy)}</div>`:""}
+    <div id="stageBody">${stageBody(stage)}</div>`;
+}
+
+/* A fetch that succeeds advances the stage on the next reply, so the screen
+ * showing which sources landed and which were refused was replaced the instant
+ * it had something to say: the reader submitted five links and saw the next
+ * question. The receipt is held until they move on themselves. */
+function showingReceipt(stage){
+  return !!(flow&&flow.research&&(flow.research.results||[]).length&&stage!=="research");
+}
+function stageBody(stage){
+  if(showingReceipt(stage)) return researchCard(stage);
+  if(stage==="intake")     return intakeCard();
+  if(stage==="diagnose")   return diagnoseCard();
+  if(stage==="approve")    return approveCard();
+  if(stage==="research")   return researchCard(stage);
+  if(stage==="curriculum") return curriculumCard();
+  return learnCard();
+}
+
+function intakeCard(){
+  return `<div class="card pad stagecard">
+    <h2>Add the job you are preparing for</h2>
+    <p class="muted">A link, or the description pasted in. If the page needs a login,
+    paste the text: it works just as well and nothing is lost.</p>
+    <label class="fl" for="inUrl">Link to the job</label>
+    <input class="in" id="inUrl" type="url" placeholder="https://..." autocomplete="off">
+    <label class="fl" for="inText">Or paste the description</label>
+    <textarea class="in ta" id="inText" rows="7" placeholder="Paste the whole posting. Headings and bullet points help."></textarea>
+    <div class="two">
+      <div><label class="fl" for="inRole">Role</label>
+        <input class="in" id="inRole" type="text" placeholder="AI Security &amp; Governance Analyst"></div>
+      <div><label class="fl" for="inEmp">Employer</label>
+        <input class="in" id="inEmp" type="text" placeholder="Wingtip Australia &amp; New Zealand"></div>
+    </div>
+    <p class="muted small">A link fills these in. Pasted text cannot, and guessing them
+    out of the prose would put an invented employer on your track, so they are
+    yours to type.</p>
+    <details class="fold"><summary>I already tailored a resume for this job</summary>
+      <p class="muted small">Point Prepwright at that application folder and it reads the
+      fit report as a starting point, so the conversation begins from what your
+      own application could not evidence. It reads the folder once and hashes
+      it, and never opens it again.</p>
+      <input class="in" id="inFolder" type="text" placeholder="~/Desktop/Thesis/Job Applications/applications/2026-09-08__...">
+    </details>
+    <div class="row"><button class="btn btn-primary" id="btnIntake">Add this job</button></div>
+    <p class="muted small next">Next: a short conversation about what it asks for.</p>
+  </div>`;
+}
+
+function diagnoseCard(){
+  const g=(flow&&flow.gaps)||{};
+  return `<div class="card pad stagecard">
+    <h2>A short conversation</h2>
+    <p class="muted small">Prepwright has read ${esc(String((flow&&flow.posting&&flow.posting.bytes)||0))} bytes
+    of the posting${(flow&&flow.posting&&flow.posting.sourcePath)?" and the application folder you pointed at":""}.</p>
+    <div class="row">
+      <button class="btn btn-primary" id="btnProbe">Start the conversation</button>
+      <button class="btn" id="btnSkipProbe">Skip it and list everything as unlearned</button>
+    </div>
+    <p class="muted small next">Next: you approve the list before anything is planned.</p>
+    ${g.total?`<p class="muted small">${esc(String(g.total))} already proposed.</p>`:""}
+  </div>`;
+}
+
+function approveCard(){
+  const gaps=(flow&&flow.gapList)||[];
+  const g=(flow&&flow.gaps)||{by_status:{}};
+  const left=(g.by_status&&g.by_status.proposed)||0;
+  if(!gaps.length){
+    return `<div class="card pad stagecard"><h2>Approve the gaps</h2>
+      <p class="muted">Loading the list…</p>
+      <div class="row"><button class="btn" onclick="loadGaps()">Load it</button></div></div>`;
+  }
+  return `<div class="card pad stagecard">
+    <h2>Approve the gaps</h2>
+    <p class="muted small">${esc(String(left))} still to decide, of ${esc(String(gaps.length))}.
+      Decline anything you can already explain; it stays on the record either way.</p>
+    <ul class="gaplist">${gaps.map(function(x){
+      const decided=x.status!=="proposed";
+      return `<li class="gap ${esc(x.status)}">
+        <div class="gtop"><span class="gtag ${x.jd_span?"jd":"cv"}">${x.jd_span?"the posting asks":"your application claims"}</span>
+          <span class="glvl">${esc(x.level)}</span></div>
+        <div class="glabel2">${esc(x.label)}</div>
+        <div class="gwhy">${esc(x.why||"")}</div>
+        <div class="grow">
+          ${decided
+            ? `<span class="gdone ${esc(x.status)}">${x.status==="approved"?"Will study":"Declined"}</span>`
+            : `<button class="btn btn-sm btn-primary" data-gap="${esc(x.gap_id)}" data-rev="${esc(String(x.rev))}" data-act="approved">Study this</button>
+               <button class="btn btn-sm" data-gap="${esc(x.gap_id)}" data-rev="${esc(String(x.rev))}" data-act="declined">I can explain it</button>`}
+        </div></li>`;}).join("")}</ul>
+    <p class="muted small next">Next: the sources you want it to teach from.</p>
+  </div>`;
+}
+
+function researchCard(stage){
+  const r=(flow&&flow.research)||{};
+  const results=r.results||[];
+  const landed=results.filter(function(x){return x.ok;}).length;
+  const moved=!!(stage&&stage!=="research");
+  const form=`
+    <label class="fl" for="inUrls">One link per line</label>
+    <textarea class="in ta" id="inUrls" rows="6" placeholder="https://www.nist.gov/...&#10;https://www.oaic.gov.au/..."></textarea>
+    <div class="row">
+      <label class="fl inline" for="inVet">How much do you trust these?</label>
+      <select class="in sel" id="inVet">
+        <option value="primary">Primary — the standard or the law itself</option>
+        <option value="secondary" selected>Secondary — a careful write-up</option>
+        <option value="vendor">Vendor — a supplier's own documentation</option>
+        <option value="community">Community — a blog or a forum</option>
+      </select>
+    </div>
+    <div class="row"><button class="btn ${moved?"":"btn-primary"}" id="btnResearch">${moved?"Fetch these too":"Fetch these"}</button></div>`;
+  const list=results.length?`<ul class="reslist">${results.map(function(x){
+      return `<li class="${x.ok?"ok":"bad"}"><code>${esc(x.url)}</code>
+        <span>${x.ok?("stored as "+esc(x.docId)+", "+esc(String(x.bytes))+" bytes"):esc(x.why||"refused")}</span></li>`;
+    }).join("")}</ul>`:"";
+
+  // With a receipt to show, the receipt comes first. Leaving the empty form on
+  // top made the reader scroll past a box they had just used to find out what
+  // it did.
+  if(moved) return `<div class="card pad stagecard">
+    <h2>${landed?("Stored "+landed+" source"+(landed===1?"":"s")):"Nothing was stored"}</h2>
+    ${list}
+    <div class="row"><button class="btn btn-primary" id="btnMoveOn">${landed?"That is enough, build the plan":"Carry on without them"}</button></div>
+    <details class="fold"><summary>Add more sources</summary>${form}</details>
+  </div>`;
+
+  return `<div class="card pad stagecard">
+    <h2>Add the sources you trust</h2>
+    <p class="muted small">https only. Prepwright records the address it finally read,
+    the size and a hash of the bytes, so a citation can be checked against its
+    source later.</p>
+    ${form}
+    ${list}
+    <p class="muted small next">Next: a plan built from your gaps and these sources.</p>
+  </div>`;
+}
+
+function curriculumCard(){
+  return `<div class="card pad stagecard">
+    <h2>Build your plan</h2>
+    <p class="muted small">${esc(String((flow&&flow.corpus&&flow.corpus.documents)||0))} document(s) stored,
+      ${esc(String((flow&&flow.gaps&&flow.gaps.approved)||0))} gap(s) approved.
+      A gap no source covers is set aside and named, not quietly dropped.</p>
+    <div class="row"><button class="btn btn-primary" id="btnPlan">Build the plan</button></div>
+    <p class="muted small next">Next: the first step.</p>
+  </div>`;
+}
+
+function hoursish(mins){
+  const m=Math.max(0,parseInt(mins,10)||0);
+  if(m<60) return m+" minutes";
+  const h=Math.floor(m/60), r=m%60;
+  return h+"\u00a0h"+(r?" "+r+"\u00a0min":"");
+}
+function learnCard(){
+  const c=(flow&&flow.curriculum)||{tiers:{}};
+  const core=(c.tiers&&c.tiers.core)||0;
+  return `<div class="card pad stagecard">
+    <h2>You are ready</h2>
+    <p class="muted">${esc(String(c.steps||0))} step(s), about ${esc(hoursish(c.minutes))} of
+      teaching: ${esc(String(core))} core,
+      ${esc(String((c.tiers&&c.tiers.depth)||0))} depth,
+      ${esc(String((c.tiers&&c.tiers.reference)||0))} reference.</p>
+    ${core===(c.steps||0)&&core>8?`<p class="muted small">Every step is core because
+      nothing was ruled out. Answering the questions in the conversation is what
+      shortens this: what you can already explain does not become a step.</p>`:""}
+    <p class="muted">Every step shows what it was allowed to read, and says so when
+    the tutor names something that was not there.</p>
+    <div class="row">
+      <button class="btn btn-primary" onclick="location.hash='#continue'">Start the first step</button>
+      <button class="btn" onclick="location.hash='#curriculum'">See the whole plan</button>
+    </div>
+  </div>`;
+}
+
+/* ---- the actions -------------------------------------------------------- */
+async function withBusy(msg, fn){
+  flowBusy=msg; renderStart($("#view-start"));
+  try{ await fn(); }
+  catch(e){ flowErr=""; toast(String((e&&e.message)||e)); }
+  finally{ flowBusy=""; renderStart($("#view-start")); }
+}
+function toast(msg){
+  const el=$("#stageBody"); if(!el) return;
+  const box=document.createElement("div");
+  box.className="card pad ground bad"; box.setAttribute("role","alert");
+  box.textContent=msg; el.insertBefore(box, el.firstChild);
+}
+async function loadGaps(){ await loadFlow(); }
+document.addEventListener("click", async function(ev){
+  const t=ev.target;
+  if(!t||!t.closest) return;
+  const gapBtn=t.closest("[data-gap]");
+  if(gapBtn){
+    await withBusy("Recording your decision…", async function(){
+      const d=await apiPost("/api/gap",{gapId:gapBtn.getAttribute("data-gap"),
+        status:gapBtn.getAttribute("data-act"),
+        rev:parseInt(gapBtn.getAttribute("data-rev"),10)});
+      flow=d.flow||flow; if(flow) flow.gapList=d.gaps||[];
+    });
+    return;
+  }
+  if(t.id==="btnIntake"){
+    const url=($("#inUrl")||{}).value||"", text=($("#inText")||{}).value||"";
+    const folder=($("#inFolder")||{}).value||"";
+    const role=(($("#inRole")||{}).value||"").trim(), emp=(($("#inEmp")||{}).value||"").trim();
+    if(!url.trim()&&!text.trim()){ toast("Give me a link or paste the description."); return; }
+    if(text.trim()&&!url.trim()&&!(role&&emp)){
+      toast("Name the role and the employer. A pasted posting does not carry them, and a track called \u201cUntitled posting\u201d is one you will not recognise next week.");
+      return;
+    }
+    await withBusy("Reading the job…", async function(){
+      try{
+        const d=await apiPost("/api/intake",{url:url.trim(),text:text,
+          roleTitle:role,employer:emp,
+          applicationFolder:folder.trim()||undefined});
+        flow=d.flow||null;
+      }catch(e){
+        // 422 is not a failure: the page answered, the body did not. Hand the
+        // paste box back with whatever identity was readable rather than an
+        // error the reader cannot act on.
+        if(e.status===422){
+          flow=null; renderStart($("#view-start"));
+          const box=$("#inText"); if(box){ box.focus(); }
+          toast(e.message); return;
+        }
+        throw e;
+      }
+    });
+    return;
+  }
+  if(t.id==="btnProbe"||t.id==="btnSkipProbe"){
+    await withBusy("Working through the posting…", async function(){
+      const d=await apiPost("/api/diagnose",{action:"propose"});
+      flow=d.flow||flow; if(flow) flow.gapList=d.gaps||[];
+    });
+    return;
+  }
+  if(t.id==="btnResearch"){
+    const raw=(($("#inUrls")||{}).value||"").split("\n").map(x=>x.trim()).filter(Boolean);
+    if(!raw.length){ toast("Paste at least one link."); return; }
+    await withBusy("Fetching "+raw.length+" source(s)…", async function(){
+      const d=await apiPost("/api/research",{urls:raw,
+        vetting:(($("#inVet")||{}).value||"secondary")});
+      flow=d.flow||flow; if(flow) flow.research={results:d.results||[]};
+    });
+    return;
+  }
+  if(t.id==="btnMoveOn"){
+    if(flow) flow.research=null;
+    renderStart($("#view-start"));
+    return;
+  }
+  if(t.id==="btnPlan"){
+    await withBusy("Building the plan…", async function(){
+      const d=await apiPost("/api/curriculum",{});
+      flow=d.flow||flow;
+    });
+    return;
+  }
+}, false);
 
 async function pingBridge(){
   try{
@@ -3110,9 +3536,26 @@ function buildNav(){
   $("#nav").innerHTML=NAV.map(n=>`<button class="navlink" data-view="${n.id}">
     ${ICON[n.id]}<span>${esc(n.label)}</span></button>`).join("");
 }
+/* The view that is on screen right now.
+ *
+ * The four redraw-after-adopt sites used `state.lastView`, which is a persisted
+ * preference, and adopting a document from the bridge replaces it with whatever
+ * that document carries. A first run therefore rendered the guided path, then
+ * adopted a state whose lastView was the seed default, and jumped straight back
+ * into the tutoring session the guided path exists to stand in front of. The
+ * DOM knows which view is active; the preference only knows which one was.
+ */
+function currentView(){
+  const on=document.querySelector(".view.active");
+  if(on) return on.id.replace(/^view-/,"");
+  const v=(location.hash||"").slice(1);
+  return (v==="start"||NAV.some(n=>n.id===v))?v:"start";
+}
 function routeFromHash(){
-  const v=(location.hash||"#continue").slice(1);
-  render(NAV.some(n=>n.id===v)?v:"continue");
+  const v=(location.hash||"#start").slice(1);
+  // `start` is routable without being in NAV. It is the guided path, and it
+  // belongs in the sidebar only once there is something to leave it for.
+  render((v==="start"||NAV.some(n=>n.id===v))?v:"start");
 }
 window.addEventListener("hashchange",routeFromHash);
 
@@ -3123,9 +3566,15 @@ window.addEventListener("hashchange",routeFromHash);
     document.documentElement.setAttribute("data-theme","light");
   buildNav();
   applyRail();               // restore the sidebar's collapsed/expanded state
-  location.hash="#continue"; // always land on the resume screen
+  // Where to land is decided by the track, not by a constant. A first-time
+  // reader was dropped straight into a live tutoring session for a fabricated
+  // job, with no intake, no explanation and no screen saying "you have no track
+  // yet". #start renders whichever stage the track is actually in, and steps
+  // aside the moment there is real work to resume.
+  if(!location.hash) location.hash="#start";
   routeFromHash();
   pingBridge();              // detect the live tutor bridge, update the status pill
+  loadFlow();                // ask the bridge which stage this track is in
   reconcileWithDisk();       // adopt the disk copy if it is newer, else push ours up
 })();
 </script>

@@ -332,6 +332,21 @@ def tier_for(gap):
     return "reference"
 
 
+# A step id is a STEP KEY, and the two sides have to agree or the plan cannot be
+# taught. `pagestate.STEP_KEY_RE` is the contract the page mints against and the
+# bridge validates: `<stage>:<kind>:<id>`. The first version of this module
+# minted "s01", which every route that teaches rejects before it reads the body,
+# so a plan built here was a plan nothing could open. Stage numbering is one
+# stage per step for now, because the store has no stage object and inventing
+# one here would be a second source of truth for something the curriculum does
+# not yet decide.
+STEP_KIND = "topic"
+
+
+def step_key(ordinal):
+    return "%d:%s:S%02d" % (min(99, max(1, int(ordinal))), STEP_KIND, int(ordinal))
+
+
 def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
     """The ordered, tiered, sliced plan, plus everything it could not build.
 
@@ -375,7 +390,7 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
 
     for i, step in enumerate(steps, start=1):
         step["ord"] = i
-        step["step_id"] = "s%02d" % i
+        step["step_id"] = step_key(i)
     return {
         "steps": steps,
         "deferred": deferred,
