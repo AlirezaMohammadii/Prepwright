@@ -209,10 +209,21 @@ def seed_from_directory(handle, directory, pin_to_step=None):
 def pin_all(handle, step_id, doc_ids=None):
     """Pin every section of the named documents to one step, in order.
 
-    A step teaches only from what is pinned to it. Until the curriculum chooses
-    slices deliberately, pinning everything is the honest default: it is visible
-    in `step_slice`, and `build_pack` still enforces the pack caps on top.
+    A step teaches only from what is pinned to it. `curriculum.plan` chooses
+    slices deliberately; this remains the seed path's default, where there is no
+    plan yet and pinning everything is the honest answer: it is visible in
+    `step_slice`, and `build_pack` still enforces the pack caps on top.
+
+    The step is ensured first because `step_slice.step_id` carries a foreign key
+    to `step` and foreign keys are on. Without it, pinning to a step the track
+    has not created yet raised IntegrityError from inside the seed, which
+    `bridge.evidence_pack` catches so a seed failure cannot end a lesson. The
+    documents were written before the raise, so `n_docs` was no longer zero and
+    the seed never ran again: the first teaching turn on a fresh track was
+    ungrounded, and so was every turn after it. The swallow was right and the
+    silence underneath it was the defect.
     """
+    handle.ensure_step(step_id, step_id)
     if doc_ids is None:
         doc_ids = [r["doc_id"] for r in handle.conn.execute(
             "SELECT doc_id FROM doc WHERE status='ready' ORDER BY doc_no").fetchall()]

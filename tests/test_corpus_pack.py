@@ -214,6 +214,61 @@ class Pack(Base):
 
 
 # ============================================================================
+class SeedingPinsToAStepTheTrackDoesNotHaveYet(Base):
+    """The path every fresh track takes, and the one no fixture took.
+
+    `Base.a_track` creates step "st1" by hand, so every other test in this file
+    pins to a step that already exists. `bridge.evidence_pack` does not: it
+    seeds on the first teaching turn, naming the step key from the request,
+    before anything has created that step row.
+
+    `step_slice.step_id` carries a foreign key to `step` and foreign keys are
+    on, so the pin raised IntegrityError from inside the seed. evidence_pack
+    catches it, correctly, because a seed failure must not end a lesson. But the
+    documents were already written, so `n_docs` was no longer zero and the seed
+    never ran again. The first turn on a fresh track was ungrounded, and so was
+    every turn after it, permanently, with one line on stderr.
+    """
+
+    def _bare_track(self):
+        track_id = T.create_track("no steps yet")
+        handle = S.open_track(track_id)
+        self.addCleanup(handle.close)
+        self.assertEqual(
+            handle.conn.execute("SELECT COUNT(*) c FROM step").fetchone()["c"], 0,
+            "the fixture must start with no step, or it cannot see this bug")
+        return handle
+
+    def test_the_seed_grounds_a_track_that_has_no_steps(self):
+        handle = self._bare_track()
+        directory = self.a_dir(**{"D01__caching.doc.md": LOOSE})
+        written = X.seed_from_directory(handle, directory, pin_to_step="1:topic:T1")
+        self.assertTrue(written, "nothing was ingested")
+        pack = X.build_pack(handle, "1:topic:T1")
+        self.assertTrue(pack["grounded"],
+                        "the seed wrote documents and pinned nothing")
+        self.assertTrue(pack["cites"])
+
+    def test_pinning_creates_the_step_rather_than_raising(self):
+        handle = self._bare_track()
+        doc_id = X.ingest_text(handle, LOOSE, origin_url="https://example.org/x")
+        X.pin_all(handle, "1:topic:T9", [doc_id])
+        self.assertEqual(
+            handle.conn.execute("SELECT COUNT(*) c FROM step WHERE step_id=?",
+                                ("1:topic:T9",)).fetchone()["c"], 1)
+        self.assertTrue(X.build_pack(handle, "1:topic:T9")["cites"])
+
+    def test_a_second_seed_does_not_duplicate_the_step_or_the_documents(self):
+        handle = self._bare_track()
+        directory = self.a_dir(**{"D01__caching.doc.md": LOOSE})
+        X.seed_from_directory(handle, directory, pin_to_step="1:topic:T1")
+        again = X.seed_from_directory(handle, directory, pin_to_step="1:topic:T1")
+        self.assertEqual(again, [], "the seed ingested the same document twice")
+        self.assertEqual(
+            handle.conn.execute("SELECT COUNT(*) c FROM step").fetchone()["c"], 1)
+
+
+# ============================================================================
 class Citations(Base):
     """A citation is checked against the pack that was sent, not against the track."""
 

@@ -449,6 +449,21 @@ textarea.inp{resize:vertical;min-height:80px}
 .bubble.assistant{background:var(--surface-2);border-left:2px solid var(--signal);border-top-left-radius:4px;align-self:flex-start}
 .bubble.assistant code{background:var(--surface-3);padding:1px 5px;border-radius:5px;font-size:.86em}
 .bubble.sys{background:transparent;border-style:dashed;border-color:var(--gate);color:var(--text-muted);font-size:.86rem;align-self:stretch;max-width:100%}
+
+/* Grounding footer. Three states, using the palette that already means these
+   things: --alert for a claim that was not in the sources, --text-faint for a
+   turn that had no sources at all, --signal for the sections it did read. A
+   fourth colour would be a second vocabulary for the same idea. */
+.ground{margin-top:10px;padding-top:9px;border-top:1px solid var(--line-soft);font-size:.78rem;line-height:1.5;color:var(--text-faint)}
+.ground code{background:var(--surface-3);padding:1px 5px;border-radius:5px;font-family:var(--ff-mono);font-size:.94em;color:var(--text-muted)}
+.ground .glabel{text-transform:uppercase;letter-spacing:.07em;font-size:.92em;margin-right:6px}
+.ground code.used{color:var(--signal);border:1px solid var(--signal-dim);background:var(--signal-glow)}
+.ground.bad{margin:10px 0 0;padding:9px 11px;border:1px solid var(--alert);border-radius:var(--radius-sm);background:rgba(248,113,113,.10);color:var(--text)}
+.ground.bad b{color:var(--alert)}
+.ground.bad code{background:rgba(248,113,113,.16);color:var(--text)}
+.ground.none{font-style:italic}
+.ground .gsha{float:right;opacity:.5;font-family:var(--ff-mono);font-size:.9em}
+@media (max-width:640px){.ground .gsha{display:none}}
 /* Session-review bubble. Full width and its own accent because it is not
    conversation: it reads a session back rather than adding a turn to it. */
 .bubble.review{background:var(--surface-2);border-left:2px solid var(--gate);border-top-left-radius:4px;align-self:stretch;max-width:100%}
@@ -1936,9 +1951,48 @@ function bubbleFor(e){
   // one that was requested — an unrecognised level silently falls back in the CLI.
   if(isAssistantRole(role)) return `<div class="bubble assistant"><div class="who">Tutor · ${e.provider?esc(providerLabel(e.provider))+" · ":""}${esc(modelLabel(e.resolved||e.model))}${
     (e.effort&&e.effort!=="default")?" · thinking "+esc(e.effort):""} · ${esc(fmt(e.ts))}${
-    e.usage?`<span class="usage">${esc(usageLabel(e.usage))}</span>`:""}</div>${fmtReply(e.text)}</div>`;
+    e.usage?`<span class="usage">${esc(usageLabel(e.usage))}</span>`:""}</div>${fmtReply(e.text)}${groundingFor(e)}</div>`;
   if(role==="sys")    return `<div class="bubble sys"><div class="who">System</div>${esc(e.text).replace(/\n/g,"<br>")}</div>`;
   return `<div class="bubble me"><div class="who">You · ${esc(fmt(e.ts))}</div>${esc(e.text)}</div>`;
+}
+/* What the tutor was allowed to read, and anything it named that was not in it.
+ *
+ * Three states, and the middle one is the reason this exists.
+ *   invented   the reply cited a section the pack did not contain. Shown as a
+ *              warning, above the citation list, because a well-cited wrong
+ *              lesson is more dangerous than an uncited one: it reads as
+ *              checked.
+ *   grounded   the reply ran against real pinned sections. The tokens are
+ *              listed so a claim can be traced back to the section it came from.
+ *   ungrounded the corpus was empty or the step had nothing pinned. The tutor
+ *              was told to say so; this says so on the page as well, so a
+ *              refusal reads as the system working rather than as a bad answer.
+ *
+ * Turns stored before this shipped carry none of these fields, so an entry with
+ * no `cites` array and no `grounded` flag renders nothing rather than claiming
+ * an old lesson was ungrounded. */
+function groundingFor(e){
+  if(!e || (!Array.isArray(e.cites) && e.grounded===undefined)) return "";
+  const invented=Array.isArray(e.invented)?e.invented:[];
+  const cited=Array.isArray(e.cited)?e.cited:[];
+  const cites=Array.isArray(e.cites)?e.cites:[];
+  let out="";
+  if(invented.length){
+    out+=`<div class="ground bad" role="alert"><b>Not in your sources.</b> This reply cited `
+      +invented.map(c=>`<code>${esc(c)}</code>`).join(" ")
+      +`, which ${invented.length===1?"was":"were"} not in the material it was given. Treat `
+      +`${invented.length===1?"that claim":"those claims"} as unchecked.</div>`;
+  }
+  if(e.grounded===false && !invented.length){
+    out+=`<div class="ground none">Nothing was pinned to this step, so the tutor had no sources to answer from.</div>`;
+  }
+  if(cites.length){
+    out+=`<div class="ground ok"><span class="glabel">Read from</span> `
+      +cites.map(c=>`<code class="${cited.indexOf(c)>=0?"used":""}">${esc(c)}</code>`).join(" ")
+      +(e.packSha16?`<span class="gsha" title="the exact pack this answer was checked against">${esc(e.packSha16)}</span>`:"")
+      +`</div>`;
+  }
+  return out;
 }
 function pushSys(key,msg){ state.stepLog=state.stepLog||{}; (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"sys",text:msg}); }
 /* Shown on every reply on purpose. Per-question input cost is the number most
@@ -1969,7 +2023,22 @@ async function askTutor(key){
       body:JSON.stringify(body)});
     let d={}; try{ d=await r.json(); }catch(_){}
     if(!r.ok || d.error){ pushSys(key, (d.error||("Request failed — HTTP "+r.status))); bridgeOnline=(r.status!==0); }
-    else{ (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"assistant",provider:(d.provider||provider),model,resolved:(d.resolved||""),effort:(d.effort||""),usage:(d.usage||null),text:(d.text||"(empty reply)")}); bridgeOnline=true; }
+    else{
+      // grounded / cites / citations / packSha16 come back on every reply and
+      // the page ignored all four. citations.invented is the list of tokens the
+      // tutor named that the pack did not contain: a confident, well-cited,
+      // wrong lesson, which is the exact failure this whole design exists to
+      // prevent. Silence about it is complicity.
+      // These ride through client_meta untouched (pagestate.py only reserves
+      // text/seq/at), so they persist and survive a reload with no schema change.
+      const cit=d.citations||{};
+      (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"assistant",provider:(d.provider||provider),model,resolved:(d.resolved||""),effort:(d.effort||""),usage:(d.usage||null),
+        grounded:(d.grounded===true),
+        cites:(Array.isArray(d.cites)?d.cites:[]),
+        cited:(Array.isArray(cit.valid)?cit.valid:[]),
+        invented:(Array.isArray(cit.invented)?cit.invented:[]),
+        packSha16:(d.packSha16||""),
+        text:(d.text||"(empty reply)")}); bridgeOnline=true; }
   }catch(e){
     bridgeOnline=false;
     pushSys(key, "Live tutor is offline. This message is held in this browser and goes to disk when the bridge returns. Open a terminal, run:\n  prep\nthen reload this page. Live chat uses the logged-in CLI for your selected provider.");
