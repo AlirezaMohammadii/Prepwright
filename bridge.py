@@ -13,7 +13,9 @@ What it does
    grades how far the candidate actually got.
 4. Exposes POST /api/review, a one-call read of one step's transcript that
    drafts the end-of-session review and its recap questions.
-5. Exposes GET and POST /api/state, the durable progress record on disk.
+5. Exposes GET and POST /api/state. GET returns the page document rebuilt
+   from the active track's database; POST takes a delta of appended turns
+   and marks, never a whole document.
 6. Exposes GET /api/health so the page can show a live/offline pill.
 
 Security
@@ -50,6 +52,7 @@ import pwd
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -90,16 +93,18 @@ if SCRIPT_DIR not in sys.path:
 # ---- durable progress ------------------------------------------------------
 # The page also keeps state in localStorage, but that is scoped to one browser
 # origin and dies with "Clear site data", a different browser, or opening
-# 127.0.0.1 instead of localhost. This file on disk is the real record.
-STATE_DIR = os.path.join(SCRIPT_DIR, "progress")
-STATE_FILE = os.path.join(STATE_DIR, "state.json")
-BACKUP_DIR = os.path.join(STATE_DIR, "backups")
-# The richest state ever written, kept forever and never pruned. backups/ rotates,
-# so on a long enough timeline it cannot be the floor under a bad write.
-HIGH_WATER_FILE = os.path.join(STATE_DIR, "high-water.json")
-MAX_STATE_BYTES = 16 * 1024 * 1024   # chat logs are text; this is very generous
-BACKUP_MIN_INTERVAL = 300            # seconds between snapshots of the old file
-KEEP_BACKUPS = 200
+# 127.0.0.1 instead of localhost. The track store under ~/.prepwright is the
+# real record, and prepwright/pagestate.py is the only thing that knows both
+# the page's document shape and the store's rows.
+#
+# There was a second store here until this change: progress/state.json, a whole
+# document written on every keystroke behind a revision hash and a heuristic
+# shrink-detector. DESIGN-state-corpus.md rejects that scheme in its first line,
+# and both stores describing the same thing was the single biggest defect left
+# in this tree. LEGACY_STATE_FILE is read once, imported, and renamed.
+LEGACY_STATE_DIR = os.path.join(SCRIPT_DIR, "progress")
+LEGACY_STATE_FILE = os.path.join(LEGACY_STATE_DIR, "state.json")
+MAX_STATE_BYTES = 4 * 1024 * 1024    # a delta, not a document; see pagestate
 # The only bytes this bridge ever reads for teaching are distilled corpus
 # documents under this directory. Provider CLIs never run here and never see a
 # path at all. One directory today; one directory per track once the persistence
@@ -139,6 +144,162 @@ def _validate_provider_model(provider, model):
     if model not in PROVIDER_MODELS[provider]:
         raise ValueError("Model is not allowed for that provider.")
     return provider, model
+
+# The persistence layer. Imported after the sys.path.append above, and only
+# ever through these names, so there is one place to look when a store call
+# needs following.
+from prepwright import config as PC          # noqa: E402
+from prepwright import keep as PK            # noqa: E402
+from prepwright import pagestate as PS       # noqa: E402
+from prepwright import state as PSTATE       # noqa: E402
+from prepwright import track as PTRACK       # noqa: E402
+
+CURRENT_TRACK_FILE = os.path.join(PC.HOME, "CURRENT_TRACK")
+DEFAULT_TRACK_TITLE = "Prepwright track"
+# Resolution and creation both run under this, so two requests arriving in the
+# same instant on a machine with no track yet cannot each create one and leave
+# the loser's writes in a track nothing will ever open again.
+_track_gate = threading.Lock()
+
+
+def _read_current_track():
+    """The track id this bridge is serving, or None. Never trusts the file."""
+    try:
+        with open(CURRENT_TRACK_FILE, "r", encoding="utf-8") as fh:
+            candidate = fh.read().strip()
+    except OSError:
+        return None
+    if not re.match(PC.TRACK_ID_RE, candidate):
+        return None
+    if not os.path.isdir(os.path.join(PC.TRACKS_ROOT, candidate)):
+        return None
+    return candidate
+
+
+def _write_current_track(track_id):
+    PSTATE.atomic_write(CURRENT_TRACK_FILE, track_id + "\n")
+
+
+def current_track_id():
+    """Resolve, or adopt, or create. Exactly one track is served at a time.
+
+    A track switcher is not built yet, so the pointer file is the whole
+    selection mechanism. When it is missing the newest active track is adopted
+    rather than a second one created, because creating one beside real work is
+    how a candidate opens the page and finds an empty session.
+    """
+    with _track_gate:
+        found = _read_current_track()
+        if found:
+            return found
+        PSTATE.ensure_home()
+        lib = PSTATE.open_library()
+        try:
+            row = lib.execute(
+                "SELECT track_id FROM track WHERE lifecycle='active'"
+                " ORDER BY touched_utc DESC, created_utc DESC LIMIT 1").fetchone()
+            track_id = row["track_id"] if row else None
+        finally:
+            lib.close()
+        if track_id is None:
+            track_id = PTRACK.create_track(DEFAULT_TRACK_TITLE)
+        _write_current_track(track_id)
+        return track_id
+
+
+def open_state_track(take_lease):
+    """One handle for one request, repaired in the open path if it is corrupt.
+
+    Per request rather than one held open for the process: sqlite3 refuses a
+    connection used from a thread other than the one that made it, and this is a
+    threading server. The cost is one connection open per save, against
+    relaxing check_same_thread for the whole package to suit one caller.
+
+    open_track_or_recover, not open_track: the moment a corrupt track.db is
+    found is the moment the candidate is waiting on it, and this is the call
+    keep.py built that path for.
+    """
+    track_id = current_track_id()
+    handle = PK.open_track_or_recover(track_id, client_label="bridge")
+    if not take_lease and handle.holds_lease:
+        # A read must not hold the track: it would make an archive or a delete
+        # refuse for as long as the page is merely open.
+        try:
+            PSTATE.release_lease(handle._library(), track_id)
+        except Exception:
+            pass
+        handle.holds_lease = False
+    return handle
+
+
+def state_snapshot(handle):
+    """Everything the page needs to render and to compute its next delta."""
+    return {
+        "ok": True,
+        "trackId": handle.track_id,
+        "revision": handle.revision(),
+        "state": PS.materialise(handle),
+        "fields": {f: list(v) for f, v in PS.FIELDS.items()},
+    }
+
+
+def _legacy_document():
+    """The old whole-document state, from the file or the newest good snapshot.
+
+    The snapshots are read too. `read_state()` used to fall back to them, so
+    skipping them here would make the migration lose exactly the history that
+    the old recovery path existed to keep.
+    """
+    try:
+        with open(LEGACY_STATE_FILE, "r", encoding="utf-8") as fh:
+            obj = json.load(fh)
+        if isinstance(obj, dict):
+            return obj, LEGACY_STATE_FILE
+    except (OSError, ValueError):
+        pass
+    backups = os.path.join(LEGACY_STATE_DIR, "backups")
+    try:
+        names = sorted(n for n in os.listdir(backups)
+                       if n.startswith("state-") and n.endswith(".json"))
+    except OSError:
+        return None, None
+    for name in reversed(names):
+        path = os.path.join(backups, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                obj = json.load(fh)
+            if isinstance(obj, dict):
+                return obj, path
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+
+def import_legacy_state():
+    """Read progress/state.json once, write it as ops, then rename it.
+
+    Renamed, never deleted: if this import is wrong in a way nobody notices for
+    a week, the bytes are still there. Called once from main(), before the
+    server accepts a request, so no write can interleave with it.
+    """
+    document, source = _legacy_document()
+    if document is None:
+        return None
+    handle = open_state_track(take_lease=True)
+    try:
+        ops = PS.validate_ops(PS.ops_from_document(document, "legacy"))
+        report = PS.apply_ops(handle, ops)
+        report["track"] = handle.track_id
+        report["source"] = source
+    finally:
+        handle.close()
+    if os.path.isfile(LEGACY_STATE_FILE):
+        moved = "%s.imported-%s" % (LEGACY_STATE_FILE,
+                                    time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+        os.rename(LEGACY_STATE_FILE, moved)
+        report["renamed_to"] = moved
+    return report
+
 
 # ---- token discipline ------------------------------------------------------
 # Each flag below removes a class of bytes the CLI would otherwise prepend to
@@ -235,289 +396,6 @@ MAX_HISTORY_CHARS = 9000
 VERBATIM_TAIL = 4
 OLD_STUDENT_CHARS = 420
 OLD_TUTOR_CHARS = 190
-
-
-def _ensure_private_state_dirs():
-    """Create/harden transcript storage without inspecting transcript text."""
-    for path in (STATE_DIR, BACKUP_DIR):
-        if os.path.islink(path):
-            raise RuntimeError("Tutor private storage cannot be a symlink.")
-        os.makedirs(path, mode=0o700, exist_ok=True)
-        if not stat.S_ISDIR(os.lstat(path).st_mode):
-            raise RuntimeError("Tutor private storage path is not a directory.")
-        os.chmod(path, 0o700)
-    if os.path.islink(STATE_FILE):
-        raise RuntimeError("Tutor state file cannot be a symlink.")
-    if os.path.isfile(STATE_FILE):
-        os.chmod(STATE_FILE, 0o600)
-    try:
-        names = os.listdir(BACKUP_DIR)
-    except OSError:
-        names = ()
-    for name in names:
-        path = os.path.join(BACKUP_DIR, name)
-        try:
-            info = os.lstat(path)
-        except OSError:
-            continue
-        if stat.S_ISREG(info.st_mode):
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-
-
-def _state_revision(obj):
-    """Stable opaque revision used to reject stale-tab overwrites."""
-    if not isinstance(obj, dict):
-        return None
-    raw = json.dumps(obj, ensure_ascii=False, sort_keys=True,
-                     separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
-
-def _chat_volume(obj):
-    """Per-step tutor message counts. The page only ever appends to a step log
-    (every call site is a .push), so a shrinking log means the caller is holding
-    an older copy of the world, never a deliberate edit."""
-    out = {}
-    if not isinstance(obj, dict):
-        return out
-    log = obj.get("stepLog")
-    if not isinstance(log, dict):
-        return out
-    for key, msgs in log.items():
-        out[str(key)] = len(msgs) if isinstance(msgs, list) else 0
-    return out
-
-
-def _marked_counts(obj):
-    """Counts a user can legitimately decrease, one item at a time, from the UI."""
-    if not isinstance(obj, dict):
-        return {"topics": 0, "practice": 0, "qa": 0, "sessions": 0}
-    topics = obj.get("topics") if isinstance(obj.get("topics"), dict) else {}
-    practice = obj.get("practice") if isinstance(obj.get("practice"), dict) else {}
-    return {
-        "topics": sum(1 for v in topics.values()
-                      if isinstance(v, dict) and v.get("done")),
-        "practice": sum(1 for v in practice.values()
-                        if isinstance(v, dict) and v.get("status") not in (None, "", "todo")),
-        "qa": len(obj.get("qa") or []),
-        "sessions": len(obj.get("sessions") or []),
-    }
-
-
-# One tick-off undone per write is a person changing their mind. More than that in
-# a single write is a stale or seeded page, not an edit.
-MAX_UNMARK_PER_WRITE = 1
-
-
-def _regression_reason(incoming, current):
-    """Why this write would destroy work, or None when it is safe.
-
-    This is the backstop that does not depend on the page getting it right. A
-    tab holding a stale copy will happily push it over a much richer file, and
-    revision agreement does not catch it: the only question a revision answers
-    is 'did you read the current file', never 'is what you are sending poorer
-    than what is already there'.
-    """
-    if not isinstance(current, dict):
-        return None
-    now_vol, new_vol = _chat_volume(current), _chat_volume(incoming)
-    for key, count in now_vol.items():
-        if count <= 0:
-            continue
-        if key not in new_vol:
-            return "tutor log %r (%d messages) is missing from the write" % (key, count)
-        if new_vol[key] < count:
-            return ("tutor log %r would shrink from %d to %d messages"
-                    % (key, count, new_vol[key]))
-    now_marks, new_marks = _marked_counts(current), _marked_counts(incoming)
-    for field, count in now_marks.items():
-        drop = count - new_marks.get(field, 0)
-        if drop > MAX_UNMARK_PER_WRITE:
-            return ("%s completed would drop from %d to %d in one write"
-                    % (field, count, new_marks.get(field, 0)))
-    return None
-
-
-def _update_high_water(obj):
-    """Keep the richest state ever seen, outside the rotating backups."""
-    try:
-        incoming = sum(_chat_volume(obj).values())
-        best = 0
-        if os.path.exists(HIGH_WATER_FILE):
-            with open(HIGH_WATER_FILE, "r", encoding="utf-8") as f:
-                best = sum(_chat_volume(json.load(f)).values())
-        if incoming <= best:
-            return
-        tmp = "%s.%d.tmp" % (HIGH_WATER_FILE, threading.get_ident())
-        with open(tmp, "w", encoding="utf-8") as f:
-            os.chmod(tmp, 0o600)
-            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, HIGH_WATER_FILE)
-        os.chmod(HIGH_WATER_FILE, 0o600)
-    except (OSError, ValueError, TypeError):
-        pass  # a missed high-water mark must never fail the real save
-
-
-def _prune_backups():
-    try:
-        snaps = sorted(
-            f for f in os.listdir(BACKUP_DIR)
-            if f.startswith("state-") and f.endswith(".json")
-        )
-        for stale in snaps[:-KEEP_BACKUPS]:
-            os.remove(os.path.join(BACKUP_DIR, stale))
-    except OSError:
-        pass  # pruning is housekeeping; never let it break a save
-
-
-def _snapshot_previous():
-    """Copy the current state file aside before it is overwritten.
-
-    Throttled: a snapshot every save would be pure churn, since the page saves on
-    every interaction. One per BACKUP_MIN_INTERVAL keeps a usable history without
-    filling the disk. Any failure here is swallowed: a backup problem must never
-    stop the primary write.
-    """
-    if not os.path.exists(STATE_FILE):
-        return
-    try:
-        _ensure_private_state_dirs()
-        newest = 0.0
-        for f in os.listdir(BACKUP_DIR):
-            if f.startswith("state-") and f.endswith(".json"):
-                newest = max(newest, os.path.getmtime(os.path.join(BACKUP_DIR, f)))
-        if time.time() - newest < BACKUP_MIN_INTERVAL:
-            return
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        snap = os.path.join(BACKUP_DIR, "state-%s.json" % stamp)
-        shutil.copy2(STATE_FILE, snap)
-        os.chmod(snap, 0o600)
-        _prune_backups()
-    except OSError:
-        pass
-
-
-def _newest_good_backup():
-    """Most recent snapshot that still parses, or None."""
-    try:
-        snaps = sorted(
-            f for f in os.listdir(BACKUP_DIR)
-            if f.startswith("state-") and f.endswith(".json")
-        )
-    except OSError:
-        return None
-    for name in reversed(snaps):
-        try:
-            with open(os.path.join(BACKUP_DIR, name), "r", encoding="utf-8") as f:
-                obj = json.load(f)
-            if isinstance(obj, dict):
-                sys.stderr.write("tutor: recovered progress from backup %s\n" % name)
-                return obj
-        except (ValueError, OSError):
-            continue
-    return None
-
-
-def read_state():
-    """Return the saved state dict, or None when nothing is stored yet.
-
-    A corrupt file is quarantined rather than deleted, and the newest snapshot that
-    still parses is served in its place, so a bad write costs at most the minutes
-    since the last snapshot instead of the whole history.
-    """
-    _ensure_private_state_dirs()
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        if not isinstance(obj, dict):
-            raise ValueError("state root is not an object")
-        return obj
-    except FileNotFoundError:
-        return _newest_good_backup()
-    except (ValueError, OSError) as e:
-        try:
-            _ensure_private_state_dirs()
-            quarantine = os.path.join(
-                BACKUP_DIR, "corrupt-%s.json" % time.strftime("%Y%m%d-%H%M%S"))
-            os.replace(STATE_FILE, quarantine)
-            os.chmod(quarantine, 0o600)
-            sys.stderr.write("tutor: unreadable state quarantined in backups/ (%s)\n" % e)
-        except OSError:
-            pass
-        return _newest_good_backup()
-
-
-_write_lock = threading.Lock()
-_REVISION_UNSET = object()
-
-
-class StateConflict(RuntimeError):
-    def __init__(self, revision):
-        super().__init__("stale progress revision")
-        self.revision = revision
-
-
-class StateRegression(RuntimeError):
-    """A write that would delete tutoring work already on disk."""
-
-    def __init__(self, reason, revision, current):
-        super().__init__(reason)
-        self.reason = reason
-        self.revision = revision
-        self.current = current
-
-
-def write_state(obj, expected_revision=_REVISION_UNSET, allow_shrink=False):
-    """Atomically persist state. Returns (savedAt stamp written, new revision).
-
-    Write-to-temp then os.replace, so a crash or Ctrl+C mid-write leaves the
-    previous good file intact instead of a truncated one. fsync before the
-    rename makes the bytes durable, not just buffered.
-
-    Serialised, and the temp file carries the thread id. This is a threading
-    server and two tabs can save in the same instant. With one shared
-    "state.json.tmp" both threads would write to that one path, the first
-    rename would take it, and the second would raise FileNotFoundError: a save
-    the page is told has failed, on top of one tab's bytes landing silently
-    inside the other's file.
-    """
-    with _write_lock:
-        current = read_state()
-        current_revision = _state_revision(current)
-        if expected_revision is not _REVISION_UNSET:
-            if expected_revision != current_revision:
-                raise StateConflict(current_revision)
-        # Revision agreement only proves the caller read this file. It does not
-        # prove the caller is carrying the work that is in it.
-        if not allow_shrink:
-            reason = _regression_reason(obj, current)
-            if reason:
-                raise StateRegression(reason, current_revision, current)
-        _ensure_private_state_dirs()
-        _snapshot_previous()
-        body = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-        tmp = "%s.%d.tmp" % (STATE_FILE, threading.get_ident())
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                os.chmod(tmp, 0o600)
-                f.write(body)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, STATE_FILE)
-            os.chmod(STATE_FILE, 0o600)
-            _update_high_water(obj)
-        except BaseException:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            raise
-        return obj.get("savedAt"), _state_revision(obj)
 
 
 def _trusted_executable(name, fallbacks=()):
@@ -1700,15 +1578,16 @@ class Handler(SimpleHTTPRequestHandler):
             if not self._authorized():
                 return self._json(403, {"error": "Tutor session authorization required."})
             try:
-                saved = read_state()
-            except (OSError, RuntimeError) as exc:
+                handle = open_state_track(take_lease=False)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
                 return self._failure(500, "Progress load", exc)
-            return self._json(200, {
-                "ok": True,
-                "state": saved,
-                "savedAt": (saved or {}).get("savedAt"),
-                "revision": _state_revision(saved),
-            })
+            try:
+                snapshot = state_snapshot(handle)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Progress load", exc)
+            finally:
+                handle.close()
+            return self._json(200, snapshot)
         if _static_route_allowed(route):
             return self._serve_index()
         return self._json(404, {"error": "Not found."})
@@ -1740,43 +1619,76 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _save_state(self):
+        """Apply one delta. The page sends what changed, never the document.
+
+        Three outcomes, and the difference between the last two is the whole
+        point of the change. An update against a stale base is not a conflict:
+        every op is an append, so it applies, and the reply carries the merged
+        document for the page to fold in. A *replace* against a stale base is
+        refused, because replacing the world from a view that is behind it is
+        the one write that can subtract.
+        """
         try:
             payload = self._read_json_body(MAX_STATE_BYTES)
         except OverflowError:
-            return self._json(413, {"error": "Progress state is too large."})
+            return self._json(413, {"error": "That change is too large to save."})
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
-        obj = payload.get("state")
-        if not isinstance(obj, dict):
-            return self._json(400, {"error": "No state object."})
-        supplied_revision = payload.get("revision")
-        # Only an explicit user-initiated replace (the Import button) may write a
-        # state that carries less work than the file already holds.
-        allow_shrink = payload.get("intent") == "replace"
+        if not isinstance(payload.get("ops"), list):
+            return self._json(400, {"error": "No changes to save."})
         try:
-            saved_at, revision = write_state(obj, supplied_revision,
-                                             allow_shrink=allow_shrink)
-        except StateConflict as exc:
-            return self._json(409, {
-                "error": "Progress changed in another tab. Reload before saving.",
-                "revision": exc.revision,
-            })
-        except StateRegression as exc:
-            # Hand back the disk copy: the page is stale and cannot recover from a
-            # bare refusal, but it can adopt what is really stored.
-            return self._json(409, {
-                "error": "Refused a write that would delete saved tutoring work.",
-                "reason": exc.reason,
-                "regression": True,
-                "revision": exc.revision,
-                "state": exc.current,
-            })
-        except OSError as exc:
+            ops = PS.validate_ops(payload["ops"])
+        except PS.OpRejected as exc:
+            return self._json(400, {"error": str(exc)})
+        base = payload.get("revision")
+        replacing = payload.get("intent") == "replace"
+
+        try:
+            handle = open_state_track(take_lease=True)
+        except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
             return self._failure(500, "Progress save", exc)
-        except RuntimeError as exc:
+        try:
+            wanted = payload.get("trackId")
+            if wanted is not None and wanted != handle.track_id:
+                # The page is holding a different track than this bridge serves.
+                # Hand back what is really open rather than writing one track's
+                # work into another's file.
+                out = state_snapshot(handle)
+                out["ok"] = False
+                out["regression"] = True
+                out["error"] = ("This page is holding a different track."
+                                " Merged with the one that is open.")
+                return self._json(409, out)
+
+            stale = base is not None and base != handle.revision()
+            if stale and replacing:
+                out = state_snapshot(handle)
+                out["ok"] = False
+                out["regression"] = True
+                out["error"] = ("Refused a replace from a view that is behind"
+                                " what is saved. Merged instead.")
+                return self._json(409, out)
+
+            report = PS.apply_ops(handle, ops)
+            out = {"ok": True, "trackId": handle.track_id,
+                   "revision": handle.revision(), "applied": report,
+                   "stale": bool(stale)}
+            if stale:
+                # Everything this page has not seen, so it can fold it in and
+                # carry on instead of being stranded on a stale document.
+                out["state"] = PS.materialise(handle)
+                out["fields"] = {f: list(v) for f, v in PS.FIELDS.items()}
+            return self._json(200, out)
+        except PS.OpRejected as exc:
+            return self._json(400, {"error": str(exc)})
+        except PSTATE.CapExceeded as exc:
+            return self._json(507, {"error": str(exc)})
+        except PSTATE.TrackMoved as exc:
+            return self._json(409, {"error": str(exc), "revision": None})
+        except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
             return self._failure(500, "Progress save", exc)
-        return self._json(200, {"ok": True, "savedAt": saved_at,
-                                "revision": revision})
+        finally:
+            handle.close()
 
     def do_POST(self):
         route = self.path.split("?")[0]
@@ -1829,7 +1741,7 @@ class Handler(SimpleHTTPRequestHandler):
                 messages = _safe_messages(payload.get("messages"))
                 step = payload.get("step") if isinstance(payload.get("step"), dict) else {}
                 step_key = str(payload.get("stepKey") or "")[:80]
-                if not re.match(r"^\d{1,2}:(?:topic|practice|check):[A-Za-z0-9]+$", step_key):
+                if not PS.STEP_KEY_RE.match(step_key):
                     raise ValueError("Unknown curriculum step.")
                 if str(step.get("key") or "") != step_key:
                     raise ValueError("Curriculum step does not match its key.")
@@ -1859,7 +1771,7 @@ class Handler(SimpleHTTPRequestHandler):
                            if isinstance(raw_messages, list) else 0)
             step = payload.get("step") if isinstance(payload.get("step"), dict) else {}
             step_key = str(payload.get("stepKey") or "")[:80]
-            if not re.match(r"^\d{1,2}:(?:topic|practice|check):[A-Za-z0-9]+$", step_key):
+            if not PS.STEP_KEY_RE.match(step_key):
                 raise ValueError("Unknown curriculum step.")
             if str(step.get("key") or "") != step_key:
                 raise ValueError("Curriculum step does not match its key.")
@@ -1895,7 +1807,17 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    _ensure_private_state_dirs()
+    # Before the first request can arrive, so no save can interleave with the
+    # import and no page can be served a document the import is still writing.
+    track_id = current_track_id()
+    imported = None
+    try:
+        imported = import_legacy_state()
+    except Exception as exc:  # noqa: BLE001
+        # A failed import must not stop the bridge: the old file is still on
+        # disk, unrenamed, and the next start tries again.
+        sys.stderr.write("prepwright: could not import %s (%s)\n"
+                         % (LEGACY_STATE_FILE, exc))
     handler = partial(Handler, directory=SCRIPT_DIR)
     httpd = ThreadingHTTPServer((HOST, PORT), handler)
     print("Prepwright bridge")
@@ -1910,7 +1832,16 @@ def main():
     print("  codex     : %s" % (
         "ready" if _provider_ready("codex") else
         ("installed; login required" if codex_bin() else "not found")))
-    print("  progress  : private (0600 file in a 0700 directory; never web-served)")
+    print("  track     : %s" % track_id)
+    print("  progress  : %s (0600 files in 0700 directories; never web-served)"
+          % os.path.join(PC.TRACKS_ROOT, track_id, "track.db"))
+    if imported:
+        print("  imported  : %d turns and %d marks from %s"
+              % (imported.get("turns", 0), imported.get("marks", 0),
+                 imported.get("source", "?")))
+        if imported.get("renamed_to"):
+            print("              the old file is kept at %s"
+                  % imported["renamed_to"])
     print("  model I/O : selected tutoring context only; no model tools or file access")
     print("  stop      : Ctrl+C")
     try:

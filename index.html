@@ -1110,22 +1110,134 @@ function load(){
   }catch(e){ return seedState(); }
 }
 /* ---- persistence ----------------------------------------------------------
- * The bridge writes a private 0600 file and refuses writes that would delete
- * work. That file is the record; localStorage normally holds only UI and model
- * preferences.
+ * The bridge writes into one SQLite database per track, under ~/.prepwright,
+ * in 0600 files inside 0700 directories. That store is the record; localStorage
+ * normally holds only UI and model preferences.
  * One deliberate exception: while the bridge is unreachable this tab is the only
  * holder of whatever is typed, and a closed lid would end it. In that window the
  * state, chat text included, is parked under PENDING_KEY and erased the moment
  * the bridge accepts it. The trade is explicit: a browser profile is a weaker
- * store than a 0600 file, and losing the session outright is worse.           */
+ * store than a 0600 file, and losing the session outright is worse.
+ *
+ * THIS PAGE SENDS CHANGES, NEVER THE DOCUMENT. `ackState` is the last document
+ * the bridge acknowledged; every push is the difference between it and `state`,
+ * as one op per appended chat turn and one op per changed mark. A tab holding a
+ * stale copy therefore cannot express a deletion: there is no op that removes
+ * anything. That is why the old whole-document write, its revision hash and its
+ * heuristic shrink-detector are all gone.                                     */
 const SYNC_DEBOUNCE_MS=250;
 let syncTimer=null, syncState="idle";   // idle | pending | saving | saved | error
-let lastPushedJSON="";
+let ackState=null;        // the document the bridge has confirmed it holds
 let diskRevision=null;
-/* Nothing may reach disk before the page has read what is already there. The
- * init render calls save(), and an unguarded save() would stamp savedAt=now and
- * push, so a page that had loaded nothing looks newer than the real work on
- * disk.                                                                        */
+let trackId=null;
+/* field -> [mark kind, container], served by the bridge from
+ * prepwright/pagestate.py so the mapping has one source and not two. Until the
+ * first GET answers, this page knows of no persisted field and pushes nothing,
+ * which is the correct behaviour for a page that has not read disk yet. */
+let fieldMap={};
+
+/* 64 bits, as two 32-bit FNV-1a passes with different offset bases. An op id is
+ * a UNIQUE key in the store, so a collision would silently drop one change; 32
+ * bits is not enough room for that and SubtleCrypto is async, which a diff on
+ * the save path cannot be. */
+function h64(str){
+  let a=0x811c9dc5, b=0x01000193;
+  for(let i=0;i<str.length;i++){
+    const c=str.charCodeAt(i);
+    a=Math.imul(a^c,16777619)>>>0;
+    b=Math.imul(b^c,2166136261)>>>0;
+  }
+  return (a>>>0).toString(16).padStart(8,"0")+(b>>>0).toString(16).padStart(8,"0");
+}
+/* Stable JSON: key order must not change a hash, or the same value re-sent
+ * after a reload mints a second op id and writes a duplicate row. */
+function stableJSON(v){
+  if(v===null||typeof v!=="object") return JSON.stringify(v);
+  if(Array.isArray(v)) return "["+v.map(stableJSON).join(",")+"]";
+  return "{"+Object.keys(v).sort().map(k=>JSON.stringify(k)+":"+stableJSON(v[k])).join(",")+"}";
+}
+/* The key an item in a list-shaped field is stored under. Matches the rule the
+ * bridge uses when it imports a legacy document, so the same item imported and
+ * then re-sent is one row and not two. */
+function itemKey(item){
+  const id=item&&item.id;
+  return (id!=null&&String(id))||h64(stableJSON(item));
+}
+/* Deterministic, so a POST retried after a dropped connection is a no-op. The
+ * base revision is in the id because a value that changes back to what it was,
+ * across two different saves, is a real second change and needs its own row. */
+function markOpId(kind,key,value,base){
+  return "m."+h64(kind+"\u0000"+key+"\u0000"+stableJSON(value))+"."+String(base||"0").slice(0,8);
+}
+function turnOpId(step,index,entry){
+  return "t."+h64(step+"\u0000"+index+"\u0000"+String(entry&&entry.text||""));
+}
+
+/* A readable name for the step row the bridge creates on the first turn for a
+ * key. Cosmetic in the store; the key itself is the identity. */
+function stepTitleForKey(key){
+  const bits=String(key).split(":");
+  try{
+    const m=stepMeta({type:bits[1],id:bits[2]});
+    if(m&&m.title) return String(m.title).slice(0,160);
+  }catch(e){}
+  return String(key).slice(0,160);
+}
+
+/* Everything in `cur` that `ack` does not have. Marks by key, chat by position:
+ * a step log only ever grows, so entries past ack's length are the new ones. */
+function computeOps(cur,ack,base){
+  const ops=[]; ack=ack||{};
+  Object.keys(fieldMap).forEach(field=>{
+    const spec=fieldMap[field]; if(!spec) return;
+    const kind=spec[0], container=spec[1];
+    const c=cur[field], a=ack[field];
+    if(container==="scalar"){
+      if(c===undefined) return;
+      if(stableJSON(c)!==stableJSON(a===undefined?null:a))
+        ops.push({op:"mark",kind:"pref",key:field,value:c,
+                  id:markOpId("pref",field,c,base)});
+    }else if(container==="map"){
+      const co=(c&&typeof c==="object")?c:{}, ao=(a&&typeof a==="object")?a:{};
+      Object.keys(co).forEach(k=>{
+        if(stableJSON(co[k])!==stableJSON(ao[k]===undefined?null:ao[k]))
+          ops.push({op:"mark",kind,key:String(k).slice(0,200),value:co[k],
+                    id:markOpId(kind,String(k),co[k],base)});
+      });
+    }else{
+      const ca=Array.isArray(c)?c:[], aa=Array.isArray(a)?a:[];
+      const seen=new Set(aa.map(itemKey));
+      ca.forEach(item=>{
+        if(!item||typeof item!=="object") return;
+        const k=itemKey(item); if(seen.has(k)) return;
+        seen.add(k);
+        ops.push({op:"mark",kind,key:String(k).slice(0,200),value:item,
+                  id:markOpId(kind,String(k),item,base)});
+      });
+    }
+  });
+  const cl=(cur.stepLog&&typeof cur.stepLog==="object")?cur.stepLog:{};
+  const al=(ack.stepLog&&typeof ack.stepLog==="object")?ack.stepLog:{};
+  Object.keys(cl).forEach(step=>{
+    const c=Array.isArray(cl[step])?cl[step]:[];
+    const a=Array.isArray(al[step])?al[step]:[];
+    for(let i=a.length;i<c.length;i++){
+      const e=c[i]; if(!e||typeof e!=="object") continue;
+      const meta={};
+      Object.keys(e).forEach(k=>{ if(k!=="role"&&k!=="text") meta[k]=e[k]; });
+      ops.push({op:"turn",id:turnOpId(step,i,e),step:step,
+                title:stepTitleForKey(step),
+                pageRole:String(e.role||"sys"),
+                text:String(e.text==null?"":e.text),
+                meta:Object.keys(meta).length?meta:null});
+    }
+  });
+  return ops;
+}
+/* Nothing may reach disk before the page has read what is already there. With
+ * deltas an early push can no longer overwrite anything, but it would still
+ * diff against an ack of null and re-send a seeded document as if it were work,
+ * so the guard stands.                                                         */
 let reconciled=false;
 
 /* Total tutor messages held. The one number that says how much work a state is
@@ -1225,8 +1337,9 @@ function paintSync(el){
 }
 
 function save(){
-  // Stamping before reconciliation is what let an empty page outrank disk.
-  if(reconciled) state.savedAt=Date.now();
+  /* savedAt is no longer stamped here. The bridge derives it from the newest
+   * row it holds, and a client clock written into a field the store owns is
+   * how a stale tab used to win a tie-break it should have lost. */
   savePrefs();
   setSync("pending");
   clearTimeout(syncTimer);
@@ -1251,55 +1364,109 @@ function progressWeight(s){
   return n;
 }
 
+/* Fold what the bridge holds into this tab, and treat the result as
+ * acknowledged. Union only, in both directions, so neither side subtracts. */
+function adoptFromBridge(d){
+  if(d.fields && typeof d.fields==="object") fieldMap=d.fields;
+  if(d.trackId) trackId=d.trackId;
+  diskRevision=d.revision||null;
+  if(d.state && typeof d.state==="object"){
+    state=hydrate(mergeStates(hydrate(d.state),state));
+    /* ack is what the bridge confirmed, NOT the merged result: anything this
+     * tab added on top is still unsent and must show up in the next diff. */
+    ackState=JSON.parse(JSON.stringify(d.state));
+    savePrefs();
+    render(state.lastView||"continue",{silent:true,keepScroll:true});
+  }
+}
+
 async function pushState(opts){
   opts=opts||{};
   // Never write before reconcileWithDisk() has run. Anything typed in that
   // window is held, not lost: reconcile pushes once it knows what disk holds.
   if(!reconciled && !opts.reconciling){ stashPending(); return false; }
-  // Stamp before sending: an unstamped file on disk compares as 0 and would lose
-  // a later tie-break against a freshly seeded page.
-  if(!state.savedAt) state.savedAt=Date.now();
-  const stateJSON=JSON.stringify(state);
-  const body=JSON.stringify({state,revision:diskRevision,
-    intent:opts.intent||"update"});
-  if(stateJSON===lastPushedJSON && !opts.force){ setSync("saved"); return true; }
+  const ops=computeOps(state,ackState,diskRevision);
+  if(!ops.length){ setSync("saved"); return true; }
+  const sending=JSON.parse(JSON.stringify(state));
   setSync("saving");
+  /* Sent in slices, because one import or one first push of a long transcript
+   * can carry more changes than the bridge accepts in a single write. Each
+   * slice takes the revision the last one returned, so no slice after the first
+   * arrives stale. Every op is idempotent, so a slice that fails half way is
+   * re-sent whole on the next save without duplicating what landed. */
+  /* Sliced by BYTES, with a count cap behind it. Slicing on count alone was
+   * wrong: 400 turns at the 8 KiB turn cap is 3.1 MiB, over the bridge's 2 MiB
+   * limit on one delta, so a long offline session produced a slice that was
+   * refused every time it was retried and never got saved at all. */
+  const SLICE_OPS=400, SLICE_BYTES=1048576;
   try{
-    const r=await fetch(API+"/api/state",{
-      method:"POST",
-      headers:{"content-type":"application/json","x-tutor-bridge":"1"},
-      body,
-      keepalive:!!opts.keepalive
-    });
-    let d={}; try{ d=await r.json(); }catch(_){}
-    if(r.status===409){
-      // The bridge refused to let this write delete work. It returns the real
-      // file with the refusal, so take it, fold this tab's work into it, and
-      // keep going instead of stranding the page.
-      if(d.regression && d.state){
-        state=hydrate(mergeStates(hydrate(d.state),state));
-        diskRevision=d.revision||null;
-        lastPushedJSON="";
-        savePrefs();
-        render(state.lastView||"continue",{silent:true,keepScroll:true});
-        toast("Merged with the saved copy on disk");
-        return await pushState({force:true,reconciling:!reconciled});
+    for(let at=0; at<ops.length; ){
+      let end=at, bytes=0;
+      while(end<ops.length && end-at<SLICE_OPS){
+        const size=JSON.stringify(ops[end]).length;
+        if(end>at && bytes+size>SLICE_BYTES) break;   // never emit an empty slice
+        bytes+=size; end++;
       }
-      stashPending();
-      setSync("error");
-      toast("Progress changed in another tab — reload before saving");
-      return false;
+      const slice=ops.slice(at,end);
+      const last=end>=ops.length;
+      const body=JSON.stringify({trackId,revision:diskRevision,
+        intent:opts.intent||"update",ops:slice});
+      const r=await fetch(API+"/api/state",{
+        method:"POST",
+        headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+        body,
+        keepalive:!!opts.keepalive
+      });
+      let d={}; try{ d=await r.json(); }catch(_){}
+      const outcome=await applySliceReply(r,d,last,sending,opts);
+      if(outcome!=="continue") return outcome;
+      at=end;
     }
-    if(!r.ok) throw new Error(d.error||("HTTP "+r.status));
-    diskRevision=d.revision||null;
-    lastPushedJSON=stateJSON;
-    clearPending();          // it is on disk now; the browser copy is redundant
-    setSync("saved"); return true;
+    return true;
   }catch(e){
     // The bridge is unreachable. This tab is now the only holder of the work.
     stashPending();
     setSync("error"); return false;
   }
+}
+
+/* One slice's reply. Returns "continue" when the loop should send the next
+ * slice, or the value pushState itself should return. */
+async function applySliceReply(r,d,last,sending,opts){
+    if(r.status===409){
+      // Nothing was applied. The bridge hands back what it really holds, so
+      // fold that in and send the difference again rather than stranding this
+      // tab on a document the store has moved past.
+      if(d.regression && d.state){
+        adoptFromBridge(d);
+        toast("Merged with the saved copy on disk");
+        return await pushState({force:true,reconciling:!reconciled});
+      }
+      stashPending();
+      setSync("error");
+      toast(d.error||"Progress changed in another tab — reload before saving");
+      return false;
+    }
+    if(!r.ok){
+      stashPending();
+      setSync("error");
+      toast(d.error||("Not saved — HTTP "+r.status));
+      return false;
+    }
+    if(d.trackId) trackId=d.trackId;
+    diskRevision=d.revision||null;
+    if(d.stale && d.state){
+      // Another writer had moved the store on. The ops still applied, because
+      // every one of them is an append; this folds in what they added.
+      adoptFromBridge(d);
+    }
+    if(!last) return "continue";
+    /* Every op landed, so what was sent is now acknowledged. `sending` and not
+     * `state`: the page may have changed under the awaits, and claiming those
+     * unsent edits were stored would drop them from the next diff. */
+    ackState=sending;
+    clearPending();          // it is in the store now; the browser copy is redundant
+    setSync("saved"); return true;
 }
 
 /* Last-ditch flush when the tab closes inside the debounce window. keepalive is
@@ -1325,6 +1492,10 @@ async function reconcileWithDisk(){
     if(!r.ok) throw new Error("HTTP "+r.status);
     response=await r.json(); disk=response.state||null;
     diskRevision=response.revision||null;
+    trackId=response.trackId||null;
+    /* The field map has to arrive before the first diff runs, or this page
+     * pushes nothing and the first save looks like it worked. */
+    if(response.fields && typeof response.fields==="object") fieldMap=response.fields;
   }catch(e){
     // No bridge. Adopt whatever this browser was carrying so the session is not
     // blank, keep it stashed, and leave reconciled=false so nothing is written
@@ -1346,7 +1517,9 @@ async function reconcileWithDisk(){
   if(pendingState) local=mergeStates(local,pendingState);
 
   if(!disk){
+    // Nothing stored for this track yet, so this whole document is the delta.
     state=hydrate(local);
+    ackState=null;
     reconciled=true;
     await pushState({force:true,reconciling:true});
     render(state.lastView||"continue",{silent:true,keepScroll:true});
@@ -1355,20 +1528,22 @@ async function reconcileWithDisk(){
 
   // Disk is the record. The page only ever adds to it. Merging both directions
   // makes the outcome independent of which clock is ahead: without it a stale
-  // tab wins purely on a fresher savedAt, and real work disappears.
+  // tab used to win purely on a fresher savedAt, and real work disappeared.
   const merged=mergeStates(hydrate(disk),local);
   const adopted=chatVolume(merged)>chatVolume(local)
              || progressWeight(merged)>progressWeight(local);
   state=hydrate(merged);
-  lastPushedJSON="";
+  /* ack is the raw document the bridge served, before hydrate's seed defaults
+   * and before anything this browser was carrying. Everything those two added
+   * is genuinely unsent, and the next diff is what sends it. */
+  ackState=JSON.parse(JSON.stringify(disk));
   savePrefs();
   reconciled=true;
   render(state.lastView||"continue",{silent:true,keepScroll:true});
-  const grew=chatVolume(merged)>chatVolume(disk)||progressWeight(merged)>progressWeight(disk);
-  if(grew){ await pushState({force:true,reconciling:true}); }
-  else{
-    // Nothing of ours to add: disk already holds everything.
-    lastPushedJSON=JSON.stringify(state);
+  if(computeOps(state,ackState,diskRevision).length){
+    await pushState({force:true,reconciling:true});
+  }else{
+    // Nothing of ours to add: the store already holds everything.
     clearPending();
     setSync("saved");
   }
@@ -1680,7 +1855,7 @@ function renderContinueInner(el){
       <div class="who">${esc(bstat.cls==="on"?"Live tutor":"Turn on the live tutor")}</div>
       ${esc(bstat.help)}<br>
       <code>${esc(bstat.cmd)}</code><br>
-      Tutoring notes live in the private file the bridge writes. While the bridge is unreachable they are held in this browser instead and erased once the bridge takes them, so keep it running while you work.
+      Tutoring notes live in this track&rsquo;s own database under your home directory, in files only your account can read. While the bridge is unreachable they are held in this browser instead and erased once the bridge takes them, so keep it running while you work.
     </div>
     <div class="cont${sideHidden?" side-hidden":""}">
       <div>${cur?stepChat(cur):stageDonePanel(sn)}</div>
@@ -2819,13 +2994,20 @@ function importData(file){
     try{ const s=JSON.parse(r.result);
       if(!s||Array.isArray(s)||typeof s!=="object"||!safeImportTree(s)) throw new Error("unsafe shape");
       if(s.stepLog&&typeof s.stepLog!=="object") throw new Error("bad step log");
-      state=hydrate(s);
-      // The only deliberate replace in the app. Say so, or the bridge refuses a
-      // restore that legitimately carries less than the file it lands on.
-      savePrefs(); lastPushedJSON="";
+      state=hydrate(mergeStates(state,s));
+      /* This MERGES; it no longer replaces. The store is append-only by
+       * design, so a document cannot subtract from it and there is no honest
+       * way to make this button mean "throw away what is saved". What the
+       * `replace` intent still buys is the refusal: a bulk write from a view
+       * that is behind the store is rejected outright rather than quietly
+       * folded in, which is the one case where a merge would surprise. A true
+       * replace belongs to the track switcher, as a new track built from the
+       * file, and that is not built yet. */
+      savePrefs();
       pushState({force:true,intent:"replace",reconciling:!reconciled});
       if(state.theme)document.documentElement.setAttribute("data-theme",state.theme);
-      recapQueue=[]; render(state.lastView||"overview"); toast("Progress imported");
+      recapQueue=[]; render(state.lastView||"overview");
+      toast("Progress merged in from the file");
     }catch(e){ toast("Import failed — invalid file"); }
   };
   r.readAsText(file);

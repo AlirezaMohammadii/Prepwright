@@ -195,7 +195,20 @@ def connect(path, fresh_pragmas=True):
 
 
 def quick_check(conn):
-    row = conn.execute("PRAGMA quick_check").fetchone()
+    """False when this file is not a usable database, including when asking
+    raises.
+
+    A scribble deep enough to break the page that PRAGMA quick_check itself has
+    to read makes the PRAGMA raise instead of reporting a fault, and that is the
+    corruption recovery exists for. Letting the raw sqlite3 error out of here
+    walked straight past open_track's CorruptStore and past
+    keep.open_track_or_recover's handler, so the one class of damage the backup
+    was taken for was the one class that never triggered a restore.
+    """
+    try:
+        row = conn.execute("PRAGMA quick_check").fetchone()
+    except sqlite3.DatabaseError:
+        return False
     return bool(row) and row[0] == "ok"
 
 
@@ -322,6 +335,7 @@ CREATE TABLE IF NOT EXISTS track_meta (
   bytes_turns INTEGER NOT NULL DEFAULT 0,
   bytes_cards INTEGER NOT NULL DEFAULT 0,
   bytes_corpus INTEGER NOT NULL DEFAULT 0,
+  bytes_marks INTEGER NOT NULL DEFAULT 0,
   writes_since_keep INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TRIGGER IF NOT EXISTS track_meta_one_row BEFORE INSERT ON track_meta
@@ -442,7 +456,14 @@ CREATE TABLE IF NOT EXISTS turn (
   citations TEXT,
   ungrounded INTEGER NOT NULL DEFAULT 0,
   client_turn_id TEXT NOT NULL UNIQUE,
-  in_tok INTEGER, out_tok INTEGER
+  in_tok INTEGER, out_tok INTEGER,
+  -- What the page needs to redraw this turn and nothing the tutor ever reads:
+  -- which provider answered, the resolved model id, the effort flag, the token
+  -- and cost figures, and the page's own role word. tail() selects seq, role,
+  -- body and body_bytes only, so this column has no path into a prompt.
+  -- length() counts characters, not bytes, so this CHECK is a loose backstop.
+  -- The byte cap is enforced in _append_turn against C.TURN_META_MAX_BYTES.
+  client_meta TEXT CHECK (client_meta IS NULL OR length(client_meta) <= 4096)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS turn_tail ON turn(step_id, seq DESC);
 
@@ -470,6 +491,21 @@ CREATE TABLE IF NOT EXISTS draft (
   body TEXT NOT NULL, updated_utc TEXT NOT NULL,
   PRIMARY KEY (step_id, client_label)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS mark (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  key  TEXT NOT NULL,
+  value TEXT NOT NULL,
+  value_bytes INTEGER NOT NULL CHECK (value_bytes <= 4096),
+  client_op_id TEXT NOT NULL UNIQUE
+) STRICT;
+CREATE INDEX IF NOT EXISTS mark_current ON mark(kind, key, seq DESC);
+CREATE TRIGGER IF NOT EXISTS mark_no_update BEFORE UPDATE ON mark
+  BEGIN SELECT RAISE(ABORT,'append-only'); END;
+CREATE TRIGGER IF NOT EXISTS mark_no_delete BEFORE DELETE ON mark
+  BEGIN SELECT RAISE(ABORT,'append-only'); END;
 
 CREATE TABLE IF NOT EXISTS assessment (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at_utc TEXT NOT NULL,
@@ -793,11 +829,18 @@ class TrackHandle(object):
     # -- curriculum ---------------------------------------------------------
     def add_step(self, step_id, ord_, title, objective, tier="core",
                  gap_id=None, status="ready", est_minutes=None):
+        """ord_=None appends. The next ord is then taken inside the write
+        transaction, not before it: read outside, two writers adding their first
+        step at the same moment both see the same maximum and the second dies on
+        step.ord's UNIQUE constraint."""
         self.assert_live()
         with self.lock, _Txn(self.conn):
             n = self.conn.execute("SELECT COUNT(*) c FROM step").fetchone()["c"]
             if n + 1 > C.MAX_STEPS:
                 raise CapExceeded("steps", n + 1, C.MAX_STEPS)
+            if ord_ is None:
+                ord_ = int(self.conn.execute(
+                    "SELECT COALESCE(MAX(ord),0) m FROM step").fetchone()["m"]) + 1
             self.conn.execute(
                 "INSERT INTO step(step_id,ord,title,objective,gap_id,status,tier,est_minutes)"
                 " VALUES (?,?,?,?,?,?,?,?)",
@@ -1108,7 +1151,7 @@ class TrackHandle(object):
     def append_turn(self, step_id, role, body, client_turn_id,
                     reply_to_seq=None, pack_sha16=None, citations=None,
                     ungrounded=0, in_tok=None, out_tok=None, spool_ref=None,
-                    auto_compact=True):
+                    auto_compact=True, client_meta=None):
         """Append one turn. The sequence number is allocated here, by the server.
 
         A client never sends seq, and transcript order is by seq rather than by
@@ -1127,7 +1170,7 @@ class TrackHandle(object):
         try:
             return self._append_turn(
                 step_id, role, body, client_turn_id, reply_to_seq, pack_sha16,
-                citations, ungrounded, in_tok, out_tok, spool_ref)
+                citations, ungrounded, in_tok, out_tok, spool_ref, client_meta)
         except CapExceeded as refused:
             if not auto_compact or refused.what != "transcript":
                 raise
@@ -1136,7 +1179,7 @@ class TrackHandle(object):
                 raise
             return self._append_turn(
                 step_id, role, body, client_turn_id, reply_to_seq, pack_sha16,
-                citations, ungrounded, in_tok, out_tok, spool_ref)
+                citations, ungrounded, in_tok, out_tok, spool_ref, client_meta)
 
     def compact_oldest_completed_step(self):
         """Free transcript bytes from the oldest step that is safely compactable.
@@ -1175,10 +1218,16 @@ class TrackHandle(object):
 
     def _append_turn(self, step_id, role, body, client_turn_id,
                      reply_to_seq=None, pack_sha16=None, citations=None,
-                     ungrounded=0, in_tok=None, out_tok=None, spool_ref=None):
+                     ungrounded=0, in_tok=None, out_tok=None, spool_ref=None,
+                     client_meta=None):
         self.assert_live()
         if role not in C.TURN_ROLES:
             raise ValueError("unknown turn role %r" % (role,))
+        if client_meta is not None:
+            meta_bytes = len(client_meta.encode("utf-8"))
+            if meta_bytes > C.TURN_META_MAX_BYTES:
+                raise CapExceeded("turn presentation metadata", meta_bytes,
+                                  C.TURN_META_MAX_BYTES)
         raw = body.encode("utf-8")
         original_bytes = len(raw)
         overflow_bytes, overflow_sha = 0, None
@@ -1212,16 +1261,19 @@ class TrackHandle(object):
             if n + 1 > C.MAX_TURNS_PER_STEP:
                 raise CapExceeded("turns in step %s" % step_id, n + 1,
                                   C.MAX_TURNS_PER_STEP)
-            self._charge("bytes_turns", len(raw) + 150, C.TURNS_BYTES_CAP, "transcript")
+            self._charge("bytes_turns",
+                         len(raw) + 150
+                         + len((client_meta or "").encode("utf-8")),
+                         C.TURNS_BYTES_CAP, "transcript")
             cur = self.conn.execute(
                 "INSERT INTO turn(step_id,at_utc,role,reply_to_seq,body,body_bytes,"
                 " body_sha16,overflow_bytes,overflow_sha256,spool_ref,pack_sha16,"
-                " citations,ungrounded,client_turn_id,in_tok,out_tok)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " citations,ungrounded,client_turn_id,in_tok,out_tok,client_meta)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (step_id, utc_now(), role, reply_to_seq, body, len(raw), sha16(body),
                  overflow_bytes, overflow_sha, spool_ref, pack_sha16,
                  json.dumps(citations or []), int(ungrounded), client_turn_id,
-                 in_tok, out_tok))
+                 in_tok, out_tok, client_meta))
             self._bump_writes()
             return int(cur.lastrowid)
 
@@ -1373,6 +1425,109 @@ class TrackHandle(object):
         except sqlite3.Error:
             pass        # a stale projection rebuilds; a lost grade does not
 
+    # -- page marks ---------------------------------------------------------
+    # Everything the page records that is not a transcript turn: a topic ticked
+    # off, a practice status, a banked question, a check result. One append-only
+    # row per change, so the current value of a key is the newest row for it and
+    # the older rows are its undo history. A client sends the change, never the
+    # document, which is why a stale tab cannot express a loss here either.
+
+    def append_mark(self, kind, key, value_json, client_op_id):
+        """Append one mark. Returns its seq, or the existing seq on a retry.
+
+        client_op_id is UNIQUE, so a POST retried over a dropped connection is a
+        no-op rather than a second row. The caller decides whether the new value
+        is allowed to supersede the old one; this method only refuses writes that
+        break a cap, because a monotonicity rule that lives in the store cannot
+        know which field it is looking at.
+        """
+        self.assert_live()
+        raw = value_json.encode("utf-8")
+        if len(raw) > C.MARK_MAX_BYTES:
+            raise CapExceeded("mark %s/%s" % (kind, key), len(raw), C.MARK_MAX_BYTES)
+        with self.lock, _Txn(self.conn):
+            dup = self.conn.execute(
+                "SELECT seq FROM mark WHERE client_op_id=?",
+                (client_op_id,)).fetchone()
+            if dup is not None:
+                return int(dup["seq"])
+            # Every term in bytes. len() on a str counts characters, so mixing
+            # the two here would under-charge any non-ASCII key by exactly the
+            # amount that matters, which is the class of defect this tree has
+            # already shipped three times.
+            self._charge("bytes_marks",
+                         len(raw) + len(kind.encode("utf-8"))
+                         + len(key.encode("utf-8")) + 120,
+                         C.MARKS_BYTES_CAP, "marks")
+            cur = self.conn.execute(
+                "INSERT INTO mark(at_utc,kind,key,value,value_bytes,client_op_id)"
+                " VALUES (?,?,?,?,?,?)",
+                (utc_now(), kind, key, value_json, len(raw), client_op_id))
+            self._bump_writes()
+            return int(cur.lastrowid)
+
+    def current_mark(self, kind, key):
+        """The newest row for one key, or None. Read outside any transaction."""
+        row = self.conn.execute(
+            "SELECT seq, value FROM mark WHERE kind=? AND key=?"
+            " ORDER BY seq DESC LIMIT 1", (kind, key)).fetchone()
+        return None if row is None else (int(row["seq"]), row["value"])
+
+    def marks(self, kind=None):
+        """Current value of every key, newest row wins. (kind, key, seq, value)."""
+        # `value` is a bare column beside MAX(seq): SQLite documents that it
+        # then comes from the row holding that maximum, which is exactly the
+        # newest row for the key. ORDER BY MAX(seq) keeps list-shaped kinds in
+        # the order they were appended, because an appended item is never
+        # superseded and its only seq is its insertion seq.
+        sql = ("SELECT kind, key, MAX(seq) AS seq, value FROM mark"
+               " GROUP BY kind, key ORDER BY MAX(seq)")
+        args = ()
+        if kind is not None:
+            sql = ("SELECT kind, key, MAX(seq) AS seq, value FROM mark"
+                   " WHERE kind=? GROUP BY kind, key ORDER BY MAX(seq)")
+            args = (kind,)
+        return [(r["kind"], r["key"], int(r["seq"]), r["value"])
+                for r in self.conn.execute(sql, args)]
+
+    def revision(self):
+        """Opaque token naming exactly what this track holds right now.
+
+        Derived from the two append-only sequences rather than from a hash of a
+        serialised document: it costs two index reads instead of re-encoding the
+        whole track, and it cannot change when nothing was written. The seeds
+        keep it opaque, so a client cannot do arithmetic on it and skip a read.
+        """
+        t = self.conn.execute("SELECT COALESCE(MAX(seq),0) m FROM turn").fetchone()["m"]
+        m = self.conn.execute("SELECT COALESCE(MAX(seq),0) m FROM mark").fetchone()["m"]
+        return sha16("%s|turn=%d|mark=%d" % (self.track_id, int(t), int(m)))
+
+    def ensure_step(self, step_id, title, ord_=None, objective="", tier="core"):
+        """Create the step row a turn needs, once, and never overwrite one.
+
+        A turn carries a foreign key to step, so a transcript for a step the
+        curriculum has not built yet would be refused outright. The page mints
+        step keys before the curriculum exists, so the first write for a key
+        creates a placeholder rather than losing the turn.
+        """
+        row = self.conn.execute("SELECT step_id FROM step WHERE step_id=?",
+                                (step_id,)).fetchone()
+        if row is not None:
+            return False
+        try:
+            self.add_step(step_id, ord_, title, objective, tier=tier,
+                          status="ready")
+        except sqlite3.IntegrityError:
+            # Another writer created the same step between the check above and
+            # the INSERT. That is the outcome this method wanted, so it is not
+            # an error; only a genuinely different collision would be, and that
+            # cannot happen on a primary key this caller chose.
+            if self.conn.execute("SELECT 1 FROM step WHERE step_id=?",
+                                 (step_id,)).fetchone() is None:
+                raise
+            return False
+        return True
+
 
 _MARKER = "§".encode("utf-8")           # the section marker, as bytes
 
@@ -1481,6 +1636,17 @@ def open_track(track_id, lib=None, client_label="laptop", take_lease=True,
         conn.close()
         raise CorruptStore("track.db for %s failed quick_check" % track_id)
     conn.executescript(TRACK_DDL)
+    # CREATE TABLE IF NOT EXISTS cannot add a column to a table that already
+    # exists, so a track.db written before bytes_marks would carry the mark
+    # table and no counter for it, and every append_mark would fail on a name
+    # SQLite reports without saying which column it means.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(track_meta)")}
+    if "bytes_marks" not in cols:
+        conn.execute("ALTER TABLE track_meta ADD COLUMN"
+                     " bytes_marks INTEGER NOT NULL DEFAULT 0")
+    turn_cols = {r["name"] for r in conn.execute("PRAGMA table_info(turn)")}
+    if turn_cols and "client_meta" not in turn_cols:
+        conn.execute("ALTER TABLE turn ADD COLUMN client_meta TEXT")
     row = conn.execute("SELECT track_id FROM track_meta").fetchone()
     if row is None or row["track_id"] != track_id:
         conn.close()

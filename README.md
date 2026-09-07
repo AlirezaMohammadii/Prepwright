@@ -250,41 +250,54 @@ advance. Chatting counts against the selected provider's own CLI usage.
 
 ## How progress is stored
 
-Two different things are true here and it matters which one you are reading about.
+One SQLite database per track, under `~/.prepwright`, written through
+`prepwright/state.py`. The page sends changes, never a document.
 
-### What runs today
+### The save path, end to end
 
-A single JSON file, `progress/state.json`, written by the bridge after every change.
+You tick a topic or the tutor answers. The page compares what it holds against the
+document the bridge last acknowledged and sends only the difference, as ops: one op
+per appended chat turn, one op per changed mark. `prepwright/pagestate.py` validates
+every op, then appends rows. `GET /api/state` rebuilds the page's document out of
+those rows.
 
-- The progress directory is `0700` and the files inside it are `0600`. Neither is
-  reachable through the static server.
-- Writes are atomic: write to a temp file carrying the thread id, `fsync`, then
-  `os.replace`. A crash mid-write leaves the previous good file intact instead of a
-  truncated one.
-- Before each overwrite, the previous file is snapshotted into `progress/backups/`,
-  at most one snapshot per five minutes, newest 200 kept.
-- If the state file is ever unreadable it is moved aside as `corrupt-*.json` and the
-  newest snapshot that still parses is served in its place.
-- The richest state ever written is also kept in `progress/high-water.json`, which is
-  never pruned, so a rotating backup set cannot become the floor under a bad write.
-- Each save carries an opaque revision. A stale tab gets a 409 conflict instead of
-  overwriting newer work.
-- A second guard sits behind the revision check, because revision agreement only
-  proves the client read the file and proves nothing about what the client is
-  carrying. A write that would make any step's transcript shrink or disappear, or
-  that would un-tick more than one item at once, is refused with the on-disk copy
-  handed back so a stale page can adopt reality. Only an explicit user-initiated
-  import may write a state carrying less work than the file already holds.
-- The request body cap for a state save is 16 MB.
+- A chat turn is a `turn` row. `turn` refuses DELETE outright and refuses UPDATE
+  outside one receipted compaction case, both enforced by SQLite triggers rather
+  than by application code.
+- Everything else the page records is a `mark` row: `(kind, key, value)`, append
+  only. The current value of a key is the newest row for it, and the older rows are
+  its undo history. Un-ticking a topic writes a new row; it does not erase one.
+- **A stale tab cannot express a loss.** There is no op that removes anything, so
+  the old whole-document write, its revision hash and the shrink-detector that had
+  to sit behind that hash are all gone. That is the whole reason for the change.
+- Both row types carry a client-minted id in a UNIQUE column, and a mark whose
+  value already matches is skipped without writing. A save retried over a dropped
+  connection is a no-op, not a duplicate.
+- The revision is derived from the two append-only sequence numbers. A write that
+  changed nothing does not move it.
+- A save against a stale revision still applies, because every op is an append, and
+  the reply carries the merged document for the page to fold in. A bulk write
+  marked `replace` against a stale revision is refused with a 409 and the real
+  document, because that is the one write that could subtract.
+- Caps are charged inside the same transaction as the row they pay for: 3 MiB of
+  transcript, 256 KiB of marks, 8 KiB per turn, 4 KiB per mark. The request body cap
+  for one delta is 4 MB, and the page slices a larger change into several writes.
+- Each request opens its own handle and closes it. `sqlite3` refuses a connection
+  used from a thread other than the one that made it, and this is a threading
+  server. A handle that wrote takes a backup on close, under a published interval.
+- A `track.db` that fails its integrity check on open is repaired in the open path,
+  from the newest backup, before the request is answered. It is quarantined rather
+  than deleted, and never moved aside when there is nothing to restore from.
+- Storage is in `~/.prepwright`, not in this repository, in `0600` files inside
+  `0700` directories. Nothing under it is reachable through the static server.
 
-### What is built beside it, and not yet wired
+### Coming from the old scheme
 
-`prepwright/state.py`, `track.py` and `keep.py` implement the design in
-`DESIGN-state-corpus.md`, with `config.py` holding every path and every cap. They pass
-31 tests that kill a real process mid-transaction, race two real processes, scribble
-over a real database file, refuse a delete while a session is open, and prove that one
-track's corpus cannot reach another track's prompt. Nothing calls them yet: the bridge
-still runs the JSON scheme above, and moving it across is the next piece of work.
+`progress/state.json` was the store until this change. On the first start after it,
+the bridge reads that file once, or the newest snapshot in `progress/backups/` that
+still parses, imports it as ops, and renames it to `state.json.imported-<utc>`. It
+is never deleted. The import runs before the server accepts a request, so no save
+can interleave with it.
 
 Storage lives in `~/.prepwright`, outside this repository, at mode 0700. Set
 `PREPWRIGHT_HOME` to put it elsewhere. Its decisions, in brief:
@@ -390,13 +403,13 @@ Plainly, so nothing above reads as a promise.
   no recap questions the call errors. A fabricated card is worse than no card,
   because you would then drill it as true.
 - **A local process can forge the tailnet identity header** by connecting straight to
-  loopback. That grants nothing new: a local process can already read the state file
-  off disk. The header only separates tailnet requesters from each other and from the
+  loopback. That grants nothing new: a local process running as you can already read
+  the track database off disk. The header only separates tailnet requesters from each other and from the
   public internet.
 - **Renaming the machine in Tailscale requires restarting `prep iphone`**, because
   remote mode reads the MagicDNS name once at process start.
-- **Two devices editing at once resolve by the same revision rule as two browser
-  tabs.** Last writer with a current revision wins; a stale one is refused. This is
+- **Two devices editing at once both land.** Every write is an append, so neither
+  device can overwrite the other's work and there is nothing to resolve. This is
   single-user software used from more than one screen, not multi-user software.
 - **Integrity pins are empty**, so the launcher currently verifies nothing about the
   files it starts. See the launcher section above.
@@ -409,15 +422,17 @@ Plainly, so nothing above reads as a promise.
 bridge.py                 the local HTTP bridge: routing, auth, state, provider calls
 prep-launcher.sh          the `prep` command: preflight, environment scrubbing, iPhone mode
 index.html                the local page: stages, chat, progress, question bank
-prepwright/               one module per concern; config, state, track and keep are
-                          written and tested, the rest are docstring stubs
+prepwright/               one module per concern. config, state, track, keep and
+                          pagestate are written, tested and called by bridge.py; the
+                          rest are docstring stubs
 tests/                    unittest, run with `python3 -m unittest discover -s tests`
 docs/adr/                 the decisions that are settled, and why
-DESIGN-state-corpus.md    the accepted persistence and corpus design; implemented in
-                          prepwright/, not yet wired to bridge.py
+DESIGN-state-corpus.md    the accepted persistence and corpus design. The store and
+                          the /api/state delta protocol follow it; corpus retrieval
+                          in bridge.py does not yet
 HANDOFF.md                what the next session needs to know
-corpus/                   distilled documents the tutor teaches from; git-ignored, so a
+corpus/                   distilled documents the tutor teaches from. Git-ignored, so a
                           fresh clone starts with none and the tutor says so
-progress/                 created at first run: state.json, backups/, high-water.json
+progress/                 only if you are upgrading: the imported state.json, renamed
 .gitignore                keeps study data, secrets and runtime state out of version control
 ```

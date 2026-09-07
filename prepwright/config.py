@@ -2,9 +2,9 @@
 
 Nothing else in the package may hardcode a byte budget, a path, or a limit,
 with one recorded exception: the CHECK constraints in state.py's DDL carry SQL
-literals for INTAKE_MAX_BYTES, DOC_MAX_BYTES, SECTION_MAX_CHARS and
-TURN_MAX_BYTES, because SQLite will not take a parameter in a CHECK. Raising one
-of those numbers here without editing the matching CHECK turns a refusal that
+literals for INTAKE_MAX_BYTES, DOC_MAX_BYTES, SECTION_MAX_CHARS, TURN_MAX_BYTES
+and MARK_MAX_BYTES, because SQLite will not take a parameter in a CHECK. Raising
+one of those numbers here without editing the matching CHECK turns a refusal that
 names the cap into an IntegrityError that names nothing.
 
 A cap that lives at its use site is a cap nobody can audit.
@@ -69,6 +69,8 @@ SECTION_MAX_CHARS = 900
 MAX_SECTIONS_PER_DOC = 10
 MAX_DOCS_PER_TRACK = 48
 TURN_MAX_BYTES = 8_192
+MARK_MAX_BYTES = 4_096
+TURN_META_MAX_BYTES = 4_096
 MAX_TURNS_PER_STEP = 150
 MAX_STEPS = 40
 MAX_CARDS = 300
@@ -82,6 +84,13 @@ EVENT_ROWS = 5_000
 CORPUS_BYTES_CAP = 655_360        # 640 KiB, 64 KiB above the worst legal case
 TURNS_BYTES_CAP = 3_145_728       # 3 MiB, about 3x a typical worked track
 CARDS_BYTES_CAP = 327_680         # 320 KiB
+# Page marks: ticked topics, practice statuses, banked questions, check results.
+# Measured, not guessed: a ticked topic charges 144 bytes, so 256 KiB is about
+# 1,800 of those, or about 800 changes carrying a banked question. A track works
+# through a few hundred. Summed with the three caps above this leaves 320 KiB
+# spare inside TRACK_DB_CAP. There is no compaction rung for marks yet, so this
+# cap refuses rather than reclaims: see ADR 0003.
+MARKS_BYTES_CAP = 262_144         # 256 KiB
 TRACK_DB_CAP = 4_718_592          # 4.5 MiB
 BACKUP_BYTES_CAP = 5_242_880      # per track, at most 2 copies
 

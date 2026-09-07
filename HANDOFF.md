@@ -18,6 +18,10 @@ unreachable cap that contradicted its own arithmetic, and a package layout that 
 not be imported at all. Never skip the consolidator: roughly a third of what the lenses
 report is over-correction, and applying it would make the tree worse.
 
+**A third round was launched over the delta change and every agent died on the account
+session limit.** It burned 1.39M subagent tokens across 249 tool calls and returned
+nothing. Read §5 before you launch another one: the prompts were too large.
+
 Two mechanical rules that come from real damage: never put two agents on the same file,
 and do line-precise surgery yourself rather than delegating it.
 
@@ -30,11 +34,12 @@ and do line-precise surgery yourself rather than delegating it.
 3. **Do not rename `tutor`, `student`, `candidate`, `step`, `session`, `assessment`,
    `recap`, `transcript`, `track`, `stage`, `corpus`, `citation`,** or ordinary security
    English about forged or spoofed HTTP headers. `X-Tutor-Bridge` and `TUTOR_TS_*` are
-   two-sided contracts between the page and the bridge; renaming one side locks the
+   two-sided contracts between the page and the bridge. Renaming one side locks the
    other out.
 4. **Do not edit a file while a hunt is reading it.** Line numbers in the report go
    stale and you lose the verification you paid for. Either wait, or write atomically
-   and re-verify afterwards.
+   and re-verify afterwards. This was violated once in the session that wrote this file:
+   `README.md` was edited while a lens was reading it.
 5. **Do not report completion for partial work.** If a test fails, paste the output. If
    you skipped something, name it.
 
@@ -63,13 +68,15 @@ persistence layer exists to keep that true.
 | Question | Answer |
 |---|---|
 | Deadline | None scheduled. Build in dependency order. |
-| Persistence before features | Done. `state.py`, `track.py`, `keep.py` are implemented and tested. |
-| Resume Studio | Additive write on their side, import on ours. Not started. See §7. |
-| Research | The candidate supplies URLs, Prepwright fetches. The model never finds a source. See §8. |
+| Persistence before features | Done, and now wired. `/api/state` runs on the store. |
+| Resume Studio | Additive write on their side, import on ours. Not started. See §8. |
+| Research | The candidate supplies URLs, Prepwright fetches. The model never finds a source. See §9. |
 
-Three ADRs' worth of reasoning sits in `docs/adr/`. `DESIGN-state-corpus.md` is the
-persistence specification and the code follows it. Where the design was wrong the code
-fixed it and the ADR records the amendment, which is the pattern to keep.
+Four ADRs sit in `docs/adr/`. `DESIGN-state-corpus.md` is the persistence specification
+and the code follows it. Where the design was wrong the code fixed it and the ADR
+records the amendment, which is the pattern to keep. **ADR 0003 is the one to read
+first**: it covers the delta protocol, the three schema amendments it needed, and the
+two things it deliberately did not do.
 
 ## 4. Current state, and how much of it is verified
 
@@ -77,96 +84,135 @@ fixed it and the ADR records the amendment, which is the pattern to keep.
 
 | Claim | Command |
 |---|---|
-| 40 tests pass, ordinary interpreter | `python3 -m unittest discover -s tests` |
-| 40 tests pass under the launcher's isolated mode | `python3 -I -S -m unittest discover -s tests` |
-| The bridge starts and serves the page | `python3 -I -S bridge.py`, then `curl /api/health` |
-| Every live endpoint answers a real request | `curl` against `/api/health`, `/api/state` GET and POST, `/api/chat`, `/api/assess`, `/api/review` |
-| Teaching is grounded, and refuses when it is not | a `/api/chat` turn citing a document the corpus does not hold answered "not in the corpus" rather than inventing one |
-| The page renders and talks to the bridge | driven in Chromium with `playwright-cli`: every view, a real chat turn, zero console errors except a favicon 404 |
-| Storage survives a kill, a race, and corruption | `tests/test_persistence.py`, which kills a real process mid-transaction, races two real processes, and scribbles over a real database file |
-| The store holds at library scale | a soak of 12 tracks, 576 turns and 36 documents, archiving and restoring half of them, then housekeeping: no cross-track leak, no counter drift |
-| No test can reach the real storage root | the suite asserts its storage root is inside its own temporary directory before it restores the environment |
+| 63 tests pass, ordinary interpreter | `python3 -m unittest discover -s tests` |
+| 63 tests pass on the system 3.9.6 | `/usr/bin/python3 -m unittest discover -s tests` |
+| 63 tests pass under the launcher's isolated mode | `/usr/bin/python3 -I -S -m unittest discover -s tests` |
+| `/api/state` reads and writes `track.db`, over real HTTP | `tests/test_page_state.py::BridgeStateApi`, 8 tests against a real bridge subprocess |
+| A legacy `progress/state.json` imports once and is renamed | same class, `test_a_...imported_once_and_renamed` |
+| A retried delta writes no second row and does not move the revision | same class, `test_c_...does_not_duplicate` |
+| A replace from a stale view is refused with the real document | same class, `test_d_...` |
+| An update from a stale view applies and returns the merge | same class, `test_e_...` |
+| A process killed inside a delta leaves the store readable and writable | `KilledMidDelta`, which SIGKILLs a real subprocess mid-transaction |
+| Two processes writing at once produce a union, not a clobber | `TwoWritersRacingDeltas`, two real subprocesses |
+| A second track sees none of the first track's turns | `TrackIsolation` |
+| Every page field and all four chat roles round-trip | `WholeDocumentRoundTrip` |
+| The page saves, reloads, and gets its work back | driven in Chromium with `playwright-cli`: ticked a topic, banked a question, pushed all four chat roles, reloaded, zero console errors except the favicon 404 |
+| Offline work is folded in and not subtracted | bridge killed, work typed into the tab, a second writer added rows to the same track, bridge restarted: all three sides present in `track.db` |
+| A save too large for one request is sliced and lands intact | 200 turns of 7 KB across two steps: 2 slices, 200 rows, 200 distinct `client_turn_id`, no duplicates |
+| The security tests fail without their guards | the step-key anchor and the mark-kind check were each removed in turn; each broke exactly its own test |
 
 **Assumed, not verified.** The Codex provider path has never run, because no `codex`
 binary is installed on this machine. The iPhone (`prep iphone`) path has never run. The
-launcher has never been installed on `PATH`. `prepwright/` is implemented but nothing
-imports it yet: `bridge.py` still holds its own copy of state, corpus retrieval and
-provider invocation, and the JSON `progress/state.json` scheme is still what actually
-runs. Those two stores now coexist, which is the single biggest thing to fix next.
+launcher has never been installed on `PATH`. `prep-launcher.sh` has not been run against
+the new bridge.
 
-**Real defects found and fixed this session.** Roughly fifty, over four rounds of
-adversarial hunting. Grouped by the class of mistake, because the classes are what to
-hunt for next time rather than the individual lines.
+**Defects found and fixed this session.** Five were pre-existing, four were mine.
 
-*A guard that guarded nothing.* The bridge's anti-clobber check counted a `homework`
-key the page has never written, so it was always zero of zero. `assert_live` existed and
-no write path called it, so bumping a track's generation did nothing to an open handle.
-`heartbeat()` had no caller, so every lease self-expired two minutes after it was taken.
-`backup_track` had no caller, so recovery from a corrupt database always found nothing
-to restore. Look for a safety mechanism whose only mention in the tree is its own
-definition.
+*A recovery path that never fired for the damage it existed for.* `quick_check()` let
+`sqlite3.DatabaseError` out. A scribble deep enough to break the page the PRAGMA itself
+reads makes the PRAGMA raise rather than report, so the raw error walked past
+`open_track`'s `CorruptStore` and past `keep.open_track_or_recover`'s handler, and no
+restore ever ran. Two existing tests had been passing on where the scribble happened to
+land relative to the b-tree. Growing the schema moved it and they both broke.
 
-*A number that could not be what it said.* `MAX_SECTIONS_PER_DOC` was 12 against a cap
-that fits 10. A byte budget was counted in characters in three places. An age was out by
-twice the local UTC offset, so a track went stale a day early in Sydney and a day late
-in London. Recompute every stated figure: the design document had six such errors inside
-the one section headed "stated so they can be checked".
+*A row id allocated outside the transaction that assigns it.* `add_step` read
+`MAX(ord)` before `BEGIN IMMEDIATE`, so two writers adding a first step both saw the
+same maximum and the second died on `step.ord`'s UNIQUE constraint. Found by the racing
+test, not by reading.
 
-*A path that destroys what it exists to protect.* Recovery moved the live database into
-quarantine before checking that a backup existed, so a corrupt track with no backup lost
-its only copy. Archiving deleted the quarantine directory that two other paths promise
-never to delete from. The trash purge could delete inside the undo window, because a
-stray file counted toward the cap. Ask what each recovery path does when the thing it
-recovers from is absent.
+*A validated string and a stored string that differ.* The step-key regex ended in `$`,
+which in Python also matches before a trailing newline, so `"1:topic:T1\n"` validated
+and was then stored with the newline. It was in two inline copies in `bridge.py`. There
+is now one `PS.STEP_KEY_RE`, anchored with `\Z`, and `OP_ID_RE` and `MARK_KEY_RE` with it.
 
-*A feature that silently did not work.* Grading never moved a card's due date, so every
-card was due forever. The registry's card projection was never written, so an archived
-track's flashcard file came out empty. Housekeeping's own reads stamped `opened_utc`, so
-no track could ever reach the age its own ladder is keyed on.
+*A slice the page could build and the bridge would always refuse.* The page sliced by
+op count. 400 turns at the 8 KiB turn cap is 3.1 MiB, over the bridge's 2 MiB limit on
+one delta, so a long offline session produced a slice refused on every retry and never
+saved at all. Slicing is byte-bounded now, and
+`test_the_pages_slice_budget_fits_inside_the_bridges_delta_cap` reads the budget out of
+`index.html` rather than restating it, so the two cannot drift apart silently.
 
-*A test that passed for the wrong reason.* A symlink test the containment check caught
-before the symlink check could. A budget assertion carrying a hundred times the slack it
-needed. A clock test that asserted the flag and not one guarded rung. And the suite
-itself wrote a registry into the candidate's real `~/.prepwright`.
+*A test that asserted nothing.* The HTTP helper called `err.read()` twice. The second
+read returns `b""`, so every refusal reply became `{}` and two tests passed on a
+`KeyError` that never fired.
 
-*Prose that contradicted the code beside it.* The page told the candidate their chat
-never touches browser storage while writing the whole transcript there whenever the
-bridge was down. A README heading said cost was unmeasured directly above a paragraph
-describing where the measurements come from.
+*Two numbers that could not be what they said.* "roughly 290 KiB spare" was 320, and
+"about 1,300 mark writes" was 1,820 measured. Both were in `config.py` and ADR 0003,
+both written by the same session that wrote the cap.
 
-## 5. The work, in dependency order
+*A byte budget counted in characters.* `_charge("bytes_marks", ...)` summed
+`len(raw)` (bytes) with `len(kind)` and `len(key)` (characters). Every term encodes now.
+
+*Two dead keys on the wire.* `savedAt` was returned by both `/api/state` routes and read
+by nothing. The one inside `state` stays: `exportData()` writes the whole document to a
+file, so it reaches a user.
+
+## 5. Re-run the hunt. It has not run on this change.
+
+This is the highest-priority item and it is not optional. Six lenses and a consolidator
+were launched over the delta change. All seven died on the account session limit.
+
+The lenses were, and the four in bold are the ones a self-hunt already covered by hand:
+**dead guard** (a safety mechanism whose only mention is its own definition),
+**impossible number**, destructive recovery (a path that destroys what it protects when
+the thing it recovers from is absent), **silent no-op**, prose versus code, and
+**contract drift** between `index.html` and `bridge.py`.
+
+The self-hunt is not a substitute. It was run by the same person who wrote the code,
+which is the exact bias the lenses exist to break, and it did not cover
+**destructive recovery** or **prose versus code** at all.
+
+What to change when you re-launch it: the prompts were roughly 4 KB each and told each
+agent to read six or seven files in full. Give each lens two files and one question.
+The script is at
+`.claude/projects/.../workflows/scripts/prepwright-delta-hunt-wf_60429c3b-162.js` and
+can be resumed with `resumeFromRunId`, but resuming replays cached results and there are
+none, so edit it down first.
+
+Two questions the self-hunt raised and did not settle:
+
+- `bridge.py` `import_legacy_state()` and `_legacy_document()` have never been traced
+  for the failure cases: rename fails after a successful import, `state.json` is a
+  symlink or a directory, two bridges start at once, an `.imported-` file of the same
+  name already exists. The happy path and the backup-fallback path are both tested.
+- `open_state_track()` releases the lease for reads. `TrackHandle.close()` then takes a
+  backup when `writes_since_keep > 0`. Neither interaction has been read adversarially.
+
+## 6. The work, in dependency order
 
 A task is done when its acceptance command runs and passes, not when the edit is made.
 
-### Task A. Land the first commit.
+### Task A. Wire `bridge.py` to the persistence layer. DONE.
 
-`git init` has not run. Before committing, read `git status` and confirm `.gitignore` is
-holding `corpus/`, `progress/`, `var/` and `tracks/` out. One commit: what Prepwright is,
-what it was cut down from in the same mechanism-level terms ADR 0001 uses, and what is
-not built yet. Nothing about the origins of the copied code beyond that goes into a
-file or a commit message.
+`/api/state` reads and writes `~/.prepwright/tracks/<id>/track.db` through
+`prepwright/pagestate.py`. 283 lines of JSON state code are out of `bridge.py`: the
+whole-document write, the revision hash, `_regression_reason`, `MAX_UNMARK_PER_WRITE`,
+the rotating snapshots and the high-water file. No dual-write, no fallback. See §4 for
+what is verified and ADR 0003 for why the mapping is shaped the way it is.
 
-### Task B. Wire `bridge.py` to the persistence layer, then extract it.
+### Task B. Extract `bridge.py`. NOT STARTED. Do this next.
 
-Two stores now describe the same thing. `bridge.py` writes `progress/state.json`;
-`prepwright/state.py` writes `~/.prepwright/tracks/<id>/track.db`. The JSON scheme is
-what the design rejects, and the longer both exist the more code is written against the
-wrong one.
+Into `prepwright/{serve,security,provider,teach,assess,corpus,prompt}.py`. `config.py`
+and `pagestate.py` already exist. `bridge.py` ends as serve wiring only.
 
-Order that works: give the bridge a track handle and move `/api/state` onto delta writes
-first, because that is the endpoint the page hits on every keystroke. Then move
-`corpus_evidence()` onto `TrackHandle.build_pack()`, which is a straight swap and gives
-the tutor per-section citations. Then move the routes, security envelope, provider
-invocation and prompt assembly into `serve.py`, `security.py`, `provider.py`, `teach.py`,
-`assess.py`, `corpus.py`, `prompt.py`. One cohesive group at a time, tests after each,
-never batch.
+Move `corpus_evidence()` onto `TrackHandle.build_pack()` first. It is a straight swap,
+it gives the tutor per-section citations, and it is the last thing in `bridge.py` still
+reading a directory instead of a track.
 
-Then add `MANIFEST.sha256` over `prepwright/*.py`, `bridge.py` and `index.html` and point
-the launcher's pin block at it. The pins are deliberately empty until the file set stops
-moving, and the launcher says so out loud at every start rather than treating empty as
-trusted. Do not compute them before then, and do not silently treat empty as trusted.
+Acceptance: every module imports under `python3 -I`. `MANIFEST.sha256` is generated from
+the runtime file list, the launcher's pin block verifies it and refuses to start on a
+mismatch, and the pinned list equals `ls prepwright/*.py` plus `bridge.py` and
+`index.html`.
 
-### Task C. Intake, and the Resume Studio bridge. See §7.
+**This is now a security item, not only tidiness.** Before Task A, `bridge.py` was
+self-contained, so pinning `bridge.py` and `index.html` covered the whole trusted set.
+It now imports `prepwright/{config,state,track,keep,pagestate}.py`, none of which the
+launcher checks, and the comment at `prep-launcher.sh:61` still calls them "the two
+files this launcher starts". Nothing is enforced today because both pins are
+deliberately empty, so this is a latent gap and not a live hole. Do not pin now: the
+file set is still moving and a stale pin refuses correct code.
+
+### Task C. Intake, and the Resume Studio bridge. See §8.
 
 ### Task D. Diagnostic and gap approval.
 
@@ -175,7 +221,7 @@ candidate's own resume claims. A requirement they explain unprompted is not a ga
 resume claim they cannot defend **is** a gap even when the posting never mentions it.
 Produce a gap list, show it, change nothing until it is approved.
 
-### Task E. Research. See §8.
+### Task E. Research. See §9.
 
 ### Task F. Curriculum.
 
@@ -189,32 +235,56 @@ step pins the exact corpus sections it will be taught from, through `step_slice`
 `index.html` renders a seeded synthetic track. Add intake, the gap-approval screen, a
 research panel and a track switcher. Reuse the existing views. Do not redesign.
 
-## 6. What the persistence layer already guarantees
+The track switcher has two jobs waiting on it. `bridge.py current_track_id()` is the
+whole selection mechanism today: a `CURRENT_TRACK` file, falling back to the most
+recently touched active track, falling back to creating one. And the Import button now
+merges rather than replaces, because an append-only store cannot be made to forget. A
+true replace is a new track built from the file, which is a switcher feature.
 
-Read `prepwright/state.py` before writing against it. The three properties it exists to
-make structural rather than careful:
+## 7. What the store guarantees, and how the page now talks to it
 
-- **Nothing shrinks.** `turn`, `assessment`, `card_review`, `gap_history` and
-  `track_history` raise ABORT on DELETE and on any UPDATE outside one receipted case, so
-  a stale client cannot express a loss. Tutor prose in a completed step can be compacted,
-  but only after a receipt row records its original length and hash, and only when the
-  step already carries its review. A student turn cannot be emptied by any path.
-- **Caps are counted by the write that causes them.** `bytes_turns`, `bytes_cards` and
-  `bytes_corpus` accumulate inside the same `BEGIN IMMEDIATE` as the row. A cap checked
-  against a number refreshed at startup is not a cap.
-- **One track's bytes cannot reach another track's prompt.** `open_track()` is the only
-  function that connects to a track database, `build_pack()` takes a handle rather than a
-  track id, and `step_slice` carries a composite foreign key that cannot cross database
-  files. Citation tokens are per-track, so both tracks call their first document `D01`.
-  That is deliberate: the same token read through two handles returns two different
-  documents. A citation validator must therefore check against the exact pack that was
-  sent, never against "a valid id in this track".
+Read `prepwright/state.py` and `prepwright/pagestate.py` before writing against them.
+
+**The page sends changes, never the document.** One op per appended chat turn, one op
+per changed mark, diffed against the document the bridge last acknowledged. A stale tab
+cannot express a loss because no op removes anything. That is what replaced the revision
+hash and the shrink-detector, and it is why `pagestate.py` enforces no monotonicity rule:
+a value that goes backwards in that diff went backwards because the candidate did it,
+and the superseded row is still on disk under its own `seq`.
+
+**A transcript is a `turn`. Everything else is a `mark`.** `FIELDS` in `pagestate.py`
+is the whole mapping and the bridge serves it to the page inside the GET reply, so the
+page builds its diff from that table rather than from a second copy of the rules. Adding
+a field is one edit. Three names are deliberately absent and the file says why.
+
+**Nothing shrinks.** `turn`, `mark`, `assessment`, `card_review`, `gap_history` and
+`track_history` raise ABORT on DELETE and on any UPDATE outside one receipted case.
+
+**Caps are counted by the write that causes them**, inside the same `BEGIN IMMEDIATE`.
+`bytes_turns`, `bytes_cards`, `bytes_corpus` and now `bytes_marks`.
+
+**One track's bytes cannot reach another track's prompt.** `open_track()` is the only
+function that connects to a track database, `build_pack()` takes a handle rather than a
+track id, and `step_slice` carries a composite foreign key that cannot cross database
+files. Citation tokens are per-track, so both tracks call their first document `D01`.
+That is deliberate: the same token read through two handles returns two different
+documents. A citation validator must check against the exact pack that was sent.
 
 `keep.py` runs a published, age-driven ladder of ten rungs. Rungs 0 to 5 lose nothing.
-Rung 6 is the first lossy step. Rung 9 stops and asks for a human, and there is no rung
-10. Every age-driven rung suspends itself when the clock looks wrong.
+Rung 6 is the first lossy step. Rung 9 stops and asks for a human. Every age-driven rung
+suspends itself when the clock looks wrong.
 
-## 7. The Resume Studio change
+**There is no compaction rung for marks.** At `MARKS_BYTES_CAP` a write is refused with
+the cap named, rather than reclaiming superseded rows the way rung 6 reclaims tutor
+prose. That is the same failure the design rejected for turns, and the reason it is
+acceptable is arithmetic rather than principle: a ticked topic charges a measured 144
+bytes, so 256 KiB is roughly 1,800 of those. If that stops being true, build a receipted
+compaction of superseded non-append marks in the shape `turn_compaction` already has.
+
+**`TRACK_DB_CAP` is defined in `config.py` and enforced by nothing.** Pre-existing, not
+introduced by this change, and worth a look while you are in `keep.py`.
+
+## 8. The Resume Studio change
 
 `~/Desktop/Thesis/Job Applications/resume-studio/` is a separate git repo the owner uses
 regularly, currently on branch `audit-fixes` with uncommitted work in it. **Branch it.
@@ -244,7 +314,7 @@ diagnostic, never as a substitute for it. Prepwright reads that folder exactly o
 track creation, hashes it, and never reopens it, so a later edit on the other side cannot
 retroactively change what a track was built from.
 
-## 8. Research: fetching URLs the candidate supplies
+## 9. Research: fetching URLs the candidate supplies
 
 The candidate pastes URLs they already trust. `research.py` fetches with `urllib`, and
 the provider CLI distils what came back into corpus documents. **The model never finds
@@ -267,34 +337,42 @@ the origin metadata, renders the document format of `DESIGN-state-corpus.md` sec
 writes it atomically, and records each section's byte offsets. `research.py` supplies the
 sections and the provenance, nothing more.
 
-## 9. Traps that have cost real time
+## 10. Traps that have cost real time
 
 1. **A textual patch applied before line-based cuts** shifted every later line by three
-   and corrupted the file. Do line surgery bottom-up, textual replaces last, and pin
-   both the first and the last line of every range before deleting.
+   and corrupted the file. Better than doing it bottom-up: do the surgery in Python with
+   exact-text `replace` on delimited blocks and assert the match count first, which
+   sidesteps line numbers entirely. Every edit in the delta change was made that way,
+   and two of them caught a wrong assumption at the assert instead of in the file.
 2. **Two cut boundaries were silently wrong**, taking constants the security envelope
    needed. `py_compile` does not catch an unbound name. Run an AST scan for
-   `Load`-context names with no binding after any deletion.
-3. **A security test passed for the wrong reason.** A redaction assertion succeeded
-   because the dangerous section was never selected, not because it was redacted. If a
-   security test passes on the first try, force the dangerous input in deliberately and
-   check again.
+   `Load`-context names with no binding after any deletion. This caught one orphaned
+   call in the delta change that `py_compile` passed clean.
+3. **A security test passed for the wrong reason.** If a security test passes on the
+   first try, force the dangerous input in deliberately and check it fails. Two guards
+   in `pagestate.py` were proved this way, and a third test was found to be asserting
+   nothing at all.
 4. **`prep iphone off` tears down whatever holds `:443`.** One handler per machine, and
    another local app may own it. Guarded now. Any new teardown needs the same guard.
 5. **`playwright-cli` needs a shell function, not a variable.** `PW="playwright-cli -s=x"`
    then `$PW open` fails under zsh, which does not word-split unquoted expansions.
 6. **The system Python is 3.9.6** and its SQLite is 3.51, which does support STRICT
    tables, `RETURNING`, `VACUUM INTO` and contentless FTS5. Do not reach for 3.10+ syntax.
+   Note `python3` on this machine is Homebrew 3.14, so run the suite under both.
 7. **A workflow journal stores an agent's return value under `result`, not `value`.**
-   Parsing the wrong key reports zero findings from a run that produced dozens.
-8. **`unittest` runs every `addCleanup` after `tearDown`.** Restoring an environment
-   variable in `tearDown` lets a later cleanup run against the real environment, which
-   is how the suite came to write into the candidate's own storage root. Register the
+   Parsing the wrong key reports zero findings from a run that produced dozens. A run
+   that produced none writes `"type":"failed"` lines instead, which is what happened here.
+8. **`unittest` runs every `addCleanup` after `tearDown`.** Register the environment
    restore with `addCleanup` first, so it runs last.
-9. **On macOS `/var` resolves to `/private/var`.** A guard comparing a temporary
-   directory against a realpath'd one fails on a correct path unless both are resolved.
+9. **On macOS `/var` resolves to `/private/var`.** Realpath both sides of a containment
+   assertion.
+10. **A `$` anchor in a Python regex also matches before a trailing newline.** Use `\Z`
+    on anything whose validated form must equal its stored form.
+11. **The `Write` tool will put a real NUL byte in a file** if the content contains a
+    `\x00` escape that gets interpreted. `SyntaxError: source code string cannot contain
+    null bytes` is what that looks like.
 
-## 10. Working discipline
+## 11. Working discipline
 
 Evidence first. Every change carries a hypothesis, the smallest safe patch, a test
 against real data, a keep-or-revert decision, and one line recording it. A
@@ -303,13 +381,13 @@ well-documented reverted experiment beats an untested change.
 "Works", "fixed" and "verified" are `[Certain]` only when you can name the command whose
 output backs the word. Otherwise `[Likely]` or `[Guessing]`.
 
-## 11. Definition of done for the next session
+## 12. Definition of done for the next session
 
-- `git init` plus a first commit that a stranger could read without learning anything
-  about where this code came from.
-- `/api/state` moved onto delta writes, with the JSON scheme deleted rather than left
-  beside it.
-- `corpus_evidence()` replaced by `TrackHandle.build_pack()`, with the citation validator
-  checking against the pack that was sent.
-- `README.md` brought back in line with the code, which has moved under it.
+- The adversarial hunt in §5 re-run with smaller prompts, and its confirmed findings
+  applied. Nothing else in this list matters more.
+- `corpus_evidence()` replaced by `TrackHandle.build_pack()`, with the citation
+  validator checking against the pack that was sent.
+- `bridge.py` extracted into the modules named in Task B, `MANIFEST.sha256` generated,
+  and the launcher's pin block pointed at it.
+- `prep-launcher.sh` run against the new bridge at least once. It never has been.
 - This file rewritten for the session after that one.
