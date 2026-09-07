@@ -144,6 +144,42 @@ def _from_title(markup):
     return None
 
 
+# The named elements a job board puts its identity in, when the title tag will
+# not give it up. LinkedIn served a variant page during a real track creation
+# where the title shape was absent: the body still parsed, so the track was
+# built on the right requirements, but it was called "Untitled posting" with no
+# employer and no role. The content survived and the identity did not, which is
+# the wrong half to lose. Matched by class NAME, so a rename is a miss rather
+# than a wrong answer.
+_TOPCARD = {
+    "role_title": (r'(?is)class="[^"]*(?:topcard__title|jobs-unified-top-card__job-title|'
+                   r'job-details-jobs-unified-top-card__job-title)[^"]*"[^>]*>(.*?)<',
+                   r"(?is)<h1[^>]*>(.*?)</h1>"),
+    "employer": (r'(?is)class="[^"]*(?:topcard__org-name-link|topcard__flavor(?!--bullet)|'
+                 r'jobs-unified-top-card__company-name)[^"]*"[^>]*>(.*?)<',),
+    "location": (r'(?is)class="[^"]*(?:topcard__flavor--bullet|'
+                 r'jobs-unified-top-card__bullet)[^"]*"[^>]*>(.*?)<',),
+}
+
+
+def _from_topcard(markup):
+    """Role, employer and location from the page's own header elements."""
+    found = {}
+    for field, patterns in _TOPCARD.items():
+        for pattern in patterns:
+            hits = re.findall(pattern, markup)
+            value = unescape(hits[0]).strip() if hits else ""
+            value = " ".join(value.split())
+            if value and len(value) <= 200 and "<" not in value:
+                found[field] = value
+                break
+    if not found.get("role_title") and not found.get("employer"):
+        return None
+    found["body"] = None
+    found["how"] = "page header"
+    return found
+
+
 def _body_from(markup):
     """The requirement text, or None. Never the whole page dressed as a posting."""
     for pattern in (_LINKEDIN_BODY, _GENERIC_BODY):
@@ -162,10 +198,15 @@ def parse_posting_page(markup, url=""):
     in a way nothing downstream can detect.
     """
     markup = str(markup or "")
-    found = _from_ld_json(markup) or {}
-    if not found.get("employer") or not found.get("role_title"):
-        found = dict(_from_title(markup) or {}, **{
-            k: v for k, v in found.items() if v})
+    # Most structured first. Each reader fills only what the ones before it left
+    # empty, so a page that publishes half its identity in one place and half in
+    # another still comes out whole.
+    found = {}
+    for reader in (_from_ld_json, _from_title, _from_topcard):
+        if found.get("employer") and found.get("role_title"):
+            break
+        got = reader(markup) or {}
+        found = dict(got, **{k: v for k, v in found.items() if v})
     body = found.get("body")
     if body and "<" in body:
         body = R.html_to_text(body)

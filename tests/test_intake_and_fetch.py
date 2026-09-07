@@ -51,6 +51,20 @@ PAGE = """<html><head>
 <li>Awareness of AI governance frameworks (NIST AI RMF).</li></ul>
 </div></body></html>"""
 
+# The variant LinkedIn served during a real track creation: no "Role at
+# Employer" title shape, identity only in the header elements.
+VARIANT_PAGE = ('<html><head><title>Sign in | LinkedIn</title></head><body>'
+                '<h1 class="topcard__title">AI Security &amp;amp; Governance'
+                ' Analyst</h1>'
+                '<a class="topcard__org-name-link">Wingtip Australia &amp;amp; New'
+                ' Zealand</a>'
+                '<span class="topcard__flavor--bullet">Brisbane, Queensland,'
+                ' Australia</span>'
+                '<div class="show-more-less-html__markup"><ul>'
+                + "".join("<li>Requirement number %d the employer states"
+                          " plainly right here.</li>" % i for i in range(6))
+                + '</ul></div></body></html>')
+
 LD_PAGE = """<html><head><title>irrelevant</title>
 <script type="application/ld+json">%s</script>
 </head><body></body></html>""" % json.dumps({
@@ -206,6 +220,65 @@ class ThePostingParserNeverGuesses(Base):
         self.assertFalse(p["confident"])
         self.assertEqual(p["text"], "")
         self.assertIn("paste", p["note"].lower())
+
+    def test_the_page_header_supplies_an_identity_the_title_withheld(self):
+        """A real track was built "Untitled posting" with no employer and no
+        role: LinkedIn served a variant whose title carried no "Role at
+        Employer" shape. The body parsed, so the track had the right
+        requirements under the wrong name, which is the wrong half to lose."""
+        variant = VARIANT_PAGE
+        self.assertIsNone(I._from_title(variant),
+                          "the fixture no longer exercises a missing title")
+        p = I.parse_posting_page(variant)
+        self.assertEqual(p["employer"], "Wingtip Australia & New Zealand")
+        self.assertEqual(p["role_title"], "AI Security & Governance Analyst")
+        self.assertEqual(p["location"], "Brisbane, Queensland, Australia")
+        self.assertTrue(p["confident"])
+
+    def test_the_readers_chain_rather_than_the_first_one_winning(self):
+        """One reader supplying half the identity must not stop the next from
+        supplying the other half. Structured data here names the role and omits
+        the employer; only the page header has it."""
+        split = ('<html><head><title>Careers | LinkedIn</title>'
+                 '<script type="application/ld+json">%s</script></head><body>'
+                 '<a class="topcard__org-name-link">Example Corp</a>'
+                 '<div class="show-more-less-html__markup"><ul>%s</ul></div>'
+                 '</body></html>'
+                 % (json.dumps({"@type": "JobPosting",
+                                "title": "Staff Security Analyst",
+                                "description": "<p>Own the estate.</p>" + "y" * 300}),
+                    "".join("<li>Requirement %d stated plainly here.</li>" % i
+                            for i in range(6))))
+        self.assertIsNone(I._from_title(split),
+                          "the fixture no longer exercises a missing title")
+        first = I._from_ld_json(split)
+        self.assertEqual(first["role_title"], "Staff Security Analyst")
+        self.assertFalse(first["employer"], "the fixture must omit the employer")
+        p = I.parse_posting_page(split)
+        self.assertEqual(p["role_title"], "Staff Security Analyst")
+        self.assertEqual(p["employer"], "Example Corp",
+                         "the second reader never ran, so half the identity was lost")
+
+    def test_the_header_reader_refuses_a_value_that_is_not_a_name(self):
+        """An h1 exists on almost every page. Taking whatever is inside it puts
+        a paragraph, or a nest of markup, in the employer field of a track."""
+        junk = ('<html><head><title>Careers</title></head><body>'
+                '<h1 class="topcard__title">%s</h1>'
+                '<a class="topcard__org-name-link"><span>Example</span></a>'
+                '</body></html>' % ("A very long sentence about the company. " * 12))
+        p = I.parse_posting_page(junk)
+        self.assertIsNone(p["role_title"],
+                          "a paragraph was accepted as a role title")
+        self.assertIsNone(p["employer"],
+                          "a fragment of markup was accepted as an employer")
+
+    def test_a_header_with_no_identity_at_all_is_still_not_invented(self):
+        p = I.parse_posting_page(
+            "<html><head><title>Careers</title></head><body>"
+            "<h1></h1><div>nothing here</div></body></html>")
+        self.assertIsNone(p["employer"])
+        self.assertIsNone(p["role_title"])
+        self.assertFalse(p["confident"])
 
     def test_a_credential_in_a_posting_never_survives_the_parse(self):
         page = PAGE.replace("Run governance forums.",
