@@ -1,0 +1,2866 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Prepwright" />
+<title>Prepwright — interview preparation</title>
+<meta name="description" content="Local interview-preparation tutor: diagnose the gaps for one job, research them into a corpus, and teach the small share of it that carries most of the value." />
+<style>
+/* ============================================================= *
+ *  Prepwright — prep-desk design system
+ *  Single self-contained file. Talks only to the local bridge (same origin):
+ *  chat via /api/chat and private progress via /api/state. localStorage keeps
+ *  harmless UI preferences, plus a temporary copy of unsaved work, chat text
+ *  included, for as long as the bridge is unreachable. See PENDING_KEY.
+ * ============================================================= */
+
+:root{
+  /* --- prep-desk palette (dark default) --- */
+  --ink:#0B1120;            /* base */
+  --surface:#111a2e;        /* panels */
+  --surface-2:#16213b;      /* elevated */
+  --surface-3:#1d2b48;      /* hover */
+  --line:#243350;           /* borders */
+  --line-soft:#1a2740;
+  --text:#E9EFF8;           /* primary text */
+  --text-muted:#9DB0CC;     /* secondary */
+  --text-faint:#67789a;     /* tertiary */
+
+  --signal:#3BC9D6;         /* primary accent */
+  --signal-dim:#2a8f99;
+  --signal-glow:rgba(59,201,214,.16);
+  --win:#F5B44C;            /* delivered practice / wins */
+  --win-glow:rgba(245,180,76,.14);
+  --gate:#A78BFA;           /* stage checks */
+  --gate-glow:rgba(167,139,250,.16);
+  --pass:#4ADE80;           /* pass verdicts */
+  --alert:#F87171;          /* outstanding / missed */
+
+  --radius:14px;
+  --radius-sm:9px;
+  --radius-lg:20px;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.28);
+  --shadow-soft:0 1px 0 rgba(255,255,255,.02),0 6px 18px rgba(0,0,0,.22);
+
+  --ff-sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --ff-serif:ui-serif,Georgia,"Times New Roman",serif;
+  --ff-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+
+  --rail:250px;
+  --maxw:1120px;
+  --dur:.22s;
+  --ease:cubic-bezier(.2,.7,.3,1);
+}
+
+html[data-theme="light"]{
+  --ink:#F5F8FC;
+  --surface:#ffffff;
+  --surface-2:#f2f6fc;
+  --surface-3:#e9f0f9;
+  --line:#d8e2f0;
+  --line-soft:#e6edf6;
+  --text:#0B1120;
+  --text-muted:#4a5c78;
+  --text-faint:#7688a3;
+  --signal:#0f9aa8;
+  --signal-dim:#7fd3db;
+  --signal-glow:rgba(15,154,168,.12);
+  --win:#c9860f;
+  --win-glow:rgba(201,134,15,.12);
+  --gate:#7c5cf0;
+  --gate-glow:rgba(124,92,240,.12);
+  --pass:#1f9d57;
+  --alert:#d94a4a;
+  --shadow:0 1px 2px rgba(16,32,64,.06),0 10px 30px rgba(16,32,64,.08);
+  --shadow-soft:0 1px 3px rgba(16,32,64,.06);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1200px 600px at 82% -8%,var(--signal-glow),transparent 60%),
+    radial-gradient(900px 500px at -6% 12%,var(--gate-glow),transparent 55%),
+    var(--ink);
+  color:var(--text);
+  font-family:var(--ff-sans);
+  font-size:16px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+  min-height:100vh;
+}
+a{color:var(--signal);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3,h4{margin:0;line-height:1.15;letter-spacing:-.02em}
+p{margin:0}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:6px}
+.mono{font-family:var(--ff-mono);font-size:.86em}
+.kicker{font-family:var(--ff-serif);font-style:italic;color:var(--signal);
+  font-size:.98rem;letter-spacing:.01em}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* skip link */
+.skip{position:absolute;left:-999px;top:8px;background:var(--surface-2);color:var(--text);
+  padding:8px 14px;border-radius:8px;z-index:100}
+.skip:focus{left:12px}
+
+/* ---------------- shell ---------------- */
+.app{display:grid;grid-template-columns:var(--rail) 1fr;min-height:100vh}
+.app > div{min-width:0} /* let the content column shrink below its content min-width */
+.rail{
+  position:sticky;top:0;align-self:start;height:100vh;
+  border-right:1px solid var(--line);background:linear-gradient(180deg,var(--surface),var(--ink));
+  padding:22px 16px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;
+}
+.brand{display:flex;align-items:center;gap:11px;padding:4px 8px 18px}
+.brand .mark{width:34px;height:34px;flex:0 0 auto}
+.brand b{font-size:1.02rem;letter-spacing:-.01em;display:block}
+.brand small{color:var(--text-faint);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+.navlink{
+  display:flex;align-items:center;gap:11px;width:100%;text-align:left;
+  background:transparent;border:0;color:var(--text-muted);cursor:pointer;
+  padding:9px 11px;border-radius:var(--radius-sm);font-size:.92rem;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.navlink svg{width:17px;height:17px;flex:0 0 auto;opacity:.85}
+.navlink:hover{background:var(--surface-2);color:var(--text)}
+.navlink.active{background:var(--signal-glow);color:var(--text)}
+.navlink.active svg{color:var(--signal);opacity:1}
+.navlink .count{margin-left:auto;font-size:.72rem;color:var(--text-faint);
+  background:var(--surface-2);border-radius:999px;padding:1px 8px;font-variant-numeric:tabular-nums}
+.rail-foot{margin-top:auto;padding-top:16px;display:flex;flex-direction:column;gap:8px}
+
+/* topbar (mobile) */
+.topbar{display:none}
+/* backdrop is out-of-flow at all sizes so it never becomes a grid item */
+.backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:45;display:none}
+.backdrop.open{display:block}
+
+/* collapsible rail (desktop only). Fixed like the backdrop, so it is out of
+ * flow and never becomes a grid item. Below 861px the topbar hamburger already
+ * owns showing and hiding the rail, so this control stays hidden there and the
+ * collapse rules are scoped away from the drawer: `.app.rail-hidden .rail` is
+ * more specific than `.rail.open` and would otherwise wedge the drawer shut. */
+.railtoggle{display:none}
+@media (min-width:861px){
+  .railtoggle{
+    position:fixed;top:15px;left:calc(var(--rail) - 14px);z-index:60;
+    display:grid;place-items:center;width:26px;height:26px;padding:0;
+    border:1px solid var(--line);border-radius:999px;
+    background:var(--surface-2);color:var(--text-faint);cursor:pointer;
+    transition:left var(--dur) var(--ease),background var(--dur) var(--ease),
+               color var(--dur) var(--ease);
+  }
+  .railtoggle:hover{background:var(--surface-3);color:var(--text)}
+  .railtoggle:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .railtoggle svg{width:13px;height:13px;transition:transform var(--dur) var(--ease)}
+  /* Folding the rail must hand its width to the content, not to whitespace:
+   * .wrap is capped at --maxw and centred, so without this the chat stayed
+   * 1120px wide and simply floated in a wider empty page. Raising the cap here
+   * only lifts a ceiling — narrow viewports are unaffected because max-width
+   * never forces a width. */
+  .app.rail-hidden{grid-template-columns:0 1fr;--maxw:1400px}
+  /* Collapse the rail WITHOUT display:none. `display:none` removes it as a grid
+   * item, and the main column then auto-places into track 1, which is 0 wide, so
+   * the whole page collapses into a sliver.
+   * visibility:hidden keeps the item (and drops it from the tab order). */
+  .app.rail-hidden .rail{
+    visibility:hidden;width:0;min-width:0;padding:0;border-right:0;overflow:hidden;
+  }
+  .app.rail-hidden .railtoggle{left:10px}
+  .app.rail-hidden .railtoggle svg{transform:rotate(180deg)}
+}
+@media (prefers-reduced-motion:reduce){
+  .railtoggle,.railtoggle svg{transition:none}
+}
+
+.main{min-width:0;padding:30px clamp(18px,4vw,44px) 80px}
+.wrap{max-width:var(--maxw);margin:0 auto;min-width:0}
+
+/* buttons */
+.btn{
+  display:inline-flex;align-items:center;gap:8px;justify-content:center;
+  border:1px solid var(--line);background:var(--surface-2);color:var(--text);
+  padding:9px 15px;border-radius:var(--radius-sm);font-size:.88rem;font-weight:600;
+  cursor:pointer;transition:transform .12s var(--ease),background var(--dur),border-color var(--dur);
+}
+.btn:hover{background:var(--surface-3);border-color:var(--signal-dim)}
+.btn:active{transform:translateY(1px)}
+.btn svg{width:16px;height:16px}
+.btn-primary{background:var(--signal);border-color:var(--signal);color:#04222a}
+.btn-primary:hover{background:#4fd6e2;border-color:#4fd6e2}
+.btn-ghost{background:transparent}
+.btn-sm{padding:6px 11px;font-size:.8rem}
+.iconbtn{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:var(--surface-2);color:var(--text);cursor:pointer}
+.iconbtn:hover{background:var(--surface-3)}
+.iconbtn svg{width:18px;height:18px}
+
+/* view header */
+.vhead{margin-bottom:26px}
+.vhead h1{font-size:clamp(1.7rem,3.4vw,2.5rem);font-weight:800}
+.vhead .sub{color:var(--text-muted);margin-top:10px;max-width:66ch;font-size:1.02rem}
+
+/* cards */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow-soft)}
+.pad{padding:20px}
+
+/* stat tiles */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:22px 0 30px}
+.stat{position:relative;overflow:hidden;padding:18px}
+.stat .lab{color:var(--text-faint);font-size:.74rem;text-transform:uppercase;letter-spacing:.09em}
+.stat .val{font-size:2rem;font-weight:800;margin-top:8px;letter-spacing:-.03em}
+.stat .val small{font-size:.9rem;color:var(--text-faint);font-weight:600}
+.stat .bar{height:4px;border-radius:999px;background:var(--line);margin-top:14px;overflow:hidden}
+.stat .bar > i{display:block;height:100%;border-radius:999px;background:var(--signal);transition:width .6s var(--ease)}
+.stat.win .val{color:var(--win)} .stat.win .bar>i{background:var(--win)}
+.stat.check .val{color:var(--gate)} .stat.check .bar>i{background:var(--gate)}
+
+/* next-session callout */
+.callout{display:flex;gap:16px;align-items:flex-start;padding:18px 20px;border-radius:var(--radius);
+  background:linear-gradient(120deg,var(--signal-glow),transparent 70%),var(--surface);
+  border:1px solid var(--signal-dim);margin-bottom:8px}
+.callout .dot{margin-top:5px;width:10px;height:10px;border-radius:50%;background:var(--signal);
+  box-shadow:0 0 0 4px var(--signal-glow);flex:0 0 auto}
+.callout h3{font-size:1.02rem}
+.callout ol{margin:10px 0 0;padding-left:20px;color:var(--text-muted);font-size:.94rem}
+.callout ol li{margin:4px 0}
+
+/* section title */
+.sect-title{display:flex;align-items:center;gap:12px;margin:34px 0 16px}
+.sect-title h2{font-size:1.18rem;font-weight:700}
+.sect-title .rule{flex:1;height:1px;background:var(--line)}
+.sect-title .kick{color:var(--text-faint);font-size:.78rem;text-transform:uppercase;letter-spacing:.1em}
+
+/* ---------- stage path (the signature) ---------- */
+.path{position:relative;padding-left:14px}
+.stage-row{position:relative;display:grid;grid-template-columns:64px 1fr;gap:0;padding:0 0 4px}
+.stage-row .spine{position:relative;display:flex;justify-content:center}
+.stage-row .spine::before{content:"";position:absolute;top:0;bottom:0;width:3px;left:50%;transform:translateX(-50%);
+  background:var(--line)}
+.stage-row:first-child .spine::before{top:26px}
+.stage-row:last-child .spine::before{bottom:calc(100% - 26px)}
+.stage-row .spine.filled::before{background:linear-gradient(180deg,var(--signal),var(--signal-dim))}
+.node{position:relative;z-index:2;margin-top:14px;width:26px;height:26px;border-radius:50%;
+  border:2px solid var(--line);background:var(--surface);display:grid;place-items:center;
+  color:var(--text-faint);font-size:.72rem;font-weight:700;font-variant-numeric:tabular-nums;
+  transition:all var(--dur) var(--ease)}
+.node.done{border-color:var(--win);background:var(--win);color:#3a2600;box-shadow:0 0 0 5px var(--win-glow)}
+.node.doing{border-color:var(--signal);background:var(--surface-2);color:var(--signal);box-shadow:0 0 0 5px var(--signal-glow)}
+.node.check{border-style:solid}
+.stage-row .body{padding:8px 0 22px 6px;min-width:0}
+.stagebtn{width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radius);padding:14px 16px;cursor:pointer;color:var(--text);
+  transition:border-color var(--dur),background var(--dur),transform .12s var(--ease);
+  display:flex;gap:14px;align-items:center}
+.stagebtn:hover{border-color:var(--signal-dim);background:var(--surface-2)}
+.stagebtn .stagenum{font-size:.72rem;color:var(--text-faint);letter-spacing:.08em;text-transform:uppercase}
+.stagebtn .ttl{font-weight:700;font-size:1rem;margin-top:3px}
+.stagebtn .meta{margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+.stagebtn .grow{flex:1;min-width:0}
+.chip{font-size:.72rem;padding:2px 9px;border-radius:999px;border:1px solid var(--line);
+  color:var(--text-muted);background:var(--surface-2);white-space:nowrap}
+.chip.tag{border-color:var(--signal-dim);color:var(--signal)}
+.chip.check{border-color:var(--gate);color:var(--gate);background:var(--gate-glow)}
+.chip.win{border-color:var(--win);color:var(--win);background:var(--win-glow)}
+.chip.alert{border-color:var(--alert);color:var(--alert)}
+.chip.pass{border-color:var(--pass);color:var(--pass)}
+.stagestatus{flex:0 0 auto;display:flex;align-items:center;gap:6px;color:var(--text-faint);font-size:.8rem}
+
+/* stage detail panel */
+.stagepanel{margin:2px 0 8px;border:1px solid var(--line);border-left:3px solid var(--signal);
+  border-radius:var(--radius);background:var(--surface-2);padding:18px 18px 8px;animation:fade .25s var(--ease)}
+@keyframes fade{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.stagepanel h4{font-size:.82rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);margin:6px 0 10px}
+.trow{display:grid;grid-template-columns:120px 1fr;gap:14px;padding:11px 0;border-top:1px solid var(--line-soft)}
+.trow:first-of-type{border-top:0}
+.trow .cite{font-family:var(--ff-mono);font-size:.8rem;color:var(--signal);word-break:break-word}
+.trow .teach{color:var(--text-muted);font-size:.92rem}
+.trow .q{margin-top:8px}
+.qtoggle{background:transparent;border:1px dashed var(--line);color:var(--text-faint);
+  border-radius:8px;padding:5px 10px;font-size:.8rem;cursor:pointer}
+.qtoggle:hover{color:var(--text);border-color:var(--signal-dim)}
+.qbody{margin-top:8px;padding:10px 12px;background:var(--surface);border-radius:8px;
+  border:1px solid var(--line);font-size:.9rem}
+.qbody.socratic{color:var(--text)}
+
+/* tier tabs */
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.tab{padding:9px 16px;border-radius:999px;border:1px solid var(--line);background:var(--surface);
+  color:var(--text-muted);cursor:pointer;font-size:.88rem;font-weight:600;transition:all var(--dur)}
+.tab:hover{background:var(--surface-2);color:var(--text)}
+.tab.active{background:var(--signal);border-color:var(--signal);color:#04222a}
+.tab .n{opacity:.7;margin-left:6px;font-weight:500}
+
+/* grid of topic / practice cards */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.tcard{padding:18px;display:flex;flex-direction:column;gap:10px}
+.tcard .id{font-family:var(--ff-mono);font-size:.78rem;color:var(--gate);font-weight:600}
+.tcard h3{font-size:1.02rem}
+.tcard .cite{font-family:var(--ff-mono);font-size:.78rem;color:var(--signal);word-break:break-word}
+.tcard .teach{color:var(--text-muted);font-size:.9rem;flex:1}
+.tcard .foot{display:flex;align-items:center;gap:10px;margin-top:4px;flex-wrap:wrap}
+.checkline{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;font-size:.86rem;color:var(--text-muted)}
+.checkbox{width:20px;height:20px;border-radius:6px;border:2px solid var(--line);display:grid;place-items:center;
+  flex:0 0 auto;transition:all var(--dur)}
+.checkline input{position:absolute;opacity:0;width:0;height:0}
+.checkline input:checked + .checkbox{background:var(--win);border-color:var(--win)}
+.checkline input:checked + .checkbox svg{opacity:1}
+.checkbox svg{width:12px;height:12px;opacity:0;color:#3a2600}
+.checkline input:focus-visible + .checkbox{outline:2px solid var(--signal);outline-offset:2px}
+
+/* practice card */
+.pcard .toprow{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.pcard .desc{color:var(--text-muted);font-size:.9rem}
+.seg{display:flex;flex-wrap:wrap;gap:6px;max-width:100%}
+.seg button{background:var(--surface-2);border:1px solid var(--line);border-radius:999px;color:var(--text-faint);
+  padding:6px 11px;font-size:.75rem;cursor:pointer;font-weight:600;white-space:nowrap}
+.seg button.on{color:var(--text);border-color:var(--text-faint)}
+.seg button[data-v="doing"].on{background:var(--signal-glow);color:var(--signal);border-color:var(--signal-dim)}
+.seg button[data-v="done"].on{background:var(--win-glow);color:var(--win);border-color:var(--win)}
+.seg button[data-v="outstanding"].on{background:rgba(248,113,113,.14);color:var(--alert);border-color:var(--alert)}
+textarea.notes{width:100%;min-height:64px;resize:vertical;background:var(--surface-2);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 12px;font-family:inherit;font-size:.88rem}
+textarea.notes:focus{border-color:var(--signal-dim);outline:none}
+
+/* forms / inputs */
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.field label{font-size:.8rem;color:var(--text-muted);font-weight:600}
+.inp,select.inp{background:var(--surface-2);color:var(--text);border:1px solid var(--line);
+  border-radius:var(--radius-sm);padding:10px 12px;font-family:inherit;font-size:.92rem;width:100%}
+.inp:focus{border-color:var(--signal-dim);outline:none}
+textarea.inp{resize:vertical;min-height:80px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* session timeline */
+.sess{border-left:2px solid var(--line);padding-left:20px;position:relative;margin-bottom:24px}
+.sess::before{content:"";position:absolute;left:-7px;top:4px;width:12px;height:12px;border-radius:50%;
+  background:var(--signal);border:2px solid var(--ink)}
+.sess .date{font-family:var(--ff-mono);font-size:.8rem;color:var(--signal)}
+.sess h3{margin:4px 0 8px;font-size:1.06rem}
+.sess .block{margin:10px 0}
+.sess .block b{display:block;font-size:.76rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-faint);margin-bottom:4px}
+.sess .block p{color:var(--text-muted);font-size:.92rem}
+.sess .recapq{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;font-size:.88rem}
+.sess .recapq .a{color:var(--text-faint);margin-top:4px}
+
+/* Q&A log */
+.qa-item{padding:16px;margin-bottom:12px}
+.qa-item .qmeta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.qa-item .ts{font-family:var(--ff-mono);font-size:.74rem;color:var(--text-faint)}
+.qa-item .qq{font-weight:600;margin-bottom:6px}
+.qa-item .aa{color:var(--text-muted);font-size:.93rem;white-space:pre-wrap}
+.qa-item .del{margin-left:auto;background:transparent;border:0;color:var(--text-faint);cursor:pointer;font-size:.8rem}
+.qa-item .del:hover{color:var(--alert)}
+
+/* recap drill */
+.flash{max-width:640px;margin:0 auto}
+.flashcard{min-height:220px;display:flex;flex-direction:column;justify-content:center;align-items:center;
+  text-align:center;padding:34px;border:1px solid var(--line);border-radius:var(--radius-lg);
+  background:linear-gradient(160deg,var(--surface-2),var(--surface));box-shadow:var(--shadow)}
+.flashcard .qtext{font-size:1.24rem;font-weight:700;line-height:1.35}
+.flashcard .atext{color:var(--signal);font-size:1.02rem;margin-top:8px}
+.flashcard .tag{margin-top:16px;font-size:.74rem;color:var(--text-faint)}
+.flash-actions{display:flex;gap:10px;justify-content:center;margin-top:18px;flex-wrap:wrap}
+.weaklist{margin-top:30px}
+.weakitem{display:flex;justify-content:space-between;gap:10px;padding:11px 14px;border:1px solid var(--alert);
+  border-radius:var(--radius-sm);background:rgba(248,113,113,.06);margin-bottom:8px;font-size:.9rem}
+
+/* interview question bank */
+.qcard{padding:18px;margin-bottom:14px}
+.qcard .qhead{display:flex;gap:10px;align-items:baseline}
+.qcard .num{font-family:var(--ff-mono);color:var(--gate);font-weight:700;font-size:.92rem}
+.qcard .qtext{font-weight:600}
+.qcard .src{margin-top:10px;font-size:.84rem;color:var(--text-muted);display:none}
+.qcard .src.show{display:block}
+.qcard .src .lab{color:var(--text-faint)}
+.qcard .grades{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.gbtn{border:1px solid var(--line);background:var(--surface-2);color:var(--text-faint);border-radius:999px;
+  padding:5px 13px;font-size:.78rem;cursor:pointer;font-weight:600}
+.gbtn.on[data-g="correct"]{background:rgba(74,222,128,.14);border-color:var(--pass);color:var(--pass)}
+.gbtn.on[data-g="partial"]{background:var(--win-glow);border-color:var(--win);color:var(--win)}
+.gbtn.on[data-g="miss"]{background:rgba(248,113,113,.14);border-color:var(--alert);color:var(--alert)}
+
+/* your story */
+.numtable{width:100%;border-collapse:collapse;font-size:.92rem}
+.numtable th,.numtable td{text-align:left;padding:12px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.numtable th{color:var(--text-faint);font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+.numtable .metric{font-weight:700;white-space:nowrap}
+.numtable .value{color:var(--signal);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.numtable .caveat{color:var(--text-muted)}
+.numtable .src{font-family:var(--ff-mono);font-size:.76rem;color:var(--text-faint)}
+.risk{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line-soft)}
+.risk:first-child{border-top:0}
+.risk .ic{color:var(--alert);flex:0 0 auto;margin-top:2px}
+.risk p{font-size:.94rem;color:var(--text-muted)}
+
+/* ---- Continue (guided resume) ---- */
+.cont{display:grid;grid-template-columns:1fr minmax(270px,320px);gap:26px;align-items:start}
+.cont>*{min-width:0}
+/* Clears the pinned bar. Its height is not a constant, because the model picker
+ * wraps to a second line on a narrow window, so the offset is measured at render
+ * time into --stepbar-h rather than guessed. */
+.cont-side{position:sticky;top:calc(var(--stepbar-h,54px) + 18px)}
+/* collapsible progress panel (desktop only, mirroring the rail). Sticky makes
+ * .cont-side a containing block, so the button rides the panel's left edge. */
+.sidetoggle{display:none}
+@media (min-width:861px){
+  .sidetoggle{
+    position:absolute;top:9px;left:-13px;z-index:12;
+    display:grid;place-items:center;gap:5px;width:26px;height:26px;padding:0;
+    border:1px solid var(--line);border-radius:999px;
+    background:var(--surface-2);color:var(--text-faint);cursor:pointer;
+    transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+  }
+  .sidetoggle:hover{background:var(--surface-3);color:var(--text)}
+  .sidetoggle:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .sidetoggle svg{width:13px;height:13px;transition:transform var(--dur) var(--ease)}
+  .sidetoggle .sidepct{display:none}
+  /* Collapsed: the panel folds away and the aside becomes a 34px rail that
+   * keeps the one number worth glancing at. Same grid-item rule as the rail —
+   * the aside stays a grid item so the chat column cannot auto-place into it. */
+  .cont.side-hidden{grid-template-columns:1fr 34px}
+  .cont.side-hidden .cont-panel{display:none}
+  .cont.side-hidden .sidetoggle{
+    position:static;width:34px;height:auto;margin-left:auto;
+    padding:7px 0 8px;border-radius:var(--radius-sm);
+  }
+  .cont.side-hidden .sidetoggle svg{transform:rotate(180deg)}
+  .cont.side-hidden .sidetoggle .sidepct{
+    display:block;font-size:.64rem;font-weight:700;letter-spacing:-.02em;
+    color:var(--text-muted);font-variant-numeric:tabular-nums;
+  }
+}
+@media (prefers-reduced-motion:reduce){ .sidetoggle,.sidetoggle svg{transition:none} }
+.stepcard{padding:24px}
+.steptag{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--text-faint)}
+.steptitle{font-size:1.34rem;font-weight:800;margin:6px 0 6px;letter-spacing:-.02em}
+.chatlog{display:flex;flex-direction:column;margin-top:6px}
+.bubble{max-width:86%;padding:12px 15px;border-radius:14px;font-size:.95rem;line-height:1.55;margin:7px 0;border:1px solid var(--line)}
+.bubble .who{font-size:.66rem;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);margin-bottom:5px}
+.bubble.tutor{background:var(--surface-2);border-top-left-radius:4px;align-self:flex-start}
+.bubble.hint{background:transparent;border-style:dashed;color:var(--text-muted);font-size:.9rem;align-self:flex-start}
+.bubble.me{background:var(--signal-glow);border-color:var(--signal-dim);border-top-right-radius:4px;align-self:flex-end}
+.bubble.assistant{background:var(--surface-2);border-left:2px solid var(--signal);border-top-left-radius:4px;align-self:flex-start}
+.bubble.assistant code{background:var(--surface-3);padding:1px 5px;border-radius:5px;font-size:.86em}
+.bubble.sys{background:transparent;border-style:dashed;border-color:var(--gate);color:var(--text-muted);font-size:.86rem;align-self:stretch;max-width:100%}
+/* Session-review bubble. Full width and its own accent because it is not
+   conversation: it reads a session back rather than adding a turn to it. */
+.bubble.review{background:var(--surface-2);border-left:2px solid var(--gate);border-top-left-radius:4px;align-self:stretch;max-width:100%}
+.bubble.think .dots{display:inline-flex;gap:5px;padding:3px 0}
+.bubble.think .dots i{width:7px;height:7px;border-radius:50%;background:var(--signal);opacity:.4;animation:blink 1.2s infinite}
+.bubble.think .dots i:nth-child(2){animation-delay:.2s}
+.bubble.think .dots i:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.bubble.think .dots i{animation:none;opacity:.6}}
+/* Pinned step bar. Orientation (which stage) and the model picker have to stay
+ * reachable once a chat runs past a screen, the same way the progress card on
+ * the right stays put. Only one line of it is pinned, not the whole heading —
+ * a 200px banner following you down the page costs more than it gives.
+ * The negative side margins bleed it to the column edges so content does not
+ * slide through a gap beside it. */
+.stepbar{position:sticky;top:0;z-index:30;
+  display:flex;flex-wrap:wrap;gap:9px 12px;align-items:center;
+  margin:0 calc(-1*clamp(18px,4vw,44px)) 22px;
+  padding:10px clamp(18px,4vw,44px);
+  background:color-mix(in srgb,var(--ink) 86%,transparent);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line)}
+.stepbar .sbstage{font-weight:700;font-size:.92rem;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38ch;flex:0 1 auto}
+.stepbar .sbstage b{color:var(--signal);font-weight:700}
+.stepbar .modelbar{margin-top:0;margin-left:auto;gap:8px}
+@supports not (backdrop-filter:blur(1px)){ .stepbar{background:var(--ink)} }
+/* Back to top. Appears once the pinned bar is doing real work, i.e. once the
+ * heading it replaced has scrolled away. */
+.totop{position:fixed;right:22px;bottom:22px;z-index:45;
+  display:inline-flex;align-items:center;gap:7px;
+  padding:10px 15px;border-radius:999px;cursor:pointer;
+  font-size:.84rem;font-weight:600;
+  color:var(--text);background:var(--surface-2);border:1px solid var(--line);
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
+  opacity:0;transform:translateY(10px);pointer-events:none;
+  transition:opacity .2s var(--ease),transform .2s var(--ease)}
+.totop.show{opacity:1;transform:none;pointer-events:auto}
+.totop:hover{border-color:var(--signal);color:var(--signal)}
+.totop svg{width:13px;height:13px}
+.modelbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:14px;max-width:100%}
+.modelbar .mlbl{font-size:.8rem;color:var(--text-muted)}
+.mselect{background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:7px 10px;font:inherit;font-size:.85rem;max-width:100%}
+.mselect:focus{outline:2px solid var(--signal);outline-offset:1px}
+.syncpill{display:inline-flex;align-items:center;font-size:.76rem;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--text-muted)}
+.syncpill.ok{color:var(--pass);border-color:var(--pass)}
+.syncpill.warn{color:var(--text-muted)}
+.syncpill.bad{color:var(--alert);border-color:var(--alert)}
+.bstat{display:inline-flex;align-items:center;gap:6px;font-size:.76rem;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--text-muted)}
+.bstat .bdot{width:8px;height:8px;border-radius:50%;background:var(--text-faint)}
+.bstat.on{color:var(--pass);border-color:var(--pass)}
+.bstat.on .bdot{background:var(--pass);box-shadow:0 0 0 3px color-mix(in srgb,var(--pass) 22%,transparent)}
+.bstat.off{color:var(--text-muted)}
+.bridgehelp{margin-top:10px;max-width:100%}
+.bridgehelp code{display:inline-block;background:var(--surface-2);padding:2px 7px;border-radius:5px;margin:2px 0;font-size:.82rem}
+.composer{display:flex;gap:10px;margin-top:16px;align-items:flex-end;min-width:0}
+.composer textarea{flex:1;min-width:0;min-height:54px}
+.deliver-row{display:flex;gap:12px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.ack{display:flex;gap:12px;align-items:center;padding:14px 18px;border-radius:var(--radius);background:var(--win-glow);border:1px solid var(--win);margin-bottom:16px}
+.ack .ic svg{width:20px;height:20px}
+.stagedone{text-align:center;padding:38px 24px}
+.stagedone .ic svg{width:34px;height:34px;margin-bottom:6px}
+.stagedone .big{font-size:1.4rem;font-weight:800;margin:6px 0}
+.ring{position:relative;width:134px;height:134px;border-radius:50%;margin:2px auto 0;background:conic-gradient(var(--signal) calc(var(--p)*1%),var(--line-soft) 0)}
+.ring::after{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--surface)}
+.ring .ringnum{position:absolute;inset:0;display:grid;place-items:center;z-index:1;font-size:1.95rem;font-weight:800;letter-spacing:-.03em}
+.ringcap{text-align:center;color:var(--text-faint);font-size:.82rem;margin-top:9px}
+.sidehead{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--text-faint);margin:18px 0 8px}
+.steprow{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:9px;cursor:pointer;font-size:.88rem;color:var(--text-muted)}
+.steprow:hover{background:var(--surface-2);color:var(--text)}
+.steprow.cur{background:var(--signal-glow);color:var(--text)}
+.steprow .box{width:19px;height:19px;border-radius:5px;border:2px solid var(--line);flex:0 0 auto;display:grid;place-items:center}
+.steprow.done .box{background:var(--win);border-color:var(--win);color:#3a2600}
+.steprow.done .box svg{width:11px;height:11px}
+.steprow .stx{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* partial credit: a step with real chat on it but no "delivered" tick */
+.steprow .box i{display:block;width:9px;height:9px;border-radius:2px;background:var(--signal)}
+.steprow.part .box{border-color:var(--signal)}
+.steprow .pctag{font-size:.7rem;color:var(--signal);flex:0 0 auto}
+.sidefoot{margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)}
+/* whole-track bar + the re-check control */
+.trackline{display:flex;justify-content:space-between;align-items:baseline;margin:16px 0 6px;font-size:.8rem;color:var(--text-muted)}
+.trackline b{font-size:1rem;color:var(--text)}
+.tbar{height:6px;border-radius:999px;background:var(--line-soft);overflow:hidden}
+.tbar i{display:block;height:100%;background:var(--signal);transition:width .35s ease}
+.recheck{width:100%;margin-top:12px}
+.recheckhint{font-size:.74rem;margin-top:6px;line-height:1.45}
+.assessbox{margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)}
+.assessrow{display:flex;gap:8px;align-items:flex-start;padding:7px 0;font-size:.8rem;border-bottom:1px solid var(--line-soft)}
+.assessrow:last-child{border-bottom:0}
+.assessrow .amk{flex:0 0 auto;font-variant-numeric:tabular-nums;font-weight:700;color:var(--signal)}
+.assessrow .amk.zero{color:var(--text-faint)}
+.steprow .pctag.dim{color:var(--text-faint);font-weight:500}
+.spendrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  padding:5px 0;font-size:.8rem;color:var(--text-muted)}
+.spendrow b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.assessrow .atx{min-width:0;flex:1;color:var(--text-muted)}
+.assessrow .atx b{color:var(--text);font-weight:600;display:block}
+.usage{font-size:.7rem;color:var(--text-faint);margin-left:6px;font-variant-numeric:tabular-nums}
+
+/* modal */
+.modal-bg{position:fixed;inset:0;background:rgba(4,8,16,.66);backdrop-filter:blur(3px);
+  display:none;align-items:flex-start;justify-content:center;padding:5vh 16px;z-index:60;overflow-y:auto}
+.modal-bg.open{display:flex;animation:fade .2s var(--ease)}
+.modal{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);
+  width:100%;max-width:600px;box-shadow:var(--shadow);padding:24px}
+.modal h2{font-size:1.24rem;margin-bottom:4px}
+.modal .msub{color:var(--text-muted);font-size:.9rem;margin-bottom:18px}
+.modal-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+
+/* toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--surface-3);border:1px solid var(--signal-dim);color:var(--text);
+  padding:12px 20px;border-radius:999px;box-shadow:var(--shadow);opacity:0;pointer-events:none;
+  transition:all .3s var(--ease);z-index:80;font-size:.9rem;font-weight:600}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* empty state */
+.empty{text-align:center;padding:50px 20px;color:var(--text-faint)}
+.empty svg{width:44px;height:44px;opacity:.5;margin-bottom:12px}
+.empty h3{color:var(--text-muted);margin-bottom:6px;font-weight:600}
+
+.view{display:none}
+.view.active{display:block;animation:fade .25s var(--ease)}
+.hint{color:var(--text-faint);font-size:.82rem}
+
+/* ---------------- responsive ---------------- */
+@media (max-width:860px){
+  .app{grid-template-columns:1fr}
+  .rail{display:none;position:fixed;z-index:50;width:min(84vw,300px);height:100vh}
+  .rail.open{display:flex}
+  .topbar{display:flex;position:sticky;top:0;z-index:40;align-items:center;gap:12px;
+    padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--line)}
+  .topbar b{flex:1;font-size:1rem}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .desk-controls{display:none}
+  .main{padding:20px 16px 70px}
+  .trow{grid-template-columns:1fr}
+  .row2{grid-template-columns:1fr}
+  .cont{grid-template-columns:1fr}
+  .cont-side{position:static}
+  .stage-row{grid-template-columns:48px 1fr}
+  /* clear the mobile topbar, which is itself sticky at top:0 */
+  .stepbar{top:47px;margin:0 -16px 18px;padding:10px 16px}
+  .stepbar .sbstage{max-width:100%;flex:1 1 100%;white-space:normal;overflow-wrap:anywhere}
+  .stepbar .modelbar{margin-left:0}
+  .totop{right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  /* ---- phone layout fixes ---- */
+  /* Safari zooms the whole page when a focused field is under 16px. */
+  .inp,.mselect,select,textarea,input{font-size:16px}
+  /* The three-select model bar was a sticky block eating a quarter of
+   * the screen. On a phone it scrolls away with the content; the topbar stays
+   * as the only pinned chrome. */
+  .stepbar{position:static;margin-top:0}
+  .cont-side{position:static}
+  /* Tap targets: 21px rows are half a fingertip. */
+  .spinerow{padding:10px 0}
+  .spinerow .sname{padding:6px 0}
+  .btn{min-height:40px}
+  .btn-sm{min-height:36px}
+  .qtoggle{min-height:36px}
+  /* Command lines in help bubbles were unwrappable code, and chat bubbles
+   * holding a pasted path or long token set the whole column's min-content
+   * width. anywhere-wrap the bubble, not just its code. */
+  .bridgehelp code,.bubble code{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
+  .bubble{overflow-wrap:anywhere;min-width:0;max-width:100%;box-sizing:border-box}
+  .stepcard .mono{overflow-wrap:anywhere}
+  /* The hidden back-to-top button was parked off-canvas and widened the page.
+   * visibility:hidden was not enough — it still contributed layout width — so
+   * on a phone the non-shown state leaves the tree entirely (no fade, fine). */
+  .totop:not(.show){display:none}
+  .toast{left:12px;right:12px;transform:translateY(20px);max-width:none}
+  .toast.show{transform:translateY(0)}
+  .main{padding-bottom:calc(70px + env(safe-area-inset-bottom,0px))}
+  .topbar{padding-top:calc(12px + env(safe-area-inset-top,0px))}
+  .rail{padding-top:calc(18px + env(safe-area-inset-top,0px));height:100dvh}
+  .composer{position:relative}
+  .composer .inp{min-height:44px}
+  .resitem .ru{padding:8px 0;margin-top:2px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+/* ---- tier chips, resources, core spine, session review --------------------- */
+.tierchip{font-size:.66rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800;
+  padding:2px 8px;border-radius:999px;border:1px solid var(--line);margin-left:8px;vertical-align:2px}
+.tier-core{border-color:var(--gate);color:var(--gate);background:var(--gate-glow)}
+.tier-depth{border-color:var(--signal-dim);color:var(--signal)}
+.tier-reference{border-color:var(--line);color:var(--text-faint)}
+.reslist{margin:8px 0 2px;display:flex;flex-direction:column;gap:8px}
+.resitem{background:var(--surface-2);border:1px solid var(--line);border-left:2px solid var(--signal-dim);
+  border-radius:8px;padding:9px 12px;font-size:.86rem}
+.resitem .rt{font-weight:700}
+.resitem .rw{color:var(--text-faint);margin-top:3px;line-height:1.45}
+.resitem .ru{display:block;margin-top:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.76rem;color:var(--signal);word-break:break-all;text-decoration:none}
+.resitem .ru:hover{text-decoration:underline}
+.resitem .rm{float:right;color:var(--text-faint);font-size:.74rem;font-weight:700}
+.card.spine{margin:0 0 18px}
+.spine .sh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:9px}
+.spine .sh b{font-size:.94rem}
+.spine .sh span{color:var(--text-faint);font-size:.78rem}
+.spinerow{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:.86rem;border-top:1px solid var(--line)}
+.spinerow:first-of-type{border-top:0}
+.spinerow.done{color:var(--text-faint)}
+.spinerow.done .sname{text-decoration:line-through}
+.spinerow .sbox{width:15px;height:15px;border-radius:4px;border:1px solid var(--line);flex:none;
+  display:grid;place-items:center;color:var(--win)}
+.spinerow.done .sbox{border-color:var(--win)}
+.spinerow .sbox svg{width:11px;height:11px}
+.spinerow .sstage{margin-left:auto;color:var(--text-faint);font-size:.75rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.spinerow .sname{cursor:pointer}
+.spinerow .sname:hover{color:var(--signal)}
+.revcard{background:var(--surface-2);border:1px solid var(--gate);border-radius:10px;padding:13px 15px;margin:10px 0}
+.revcard h4{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--gate);margin:0 0 8px}
+.revcard .rb{margin:7px 0;font-size:.88rem;line-height:1.5}
+.revcard .rb b{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--text-faint);margin-bottom:2px}
+</style>
+</head>
+<body>
+<a href="#main" class="skip">Skip to content</a>
+
+<div class="app">
+  <!-- ===================== RAIL ===================== -->
+  <aside class="rail" id="rail" aria-label="Sections">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" stroke="var(--signal)" stroke-width="1.5" opacity=".5"/>
+        <path d="M7 29 h6 v-6 h6 v-6 h6 v-6 h3" stroke="var(--signal)" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <b>Prepwright</b>
+        <small>Interview preparation</small>
+      </div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="rail-foot">
+      <button class="btn btn-ghost btn-sm" id="exportBtn" title="Save all progress to a JSON file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+        Export progress
+      </button>
+      <button class="btn btn-ghost btn-sm" id="importBtn" title="Load progress from a JSON file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9m0 0l-4 4m4-4l4 4M4 7V5a2 2 0 012-2h12a2 2 0 012 2v2"/></svg>
+        Import progress
+      </button>
+      <input type="file" id="importFile" accept="application/json" hidden />
+    </div>
+  </aside>
+
+  <!-- backdrop for mobile rail -->
+  <div class="backdrop" id="backdrop"></div>
+
+  <!-- desktop rail collapse -->
+  <button class="railtoggle" id="railToggle" type="button" aria-controls="rail"
+          aria-expanded="true" aria-label="Hide sidebar" title="Hide sidebar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+  </button>
+
+  <!-- ===================== MAIN ===================== -->
+  <div>
+    <div class="topbar">
+      <button class="iconbtn" id="menuBtn" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <b>Prepwright</b>
+      <button class="iconbtn" id="themeBtnM" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2m-3-7l-1.5 1.5M6.5 17.5L5 19m0-14l1.5 1.5M17.5 17.5L19 19"/></svg>
+      </button>
+    </div>
+
+    <main class="main" id="main">
+      <div class="wrap">
+        <!-- top-right controls (desktop) -->
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-bottom:6px" class="desk-controls">
+          <button class="iconbtn" id="themeBtn" aria-label="Toggle light or dark theme" title="Toggle theme">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2m-3-7l-1.5 1.5M6.5 17.5L5 19m0-14l1.5 1.5M17.5 17.5L19 19"/></svg>
+          </button>
+        </div>
+
+        <section id="view-continue" class="view"></section>
+        <section id="view-overview" class="view"></section>
+        <section id="view-stages" class="view"></section>
+        <section id="view-curriculum" class="view"></section>
+        <section id="view-practice" class="view"></section>
+        <section id="view-sessions" class="view"></section>
+        <section id="view-qa" class="view"></section>
+        <section id="view-recap" class="view"></section>
+        <section id="view-questions" class="view"></section>
+        <section id="view-story" class="view"></section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- modal -->
+<div class="modal-bg" id="modalBg" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal" id="modal"></div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- Outside the views on purpose: every view can grow past a screen, so this
+     is not a Continue-page feature. Rebuilt views never touch it. -->
+<button class="totop" id="toTop" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M8 13V3M8 3 3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>Top</button>
+
+<script>
+"use strict";
+/* =====================================================================
+ *  DATA — the schema every Prepwright track is written in, plus ONE small
+ *  synthetic example so the page runs, renders and can be tested before the
+ *  generator has produced anything real.
+ *
+ *  Shape:
+ *    meta      one track's identity (role, employer, where the posting came from)
+ *    phases    the seven pipeline phases that produce a track, in order
+ *    stages    variable-length study blocks, sized to the time left before the
+ *              interview, which may be five days or five weeks
+ *    topics    T<n> · {s, tier, concept, citation, teach, question, res}
+ *              tier: core | depth | reference
+ *              citation: a document in the local corpus (name.doc.md)
+ *    practice  P<n> · one written thing per stage
+ *    checks    C<n> · the bar you have to clear before moving on
+ *    questions the interview question bank, answered cold
+ *    story     your own resume claims, numbers and risks, ready to defend
+ *    sessions  closed sessions, appended as you go
+ *    claude / codex   the model registries. Content-free of any track: a
+ *              regenerated curriculum MUST carry these two lists over unchanged.
+ *
+ *  Everything under meta/phases/stages/topics/practice/checks/questions/story
+ *  below is a PLACEHOLDER for a made-up backend role. It describes nothing real
+ *  and gets replaced wholesale the first time a track is generated.
+ * ===================================================================== */
+const DATA = {
+  meta:{
+    track:"Example track (placeholder)",
+    role:"Backend Engineer",
+    employer:"Example Company",
+    sourceKind:"placeholder",          // pasted | folder | placeholder
+    targetDate:"",                     // ISO date of the interview, when known
+    generatedAt:"",
+    note:"This is a placeholder track, not advice about a real job. Prepwright replaces this whole object the first time it builds a real one: intake reads the job description, the diagnostic finds what you already know, you approve the gap list, research fills the corpus, and the curriculum is cut to the roughly 20% of concepts that carry roughly 80% of the value."
+  },
+  /* The pipeline that produces a track. Shown on Overview so the page explains
+   * itself before anything has been generated. */
+  phases:{
+    intake:{name:"Intake",desc:"Read the job description — pasted into the box, or picked up from the per-job folder — and pull out the role, the employer and the skills it actually asks for."},
+    diagnostic:{name:"Diagnostic",desc:"A conversation, not a quiz. Find what you know, what you half-know, and what you have never touched."},
+    gaps:{name:"Gap list",desc:"The gaps in priority order. Nothing is researched or taught until you approve the list."},
+    research:{name:"Research",desc:"Pull vetted sources for each approved gap and distil them into the local corpus. The tutor may teach only from the corpus."},
+    curriculum:{name:"Curriculum",desc:"Cut the corpus to the small share of concepts that carries most of the interview value, then lay it out as stages, topics, practice and checks."},
+    teaching:{name:"Teaching",desc:"Work one step at a time in Continue. The tutor asks, you answer, and a step counts as delivered when you can explain it back."},
+    review:{name:"Review",desc:"Close each session, bank its recap questions, and run the question bank cold before the real interview."}
+  },
+  /* Variable length by design. Three here; a real track has as many as the time
+   * before the interview allows. */
+  stages:[
+    {n:1,name:"Ground yourself",focus:"The two ideas the rest of the track leans on."},
+    {n:2,name:"The load-bearing answer",focus:"The question this role screens for, said out loud until it is calm."},
+    {n:3,name:"Rehearse",focus:"Run the question bank cold and close whatever it exposes."}
+  ],
+  topics:{
+    T1:{s:1,tier:"core",concept:"HTTP caching: what the response headers actually promise",
+      citation:"http-caching.doc.md",
+      teach:"[Core · 30m] Cache-Control, then ETag, then revalidation, in that order. Say what a client is allowed to do with a stored copy before opening any code.",
+      question:"A response carries Cache-Control: max-age=60 and an ETag. What does the client do on a second request at t=90s?",
+      res:[
+        {t:"MDN, HTTP caching",u:"https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching",w:"The one page. Read Cache-Control and validation; skip everything else on the first pass.",m:20},
+        {t:"The corpus note for this topic",u:"http-caching.doc.md",w:"Distilled from the sources you approved. This is what the tutor can see.",m:10}
+      ]},
+    T2:{s:1,tier:"core",concept:"Database indexes: why a query gets fast, and what it costs",
+      citation:"database-indexing.doc.md",
+      teach:"[Core · 30m] An index as a sorted lookup structure. Which WHERE clauses it helps, which it cannot help, and what every extra index costs on write.",
+      question:"You add an index on (user_id, created_at). Which queries use it, and why does one of them not?",
+      res:[
+        {t:"The corpus note for this topic",u:"database-indexing.doc.md",w:"Read it once, close it, then say the write cost out loud from memory.",m:15}
+      ]},
+    T3:{s:2,tier:"depth",concept:"Cache invalidation in a service you did not design",
+      citation:"http-caching.doc.md",
+      teach:"[Depth · 40m] Stale reads and cache stampedes. The credible answer names the failure mode before it names a fix.",
+      question:"A price changes but customers see the old one for ten minutes. Where was it cached, and what would you change first?"},
+    T4:{s:3,tier:"reference",concept:"Reading a query plan",
+      citation:"database-indexing.doc.md",
+      teach:"[Reference · 15m] Recognise it, answer in one sentence: sequential scan, index scan, and what a row estimate is for.",
+      question:"The plan shows a sequential scan on a large table. Name one reason the planner might be right."}
+  },
+  practice:{
+    P1:{s:1,label:"Placeholder · one page on the two core topics",portfolio:true,
+      desc:"One page, in your own words, covering both stage-1 topics. Write it after the teaching, not during. If a sentence needs the corpus open in front of you, it is not yours yet."},
+    P2:{s:2,label:"Placeholder · the load-bearing answer, written out",portfolio:false,
+      desc:"Write the answer to the question this role screens for as you would say it: a few sentences, the failure case volunteered, no overclaiming. Then say it out loud twice."},
+    P3:{s:3,label:"Placeholder · the question bank, answered cold",portfolio:true,
+      desc:"Answer every question in the bank with nothing open, mark each one honestly, and rewrite the two worst answers."}
+  },
+  checks:{
+    C1:{s:2,label:"Check 1 · Explain both core topics without notes",
+      desc:"Both stage-1 topics, explained cold, including one thing each of them cannot do. Falling short is a signal to repeat the topic, not to push on."},
+    C2:{s:3,label:"Check 2 · The bank, cold",
+      desc:"Answer the question bank with nothing open. \"I don't know, but here is how I'd find out\" counts; a confident wrong answer does not."}
+  },
+  questions:[
+    {q:"Placeholder — what does Cache-Control: max-age actually let a client do?",
+     a:"Serve the stored copy without asking the server again until it expires. After that it revalidates rather than blindly refetching, when it has a validator.",
+     where:"http-caching.doc.md"},
+    {q:"Placeholder — when does an index on (a, b) stop helping?",
+     a:"When the query does not constrain a, or when it needs a different sort order than the index provides. Every index also costs something on every write.",
+     where:"database-indexing.doc.md"},
+    {q:"Placeholder — describe a caching bug you would expect to see in production.",
+     a:"A stale read after a write, because the write path did not invalidate what the read path had stored. Name the failure before the fix.",
+     where:"http-caching.doc.md"},
+    {q:"Placeholder — how would you decide whether a slow query needs an index?",
+     a:"Read the plan first. An index is one answer among several, and the plan says whether the cost is the scan, the sort, or the row estimate being wrong.",
+     where:"database-indexing.doc.md"}
+  ],
+  /* Your own claims, in your own words, with the boundary you will not cross.
+   * Placeholder rows: replace each one with a line from your actual resume. */
+  story:{
+    claims:[
+      {claim:"(placeholder) A line from your own resume goes here.",
+       evidence:"Where its proof lives — a repository, a report, a paper, a shipped feature.",
+       boundary:"What you would NOT claim about it if pushed."},
+      {claim:"(placeholder) The line you would least like to be asked about.",
+       evidence:"Do this one first. An undefended line is the one that costs you the interview.",
+       boundary:"Say the limit out loud before the interviewer finds it."}
+    ],
+    numbers:[
+      {metric:"(placeholder) A number you have used on your resume",value:"—",
+       caveat:"Every number needs its caveat in the same breath.",source:"Where the number came from."}
+    ],
+    risks:[
+      "(placeholder) The weakest part of your story. Name it before you are asked.",
+      "(placeholder) The question you currently cannot answer. It belongs on the gap list."
+    ]
+  },
+  sessions:[],
+  /* ---- model registries. Not track content — carry these over verbatim. ----
+   * Pinned exact model ids, deliberately NOT the CLI tier aliases: an alias can
+   * quietly resolve to a previous-generation model. The bridge reports the model
+   * that actually served each turn and replies are labelled with it, so a retired
+   * or redirected id shows up on the first message rather than being guessed at. */
+  claude:[
+    {id:"claude-fable-5",    name:"Claude Fable 5 · most capable", short:"Fable 5"},
+    {id:"claude-opus-5",     name:"Claude Opus 5 · deepest",       short:"Opus 5"},
+    {id:"claude-sonnet-5",   name:"Claude Sonnet 5 · balanced",    short:"Sonnet 5"},
+    {id:"claude-haiku-4-5",  name:"Claude Haiku 4.5 · fastest",    short:"Haiku 4.5"}
+  ],
+  codex:[
+    {id:"gpt-5.6-sol",   name:"GPT-5.6 Sol · frontier",  short:"GPT-5.6 Sol"},
+    {id:"gpt-5.6-terra", name:"GPT-5.6 Terra · balanced",short:"GPT-5.6 Terra"},
+    {id:"gpt-5.6-luna",  name:"GPT-5.6 Luna · efficient",short:"GPT-5.6 Luna"}
+  ]
+};
+
+/* =====================================================================
+ *  STATE — layered on top of DATA. Private progress is persisted through the
+ *  authenticated local bridge. localStorage holds preferences, and holds a
+ *  copy of unsent work only while the bridge is unreachable.
+ * ===================================================================== */
+const PREF_KEY="prepwright_preferences_v1";
+
+/* ---- live tutor provider + model config ----
+ * The page talks only to the same-origin local bridge. The bridge invokes the
+ * selected logged-in CLI and discloses the deliberately constructed tutoring
+ * prompt to that provider; the browser never holds an API key.                */
+const API="";                        // same origin (served by bridge.py)
+const PROVIDERS=[
+  {id:"claude",name:"Claude",short:"Claude"},
+  {id:"codex", name:"Codex", short:"Codex"}
+];
+const DEFAULT_PROVIDER="claude";
+/* The registries live on DATA so one object carries everything the page renders.
+ * They are the only part of DATA that is not track content, and a regenerated
+ * curriculum must carry them over unchanged. */
+const PROVIDER_MODELS={claude:DATA.claude,codex:DATA.codex};
+// Fable is opt-in; the default stays Claude Opus.
+const DEFAULT_MODELS={claude:"claude-opus-5",codex:"gpt-5.6-sol"};
+/* Superseded id -> current, so a pick saved in localStorage before a model
+ * refresh does not keep sending a retired model forever.                       */
+const MODEL_SUPERSEDED={
+  "claude-opus-4-8":"claude-opus-5", "claude-opus-4-7":"claude-opus-5",
+  "claude-opus-4-6":"claude-opus-5", "claude-sonnet-4-6":"claude-sonnet-5",
+  "claude-haiku-4-5-20251001":"claude-haiku-4-5",
+  "opus":"claude-opus-5", "sonnet":"claude-sonnet-5",
+  "haiku":"claude-haiku-4-5", "fable":"claude-fable-5"
+};
+function currentProvider(id){ return PROVIDERS.some(x=>x.id===id)?id:DEFAULT_PROVIDER; }
+function providerLabel(id){ const p=PROVIDERS.find(x=>x.id===id); return p?p.short:(id||"provider"); }
+function modelsFor(provider){ return PROVIDER_MODELS[currentProvider(provider)]||[]; }
+function currentModel(id,provider){
+  const p=currentProvider(provider), m=(p==="claude"?(MODEL_SUPERSEDED[id]||id):id);
+  return modelsFor(p).some(x=>x.id===m)?m:DEFAULT_MODELS[p];
+}
+function modelLabel(id){
+  const m=Object.values(PROVIDER_MODELS).flat().find(x=>x.id===id);
+  return m?m.short:(id||"tutor");
+}
+function activeProvider(){ return currentProvider(state&&state.provider); }
+function activeModel(){ return currentModel(state&&state.model,activeProvider()); }
+function isAssistantRole(role){ return role==="assistant"||role==="claude"; }
+/* ---- reasoning effort -------------------------------------------------------
+ * The bridge maps these shared levels to the selected provider's supported CLI
+ * setting and reports what it actually applied.
+ * Effort is NOT a price dial, and its cost is not monotonic: on a short factual
+ * question a higher effort can produce a shorter, more decisive answer and bill
+ * less than a low-effort ramble. The labels below therefore describe depth of
+ * reasoning, never expense — a "max = expensive" label would be false.
+ *
+ * "Default" sends no flag at all, which is the behaviour the page has always had,
+ * so it stays the default and nothing changes for anyone who never touches it.
+ *
+ * Stored per model: the right depth for Haiku is not the right depth for Opus, and
+ * re-picking it on every model switch would be tedious.                          */
+const EFFORTS=[
+  {id:"",       name:"Default",  short:"default", hint:"No flag sent — the CLI's own default"},
+  {id:"low",    name:"Low",      short:"low",     hint:"Answers fast, reasons little, tends to ramble"},
+  {id:"medium", name:"Medium",   short:"medium",  hint:"Middle of the range"},
+  {id:"high",   name:"High",     short:"high",    hint:"Reasons before answering; usually terser and sharper"},
+  {id:"xhigh",  name:"Extra high",short:"xhigh",  hint:"For hard reasoning"},
+  {id:"max",    name:"Max",      short:"max",     hint:"Deepest reasoning the model offers"}
+];
+const EFFORT_IDS=EFFORTS.map(e=>e.id);
+function effortFor(model){
+  const v=((state.effort||{})[model||""]);
+  return EFFORT_IDS.indexOf(v)>=0?v:"";
+}
+function setEffortFor(model,level){
+  state.effort=state.effort||{};
+  state.effort[model]=EFFORT_IDS.indexOf(level)>=0?level:"";
+  save();
+}
+function effortLabel(v){ const e=EFFORTS.find(x=>x.id===(v||"")); return e?e.short:(v||"default"); }
+let bridgeOnline=false;              // selected provider availability, set by pingBridge()
+let bridgeUp=false;                  // the bridge process itself answered /api/health
+let bridgeProviders={};              // provider id -> boolean or {available:boolean}
+let pending={};                     // step key -> awaiting a reply
+function providerAvailable(provider){
+  const status=bridgeProviders[currentProvider(provider)];
+  return (status&&typeof status==="object")?!!status.available:!!status;
+}
+function providerInstalled(provider){
+  const status=bridgeProviders[currentProvider(provider)];
+  return (status&&typeof status==="object")?!!status.installed:!!status;
+}
+/* Three different states, one word each, because they are not one problem: a
+ * bridge that is down loses your notes, a provider CLI that is missing cannot be
+ * fixed by restarting anything, and a CLI that is merely signed out needs one
+ * login. Collapsing them into "Offline · run prep" sends you to the wrong fix
+ * two times in three, so each says which one it is. */
+function bridgeStatus(){
+  const p=activeProvider(), name=providerLabel(p);
+  if(!bridgeUp) return {cls:"off", label:"Offline · not saving",
+    help:`Run the local bridge once, then reload this page. In any terminal:`, cmd:"prep"};
+  if(!providerInstalled(p)) return {cls:"off", label:`Saved · no ${name} CLI`,
+    help:`Progress is saving, but the ${name} CLI is not installed on this Mac, so its models cannot answer. Pick another provider above, or install it:`,
+    cmd:(p==="codex"?"npm i -g @openai/codex":"npm i -g @anthropic-ai/claude-code")};
+  if(!providerAvailable(p)) return {cls:"off", label:`Saved · ${name} signed out`,
+    help:`Progress is saving, but the ${name} CLI is not logged in. Sign in, then reload this page:`,
+    cmd:(p==="codex"?"codex login":"claude")};
+  return {cls:"on", label:"Live · connected",
+    help:`This box is answering through your logged-in ${name} CLI; the bounded tutoring prompt and relevant source excerpts are sent to that provider. The bridge runs from any directory with:`, cmd:"prep"};
+}
+
+function seedState(){
+  const topics={}, practice={};
+  Object.keys(DATA.topics).forEach(id=>topics[id]={done:false});
+  Object.keys(DATA.practice).forEach(id=>practice[id]={status:"todo",notes:""});
+  // A generated track starts empty. Any recap cards come from sessions you close.
+  const recap={};
+  const bank=[];
+  DATA.sessions.forEach((s,si)=>(s.recap||[]).forEach((r,ri)=>{
+    const id="s"+si+"q"+ri; bank.push({id,q:r.q,a:r.a,stage:s.title});
+    recap[id]={got:0,missed:0};
+  }));
+  return {
+    theme:null, topics, practice,
+    qa:[], sessions:[], recap, recapBank:bank,
+    questions:{}, checks:{}, stepLog:{}, lastView:"continue",
+    provider:DEFAULT_PROVIDER,
+    model:DEFAULT_MODELS[DEFAULT_PROVIDER],
+    models:Object.assign({},DEFAULT_MODELS),
+    // model id -> effort level. "" means send no --effort flag.
+    effort:{},
+    // Re-check results: assess = key -> {mastery,reason,at} feeding stepScore();
+    // assessList = the last run's rows, kept only to redraw the side panel.
+    assess:{}, assessList:[], assessAt:0, assessCost:""
+  };
+}
+
+
+/* Declared above the load() call below. These were once declared with
+ * the rest of the persistence block below and load() assigned them from inside a
+ * try/catch: every assignment threw ReferenceError before initialisation and the
+ * catch ate it, so carried and pending work was read and silently dropped. */
+const PENDING_KEY="prepwright_pending_v1";
+/* Rail collapse is deliberately NOT on `state`: `state` is mirrored to disk by
+ * pushState, and a sidebar toggle has no business bumping the progress revision
+ * or travelling to the phone. It rides in the localStorage prefs blob next to
+ * theme, which is per-browser by nature. Declared here so loadState() can set it
+ * before the toggle is wired. */
+let railHidden=false;
+let sideHidden=false;
+let pendingState=null;    // work saved while the bridge was unreachable
+
+let state=load();
+/* merge-forward: keep saved progress, but make sure ids added to DATA since the
+ * save exist, so a curriculum update never blanks a restored file.            */
+function hydrate(s){
+  const base=seedState();
+  const provider=currentProvider(s.provider);
+  const models=Object.assign({},base.models,s.models||{});
+  // A save with no `models` map: seed the Claude slot from its `model` field.
+  if(!s.models||!s.models.claude) models.claude=currentModel(s.model,"claude");
+  models.claude=currentModel(models.claude,"claude");
+  models.codex=currentModel(models.codex,"codex");
+  return Object.assign(base,s,{
+    topics:Object.assign(base.topics,s.topics||{}),
+    practice:Object.assign(base.practice,s.practice||{}),
+    recap:Object.assign(base.recap,s.recap||{}),
+    recapBank:(s.recapBank&&s.recapBank.length)?s.recapBank:base.recapBank,
+    assess:Object.assign({},s.assess||{}),
+    assessList:s.assessList||[],
+    provider,
+    models,
+    model:models[provider]
+  });
+}
+function load(){
+  try{
+    // The offline journal is parked here rather than adopted as the live state.
+    // A browser holding a stale copy must not start the page from it and then
+    // push that copy over a good disk file, so it is a merge candidate that
+    // reconcileWithDisk() weighs against disk, never the starting truth.
+    // It goes through the same shape check the Import button uses: it is
+    // same-origin data, but it reaches Object.assign in mergeStates(), and a
+    // "__proto__" key there is prototype pollution.
+    const carry=k=>{
+      try{
+        const raw=localStorage.getItem(k); if(!raw) return null;
+        const o=JSON.parse(raw);
+        if(!o||Array.isArray(o)||typeof o!=="object"||!safeImportTree(o)) return null;
+        return o;
+      }catch(e){ return null; }
+    };
+    pendingState=carry(PENDING_KEY);
+    const prefs=JSON.parse(localStorage.getItem(PREF_KEY)||"{}");
+    railHidden=!!prefs.railHidden;
+    sideHidden=!!prefs.sideHidden;
+    return hydrate(Object.assign(seedState(),{
+      theme:prefs.theme||null,lastView:prefs.lastView||"continue",
+      provider:prefs.provider||DEFAULT_PROVIDER,
+      models:prefs.models||Object.assign({},DEFAULT_MODELS),
+      model:prefs.model||DEFAULT_MODELS[DEFAULT_PROVIDER],effort:prefs.effort||{}
+    }));
+  }catch(e){ return seedState(); }
+}
+/* ---- persistence ----------------------------------------------------------
+ * The bridge writes a private 0600 file and refuses writes that would delete
+ * work. That file is the record; localStorage normally holds only UI and model
+ * preferences.
+ * One deliberate exception: while the bridge is unreachable this tab is the only
+ * holder of whatever is typed, and a closed lid would end it. In that window the
+ * state, chat text included, is parked under PENDING_KEY and erased the moment
+ * the bridge accepts it. The trade is explicit: a browser profile is a weaker
+ * store than a 0600 file, and losing the session outright is worse.           */
+const SYNC_DEBOUNCE_MS=250;
+let syncTimer=null, syncState="idle";   // idle | pending | saving | saved | error
+let lastPushedJSON="";
+let diskRevision=null;
+/* Nothing may reach disk before the page has read what is already there. The
+ * init render calls save(), and an unguarded save() would stamp savedAt=now and
+ * push, so a page that had loaded nothing looks newer than the real work on
+ * disk.                                                                        */
+let reconciled=false;
+
+/* Total tutor messages held. The one number that says how much work a state is
+ * carrying, and the one that must never go backwards. */
+function chatVolume(s){
+  let n=0; const sl=(s&&s.stepLog)||{};
+  Object.keys(sl).forEach(k=>{ n+=((sl[k])||[]).length; });
+  return n;
+}
+
+/* Union, never replace. Used for both the legacy migration and the offline
+ * replay, so neither path can subtract. Longer chat log wins per step; a done
+ * mark set anywhere stays set; entries with ids are unioned by id. */
+function mergeStates(base,extra){
+  if(!extra||typeof extra!=="object") return base;
+  const out=Object.assign({},base);
+  const sl=Object.assign({},base.stepLog||{});
+  Object.keys(extra.stepLog||{}).forEach(k=>{
+    const a=sl[k]||[], b=extra.stepLog[k]||[];
+    if(b.length>a.length) sl[k]=b;
+  });
+  out.stepLog=sl;
+  out.topics=Object.assign({},base.topics||{});
+  Object.keys(extra.topics||{}).forEach(k=>{
+    if((extra.topics[k]||{}).done) out.topics[k]=Object.assign({},out.topics[k]||{},{done:true});
+  });
+  out.practice=Object.assign({},base.practice||{});
+  Object.keys(extra.practice||{}).forEach(k=>{
+    const e=extra.practice[k]||{}, c=out.practice[k]||{};
+    if(e.status&&e.status!=="todo"&&(!c.status||c.status==="todo")) c.status=e.status;
+    if(e.notes&&!c.notes) c.notes=e.notes;
+    out.practice[k]=c;
+  });
+  ["qa","sessions"].forEach(f=>{
+    const seen=new Set((base[f]||[]).map(x=>x&&x.id));
+    out[f]=(base[f]||[]).concat((extra[f]||[]).filter(x=>x&&!seen.has(x.id)));
+  });
+  /* `extra` is the newer side at every call site, so it wins a key both hold.
+   * With `base` last, a check retaken offline, a question re-graded offline and
+   * a fresh grade were all silently rolled back to the disk copy on the next
+   * reconciliation. */
+  out.checks=Object.assign({},base.checks||{},extra.checks||{});
+  out.questions=Object.assign({},base.questions||{},extra.questions||{});
+  out.assess=Object.assign({},base.assess||{},extra.assess||{});
+  /* Recap cards and their drill counters are work too. Without this they
+   * survived only from `base`, so every card banked while the bridge was down
+   * disappeared the moment it came back. Unioned by question text, because the
+   * ids are minted per device and would otherwise duplicate. */
+  const seen=new Set((base.recapBank||[]).map(c=>String(c&&c.q||"").trim().toLowerCase()));
+  out.recapBank=(base.recapBank||[]).concat(
+    (extra.recapBank||[]).filter(c=>{
+      const q=String(c&&c.q||"").trim().toLowerCase();
+      if(!q||seen.has(q)) return false;
+      seen.add(q); return true;
+    }));
+  out.recap=Object.assign({},base.recap||{});
+  Object.keys(extra.recap||{}).forEach(id=>{
+    const a=out.recap[id]||{got:0,missed:0}, b=extra.recap[id]||{};
+    out.recap[id]={got:Math.max(a.got||0,b.got||0),missed:Math.max(a.missed||0,b.missed||0)};
+  });
+  return out;
+}
+
+/* The tab is the only holder of this work until the bridge takes it. Park it in
+ * browser storage so a reload, a crash or a closed laptop does not end it. */
+function stashPending(){
+  try{ localStorage.setItem(PENDING_KEY,JSON.stringify(state)); }catch(e){}
+}
+function clearPending(){
+  pendingState=null;
+  try{ localStorage.removeItem(PENDING_KEY); }catch(e){}
+}
+
+function savePrefs(){
+  const prefs={theme:state.theme,lastView:state.lastView,provider:activeProvider(),
+    model:activeModel(),models:state.models||{},effort:state.effort||{},
+    railHidden:railHidden,sideHidden:sideHidden};
+  try{ localStorage.setItem(PREF_KEY,JSON.stringify(prefs)); }catch(e){}
+}
+
+function setSync(s){
+  if(syncState===s) return;
+  syncState=s;
+  const el=document.getElementById("syncPill");
+  if(el) paintSync(el);
+}
+function paintSync(el){
+  const map={
+    idle  :["",              ""],
+    pending:["Saving…",      "warn"],
+    saving:["Saving…",       "warn"],
+    saved :["Saved to disk", "ok"],
+    error :["Not saved",     "bad"]
+  };
+  const [txt,cls]=map[syncState]||map.idle;
+  el.textContent=txt; el.className="syncpill "+cls; el.hidden=!txt;
+}
+
+function save(){
+  // Stamping before reconciliation is what let an empty page outrank disk.
+  if(reconciled) state.savedAt=Date.now();
+  savePrefs();
+  setSync("pending");
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(pushState,SYNC_DEBOUNCE_MS);
+}
+
+/* How much real work a state holds. Used to stop an untouched page from
+ * overwriting a good save. The test is "more than a fresh seed", and a fresh
+ * seed for a newly generated track is genuinely empty.                       */
+function progressWeight(s){
+  if(!s||typeof s!=="object") return 0;
+  let n=0;
+  const sl=s.stepLog||{};
+  Object.keys(sl).forEach(k=>{ n+=((sl[k])||[]).length; });
+  n+=((s.qa||[]).length)+((s.sessions||[]).length)+Object.keys(s.questions||{}).length;
+  Object.keys(s.practice||{}).forEach(k=>{
+    const h=s.practice[k]; if(h&&h.status&&h.status!=="todo") n++;
+    if(h&&h.notes) n++;
+  });
+  Object.keys(s.topics||{}).forEach(k=>{ if((s.topics[k]||{}).done) n++; });
+  Object.keys(s.checks||{}).forEach(()=>n++);
+  return n;
+}
+
+async function pushState(opts){
+  opts=opts||{};
+  // Never write before reconcileWithDisk() has run. Anything typed in that
+  // window is held, not lost: reconcile pushes once it knows what disk holds.
+  if(!reconciled && !opts.reconciling){ stashPending(); return false; }
+  // Stamp before sending: an unstamped file on disk compares as 0 and would lose
+  // a later tie-break against a freshly seeded page.
+  if(!state.savedAt) state.savedAt=Date.now();
+  const stateJSON=JSON.stringify(state);
+  const body=JSON.stringify({state,revision:diskRevision,
+    intent:opts.intent||"update"});
+  if(stateJSON===lastPushedJSON && !opts.force){ setSync("saved"); return true; }
+  setSync("saving");
+  try{
+    const r=await fetch(API+"/api/state",{
+      method:"POST",
+      headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+      body,
+      keepalive:!!opts.keepalive
+    });
+    let d={}; try{ d=await r.json(); }catch(_){}
+    if(r.status===409){
+      // The bridge refused to let this write delete work. It returns the real
+      // file with the refusal, so take it, fold this tab's work into it, and
+      // keep going instead of stranding the page.
+      if(d.regression && d.state){
+        state=hydrate(mergeStates(hydrate(d.state),state));
+        diskRevision=d.revision||null;
+        lastPushedJSON="";
+        savePrefs();
+        render(state.lastView||"continue",{silent:true,keepScroll:true});
+        toast("Merged with the saved copy on disk");
+        return await pushState({force:true,reconciling:!reconciled});
+      }
+      stashPending();
+      setSync("error");
+      toast("Progress changed in another tab — reload before saving");
+      return false;
+    }
+    if(!r.ok) throw new Error(d.error||("HTTP "+r.status));
+    diskRevision=d.revision||null;
+    lastPushedJSON=stateJSON;
+    clearPending();          // it is on disk now; the browser copy is redundant
+    setSync("saved"); return true;
+  }catch(e){
+    // The bridge is unreachable. This tab is now the only holder of the work.
+    stashPending();
+    setSync("error"); return false;
+  }
+}
+
+/* Last-ditch flush when the tab closes inside the debounce window. keepalive is
+ * capped near 64KB, so this can fail on a long transcript; that is survivable
+ * because reconcileWithDisk() re-pushes on the next load.                      */
+function flushOnExit(){
+  if(syncState==="pending"||syncState==="saving"||syncState==="error"){
+    clearTimeout(syncTimer);
+    pushState({keepalive:true,force:true});
+  }
+}
+window.addEventListener("pagehide",flushOnExit);
+window.addEventListener("beforeunload",flushOnExit);
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") flushOnExit(); });
+
+/* On start, reconcile whatever this browser is carrying with private disk state. */
+async function reconcileWithDisk(){
+  let disk=null, response={};
+  try{
+    const r=await fetch(API+"/api/state",{
+      cache:"no-store",headers:{"x-tutor-bridge":"1"}
+    });
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    response=await r.json(); disk=response.state||null;
+    diskRevision=response.revision||null;
+  }catch(e){
+    // No bridge. Adopt whatever this browser was carrying so the session is not
+    // blank, keep it stashed, and leave reconciled=false so nothing is written
+    // blind. pushState() will hold every save until a bridge answers.
+    const carried=mergeStates(state,pendingState||{});
+    if(chatVolume(carried)>chatVolume(state)||progressWeight(carried)>progressWeight(state)){
+      state=hydrate(carried);
+      render(state.lastView||"continue",{silent:true,keepScroll:true});
+    }
+    stashPending();
+    setSync("error");
+    toast("Bridge offline — progress is held in this browser until it returns");
+    return;
+  }
+
+  // Fold in any work saved while the bridge was down. Union only, so it cannot
+  // subtract from what is already stored.
+  let local=state;
+  if(pendingState) local=mergeStates(local,pendingState);
+
+  if(!disk){
+    state=hydrate(local);
+    reconciled=true;
+    await pushState({force:true,reconciling:true});
+    render(state.lastView||"continue",{silent:true,keepScroll:true});
+    return;
+  }
+
+  // Disk is the record. The page only ever adds to it. Merging both directions
+  // makes the outcome independent of which clock is ahead: without it a stale
+  // tab wins purely on a fresher savedAt, and real work disappears.
+  const merged=mergeStates(hydrate(disk),local);
+  const adopted=chatVolume(merged)>chatVolume(local)
+             || progressWeight(merged)>progressWeight(local);
+  state=hydrate(merged);
+  lastPushedJSON="";
+  savePrefs();
+  reconciled=true;
+  render(state.lastView||"continue",{silent:true,keepScroll:true});
+  const grew=chatVolume(merged)>chatVolume(disk)||progressWeight(merged)>progressWeight(disk);
+  if(grew){ await pushState({force:true,reconciling:true}); }
+  else{
+    // Nothing of ours to add: disk already holds everything.
+    lastPushedJSON=JSON.stringify(state);
+    clearPending();
+    setSync("saved");
+  }
+  if(adopted) toast("Restored your progress from disk");
+}
+
+/* =====================================================================
+ *  HELPERS
+ * ===================================================================== */
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function makeId(){ return "id"+(state._seq=(state._seq||0)+1)+"_"+(Date.now()); }
+
+const ICON={
+  continue:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l5 3.5-5 3.5v-7z" fill="currentColor" stroke="none"/></svg>',
+  overview:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+  stages:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v6a3 3 0 003 3h6a3 3 0 013 3v6"/><circle cx="6" cy="3" r="1.6"/><circle cx="18" cy="21" r="1.6"/></svg>',
+  curriculum:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5a2 2 0 012-2h9l5 5v11a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></svg>',
+  practice:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h9"/></svg>',
+  sessions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>',
+  qa:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-8 8H7l-4 3V12a8 8 0 018-8h2a8 8 0 018 8z"/></svg>',
+  recap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 019-9 9 9 0 016.7 3M21 12a9 9 0 01-9 9 9 9 0 01-6.7-3"/><path d="M18 3v3h-3M6 21v-3h3"/></svg>',
+  questions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 11v4c0 1.5 3.6 3 8 3s8-1.5 8-3v-4"/></svg>',
+  story:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>',
+  warn:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>',
+  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/></svg>'
+};
+
+const NAV=[
+  {id:"continue",label:"Continue"},
+  {id:"overview",label:"Overview"},
+  {id:"stages",label:"Stage path"},
+  {id:"curriculum",label:"Curriculum"},
+  {id:"practice",label:"Practice"},
+  {id:"sessions",label:"Session log"},
+  {id:"qa",label:"Q&A log"},
+  {id:"recap",label:"Recap drill"},
+  {id:"questions",label:"Interview questions"},
+  {id:"story",label:"Your story"}
+];
+
+/* progress calculations */
+function practiceCount(){ return Object.keys(DATA.practice).length; }
+function checkCount(){ return Object.keys(DATA.checks).length; }
+function practiceDone(){ return Object.values(state.practice).filter(h=>h.status==="done").length; }
+function topicsDone(){ return Object.values(state.topics).filter(t=>t.done).length; }
+function checksPassed(){ return Object.values(state.checks).filter(c=>c&&c.result==="pass").length; }
+function stageStatus(n){
+  const steps=stageSteps(n);
+  if(!steps.length) return "todo";
+  if(steps.every(stepDone)) return "done";
+  if(steps.some(stepDone)) return "doing";
+  const anyOpen=Object.entries(DATA.practice).some(([id,h])=>h.s===n&&
+    ["doing","outstanding"].indexOf((state.practice[id]||{}).status)>=0);
+  return anyOpen?"doing":"todo";
+}
+
+/* ---- Continue: stage-step model ------------------------------------------
+ * A stage owns whatever topics, practice and checks name it, so a track can be
+ * three stages or fifteen and nothing here changes. Step keys are the contract
+ * with the bridge: <stage>:topic|practice|check:<id>. */
+function stageSteps(n){
+  const steps=[];
+  Object.entries(DATA.topics).filter(([,t])=>t.s===n).forEach(([id])=>steps.push({key:n+":topic:"+id,type:"topic",id,stage:n}));
+  Object.entries(DATA.practice).filter(([,h])=>h.s===n).forEach(([id])=>steps.push({key:n+":practice:"+id,type:"practice",id,stage:n}));
+  Object.entries(DATA.checks).filter(([,c])=>c.s===n).forEach(([id])=>steps.push({key:n+":check:"+id,type:"check",id,stage:n}));
+  return steps;
+}
+function stepDone(s){
+  if(s.type==="topic") return !!(state.topics[s.id]&&state.topics[s.id].done);
+  if(s.type==="practice") return !!(state.practice[s.id]&&state.practice[s.id].status==="done");
+  return !!(state.checks[s.id]&&(state.checks[s.id].result==="pass"||state.checks[s.id].result==="retaken"));
+}
+function stageComplete(n){ const st=stageSteps(n); return st.length>0&&st.every(stepDone); }
+function firstStageNum(){ return DATA.stages.length?DATA.stages[0].n:1; }
+function lastStageNum(){ return DATA.stages.length?DATA.stages[DATA.stages.length-1].n:1; }
+function currentStageNum(){ for(const st of DATA.stages){ if(!stageComplete(st.n)) return st.n; } return lastStageNum(); }
+
+/* ---- progress = delivery against the step's task ---------------------------
+ * Progress measures how much of the DEFINED TASK each step got, and nothing
+ * else. Talking is not delivering: much of the chat on any step is side
+ * questions asked in whichever box happened to be open, and counting turns
+ * would score all of that as progress on the wrong topic.
+ *
+ * Two sources only, highest first:
+ *   delivered   1.00  your own tick, nothing overrides it
+ *   assessed    0-1   Re-check, which reads the transcript against the task
+ *
+ * Chat activity contributes ZERO to the percentage. It only lights the step up
+ * as touched, so you can see where you have been without it flattering you. */
+/* ---- reading a step's transcript across curriculum re-cuts ------------------
+ * A step key embeds its stage ("2:topic:T6"), so moving a topic to a different
+ * stage would strand its chat log under the old key. Re-cuts happen: the gap
+ * list gets re-approved, the curriculum is rebuilt, and a topic lands somewhere
+ * else with the same id.
+ *
+ * Reads therefore merge the canonical key with any surviving key for the same
+ * step id; writes only ever go to the canonical one. Nothing is moved, copied
+ * or rewritten on disk, so the bridge's shrink guard is untouched, no message
+ * is duplicated, and the spend totals still count each stored log exactly once. */
+function stepAliasKeys(key){
+  const m=/^(\d{1,2}):(topic|practice|check):([A-Za-z0-9]+)$/.exec(String(key||""));
+  if(!m) return [];
+  const suffix=":"+m[2]+":"+m[3];
+  return Object.keys(state.stepLog||{}).filter(k=>k!==key&&k.endsWith(suffix)&&/^\d{1,2}:/.test(k));
+}
+function stepLogOf(key){
+  const own=(state.stepLog&&state.stepLog[key])||[];
+  const alias=stepAliasKeys(key);
+  if(!alias.length) return own;
+  const merged=alias.reduce((a,k)=>a.concat(state.stepLog[k]||[]),[]).concat(own);
+  return merged.slice().sort((a,b)=>(a.ts||0)-(b.ts||0));
+}
+function stepEvidence(key){
+  const log=stepLogOf(key);
+  let mine=0,tutor=0,chars=0;
+  log.forEach(e=>{
+    const r=e.role||"me";
+    if(isAssistantRole(r)) tutor++;
+    else if(r==="me"){ mine++; chars+=(e.text||"").length; }
+  });
+  return {mine,tutor,chars};
+}
+function stepTouched(key){ return stepEvidence(key).mine>0; }
+function stepScore(s){
+  if(stepDone(s)) return 1;
+  const a=(state.assess||{})[s.key];
+  if(a&&typeof a.mastery==="number") return Math.max(0,Math.min(1,a.mastery));
+  return 0;   // unassessed chat is not progress, however much of it there is
+}
+/* Has this step been graded, or is its 0 just "not looked at yet"? The side
+ * list needs to tell those apart or an ungraded step looks like a failed one. */
+function stepGraded(s){ return !!((state.assess||{})[s.key]); }
+function pctOf(steps){ return steps.length?Math.round(steps.reduce((a,s)=>a+stepScore(s),0)/steps.length*100):0; }
+function trackPct(){ const all=[]; DATA.stages.forEach(st=>all.push(...stageSteps(st.n))); return pctOf(all); }
+function stepFromKey(k){ const p=k.split(":"); return {key:k,stage:+p[0],type:p[1],id:p[2]}; }
+/* ---- tiers ------------------------------------------------------------------
+ * core      = the small share that produces the answer you are actually asked for
+ * depth     = real depth, worth time only once every core topic is delivered
+ * reference = recognise it, answer in one sentence, never sit a whole session
+ * Practice and checks inherit the strongest tier present in their stage, because
+ * a practice piece is exactly as load-bearing as the topics that feed it.           */
+const TIER_LABEL={core:"Core",depth:"Depth",reference:"Reference"};
+const TIER_RANK={core:3,depth:2,reference:1};
+function stageTier(n){
+  let best="";
+  Object.values(DATA.topics).forEach(t=>{
+    if(t.s!==n) return;
+    if(!best||(TIER_RANK[t.tier]||0)>(TIER_RANK[best]||0)) best=t.tier;
+  });
+  return best||"core";
+}
+function tierChip(tier){
+  return tier?`<span class="tierchip tier-${esc(tier)}">${esc(TIER_LABEL[tier]||tier)}</span>`:"";
+}
+/* The core topics, in delivery order. Derived from DATA.topics rather than kept
+ * as a second hand-written array, so it cannot drift from the curriculum. */
+function coreSpine(){
+  return Object.entries(DATA.topics)
+    .filter(([,t])=>t.tier==="core")
+    .map(([id,t])=>({id,s:t.s,concept:t.concept,key:t.s+":topic:"+id}))
+    .sort((a,b)=>a.s-b.s||a.id.localeCompare(b.id));
+}
+function stepMeta(s){
+  if(s.type==="topic"){ const t=DATA.topics[s.id];
+    return {kind:"Topic "+s.id,title:t.concept,citation:t.citation||"",
+      prompt:(t.citation?("Read "+t.citation+" in the corpus. "):"")+t.question,
+      hint:t.teach,deliver:"I can explain this",tier:t.tier||"",res:t.res||[]}; }
+  if(s.type==="practice"){ const h=DATA.practice[s.id];
+    return {kind:"Practice "+s.id+(h.portfolio?" · portfolio piece":""),title:h.label,citation:"",
+      prompt:h.desc,hint:"",deliver:"Mark practice delivered",tier:stageTier(h.s),res:[]}; }
+  const c=DATA.checks[s.id];
+  return {kind:"Check "+s.id,title:c.label,citation:"",prompt:c.desc,hint:"",
+    deliver:"Mark check cleared",tier:stageTier(c.s),res:[]};
+}
+function setStepDone(s,done){
+  if(s.type==="topic") state.topics[s.id].done=done;
+  else if(s.type==="practice") state.practice[s.id].status=done?"done":"todo";
+  else state.checks[s.id]=done?{result:"pass"}:{result:""};
+  save();
+}
+
+/* =====================================================================
+ *  RENDER
+ * ===================================================================== */
+/* opts.silent    — do not save; a render caused by adopting someone else's write
+ *                  must not write back, or two tabs ping-pong storage events.
+ * opts.keepScroll — leave the viewport alone; only deliberate navigation jumps
+ *                   to the top, never a background sync.                       */
+function render(view,opts){
+  opts=opts||{};
+  $$(".view").forEach(v=>v.classList.remove("active"));
+  const el=$("#view-"+view); if(!el) return;
+  el.classList.add("active");
+  ({continue:renderContinue,overview:renderOverview,stages:renderStages,curriculum:renderCurriculum,
+    practice:renderPractice,sessions:renderSessions,qa:renderQA,recap:renderRecap,
+    questions:renderQuestions,story:renderStory}[view])(el);
+  $$("#nav .navlink").forEach(a=>a.classList.toggle("active",a.dataset.view===view));
+  state.lastView=view;
+  if(!opts.silent) save();
+  const sp=document.getElementById("syncPill"); if(sp) paintSync(sp);  // pill is re-created by each render
+  if(!opts.keepScroll){ $("#main").scrollTo?.(0,0); window.scrollTo(0,0); }
+  paintToTop();   // a view change can shorten the page out from under the button
+}
+
+let contStage=null, focusStepKey=null;
+/* Publish the pinned bar's real height so the progress card can sit under it
+ * instead of behind it. Cheap, and it is the only way to stay correct when the
+ * bar wraps to two lines on a narrow window. */
+function syncBarHeight(){
+  const b=document.querySelector(".view.active .stepbar");
+  document.documentElement.style.setProperty(
+    "--stepbar-h",(b?Math.round(b.getBoundingClientRect().height):0)+"px");
+}
+window.addEventListener("resize",syncBarHeight,{passive:true});
+/* ---- the core spine panel --------------------------------------------------
+ * Always on screen in Continue while any core topic is outstanding. Its job is
+ * to keep the core visible from whatever stage you happen to be looking at: the
+ * whole cut fails if the spine is something you have to go and find. Disappears
+ * once the spine is delivered, so it never becomes furniture.                  */
+function spinePanel(){
+  const spine=coreSpine();
+  const left=spine.filter(x=>!(state.topics[x.id]&&state.topics[x.id].done));
+  if(!left.length) return "";
+  const mins=left.reduce((a,x)=>{const m=/·\s*(\d+)m\]/.exec(DATA.topics[x.id].teach); return a+(m?+m[1]:0);},0);
+  return `<div class="card pad spine">
+    <div class="sh"><b>The core spine · ${spine.length-left.length} of ${spine.length} delivered</b>
+      <span>${mins?"≈"+(Math.round(mins/6)/10)+" h of teaching left · ":""}finish these and you can hold the interview</span></div>
+    ${spine.map(x=>{const d=!!(state.topics[x.id]&&state.topics[x.id].done);
+      return `<div class="spinerow ${d?"done":""}">
+        <span class="sbox">${d?ICON.check:""}</span>
+        <span class="sname" data-jump="${x.s}|${esc(x.key)}" role="button" tabindex="0">${esc(x.id)} · ${esc(x.concept)}</span>
+        <span class="sstage">stage ${x.s}</span></div>`;}).join("")}
+  </div>`;
+}
+/* renderContinue replaces the whole view, and a reply arriving mid-sentence
+ * calls it. Without carrying the box across the swap, an answer the candidate
+ * was part-way through typing is gone the moment the tutor replies. */
+function renderContinue(el){
+  const box=document.querySelector("#stepMsg");
+  const draft=box?box.value:"";
+  const atEnd=box?(box.selectionStart===box.value.length):true;
+  const out=renderContinueInner(el);
+  if(draft){
+    const fresh=document.querySelector("#stepMsg");
+    if(fresh && !fresh.value){
+      fresh.value=draft;
+      if(atEnd){ try{ fresh.selectionStart=fresh.selectionEnd=draft.length; }catch(e){} }
+    }
+  }
+  return out;
+}
+function renderContinueInner(el){
+  if(DATA.stages.length&&DATA.stages.every(st=>stageComplete(st.n))){
+    el.innerHTML=`<div class="vhead"><div class="kicker">Continue</div>
+      <h1>Track complete.</h1>
+      <p class="sub">Every stage is delivered. Collect your written pieces in Practice, then run the bank cold in Interview questions.</p></div>
+      <div class="card stagedone"><div class="ic" style="color:var(--win)">${ICON.check}</div>
+      <div class="big">You finished this track</div>
+      <p class="hint">Every step of every stage is done.</p></div>`;
+    return;
+  }
+  const sn=contStage||currentStageNum();
+  const stg=DATA.stages.find(st=>st.n===sn)||{n:sn,name:"Stage "+sn,focus:""};
+  const steps=stageSteps(sn);
+  const done=steps.filter(stepDone).length, total=steps.length, remaining=total-done;
+  // The ring reads partial credit; "complete" stays strict, because "Stage N
+  // delivered" has to mean every step was actually ticked off.
+  const pct=pctOf(steps), complete=done===total;
+  const provider=activeProvider(), model=activeModel(), providerModels=modelsFor(provider);
+  const bstat=bridgeStatus();
+  let cur=null;
+  if(focusStepKey) cur=steps.find(s=>s.key===focusStepKey);
+  if(!cur && !complete) cur=steps.find(s=>!stepDone(s));
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Continue · welcome back</div>
+      <h1>${complete?("Stage "+sn+" delivered"):("Stage "+sn+" · "+esc(stg.name))}</h1>
+      <p class="sub">${stg.focus?esc(stg.focus)+" ":""}Type in the box to work through each step with the tutor, then mark it delivered when you can explain it back. Every message and every delivery is saved to your progress.</p>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        ${sn>firstStageNum()?`<button class="btn btn-sm btn-ghost" data-cstage="${sn-1}">‹ Stage ${sn-1}</button>`:""}
+        ${sn<lastStageNum()?`<button class="btn btn-sm btn-ghost" data-cstage="${sn+1}">Stage ${sn+1} ›</button>`:""}
+      </div>
+    </div>
+    ${spinePanel()}
+    <div class="stepbar">
+      <span class="sbstage"><b>Stage ${sn}</b> · ${esc(stg.name)}${tierChip(stageTier(sn))}</span>
+      <div class="modelbar">
+        <label class="mlbl" for="tutorProvider">Chat with</label>
+        <select id="tutorProvider" class="mselect" aria-label="Choose tutor provider">
+          ${PROVIDERS.map(p=>`<option value="${esc(p.id)}" ${(provider===p.id)?"selected":""}>${esc(p.name)}</option>`).join("")}
+        </select>
+        <select id="tutorModel" class="mselect" aria-label="Choose tutor model">
+          ${providerModels.map(m=>`<option value="${esc(m.id)}" ${(model===m.id)?"selected":""}>${esc(m.name)}</option>`).join("")}
+        </select>
+        <label class="mlbl" for="tutorEffort">thinking</label>
+        <select id="tutorEffort" class="mselect" aria-label="Reasoning effort for this model"
+          title="How hard this model reasons before answering. Remembered per model. Not a price setting — more effort often costs less, because the answer gets shorter.">
+          ${EFFORTS.map(e=>`<option value="${esc(e.id)}" ${(effortFor(model)===e.id)?"selected":""}>${esc(e.name)}</option>`).join("")}
+        </select>
+        <span class="bstat ${bstat.cls}"><span class="bdot"></span>${esc(bstat.label)}</span>
+        <span id="syncPill" class="syncpill" hidden></span>
+        <button class="qtoggle" data-q="bridgehelp" data-label="Go live">Go live ▾</button>
+      </div>
+    </div>
+    <div class="bubble hint bridgehelp" data-qbody="bridgehelp" hidden>
+      <div class="who">${esc(bstat.cls==="on"?"Live tutor":"Turn on the live tutor")}</div>
+      ${esc(bstat.help)}<br>
+      <code>${esc(bstat.cmd)}</code><br>
+      Tutoring notes live in the private file the bridge writes. While the bridge is unreachable they are held in this browser instead and erased once the bridge takes them, so keep it running while you work.
+    </div>
+    <div class="cont${sideHidden?" side-hidden":""}">
+      <div>${cur?stepChat(cur):stageDonePanel(sn)}</div>
+      <aside class="cont-side">${sideToggleBtn(pct)}
+        <div class="cont-panel" id="contPanel">${sideProgress(steps,pct,done,remaining,cur)}</div></aside>
+    </div>`;
+  syncBarHeight();
+}
+function stageDonePanel(sn){
+  const next=sn<lastStageNum()?sn+1:null;
+  return `<div class="ack"><span class="ic">${ICON.check}</span>
+      <div><b>Stage ${sn} delivered.</b> Every step for this stage is done.</div></div>
+    <div class="card stagedone">
+      <div class="big">Nice work — Stage ${sn} is complete</div>
+      <p class="hint">${next?"Start the next stage when you're ready.":"That was the final stage of this track."}</p>
+      ${next?`<div style="margin-top:18px"><button class="btn btn-primary" data-startstage="${next}">Start Stage ${next} →</button></div>`:""}
+    </div>`;
+}
+/* ---- live tutor chat (talks to the selected provider via bridge.py) ---- */
+function requestStep(s){
+  const m=stepMeta(s);
+  return {
+    key:String(s.key||"").slice(0,80),
+    kind:String(m.kind||"").slice(0,120),
+    title:String(m.title||"").slice(0,240),
+    prompt:String(m.prompt||"").slice(0,1200)
+  };
+}
+/* The bridge trims a conversation that exceeds its limits rather than refusing
+ * it, and reports how many turns it left out. Sending the whole log anyway
+ * would ship a step's entire history on every question for nothing, so the page
+ * sends the newest turns that fit and lets the bridge trim further. */
+const SEND_MAX_TURNS=48, SEND_MAX_CHARS=56000;
+function buildMsgs(log){
+  // map step-log roles to the two chat roles; `claude` is accepted as assistant
+  const out=[];
+  (log||[]).forEach(e=>{
+    const savedRole=e.role||"me";
+    const role=isAssistantRole(savedRole)?"assistant":(savedRole==="me"?"user":null);
+    if(!role) return; // skip sys notes
+    if(out.length && out[out.length-1].role===role) out[out.length-1].content+="\n\n"+e.text;
+    else out.push({role,content:e.text});
+  });
+  const kept=[]; let chars=0;
+  for(let i=out.length-1;i>=0;i--){
+    const c=out[i].content||"";
+    if(kept.length && (kept.length>=SEND_MAX_TURNS || chars+c.length>SEND_MAX_CHARS)) break;
+    kept.push(out[i]); chars+=c.length;
+  }
+  kept.reverse();
+  return kept;
+}
+function fmtReply(t){
+  return esc(t).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\n/g,"<br>");
+}
+function bubbleFor(e){
+  const role=e.role||"me";
+  if(role==="session") return sessionBubble(e);
+  // Label with the model that actually served the turn when the bridge reports one.
+  // An unrecognised id renders verbatim, so a redirect is visible instead of silent.
+  // The effort shown is the one the bridge actually applied, echoed back, not the
+  // one that was requested — an unrecognised level silently falls back in the CLI.
+  if(isAssistantRole(role)) return `<div class="bubble assistant"><div class="who">Tutor · ${e.provider?esc(providerLabel(e.provider))+" · ":""}${esc(modelLabel(e.resolved||e.model))}${
+    (e.effort&&e.effort!=="default")?" · thinking "+esc(e.effort):""} · ${esc(fmt(e.ts))}${
+    e.usage?`<span class="usage">${esc(usageLabel(e.usage))}</span>`:""}</div>${fmtReply(e.text)}</div>`;
+  if(role==="sys")    return `<div class="bubble sys"><div class="who">System</div>${esc(e.text).replace(/\n/g,"<br>")}</div>`;
+  return `<div class="bubble me"><div class="who">You · ${esc(fmt(e.ts))}</div>${esc(e.text)}</div>`;
+}
+function pushSys(key,msg){ state.stepLog=state.stepLog||{}; (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"sys",text:msg}); }
+/* Shown on every reply on purpose. Per-question input cost is the number most
+ * likely to creep: a CLI that starts pulling in files from its working
+ * directory, or a model left free to go reading them, can inflate it sharply
+ * with nothing looking broken. Printing it is what keeps it honest, because a
+ * regression shows up on the next reply instead of at the end of the month. */
+function usageLabel(u){
+  if(!u) return "";
+  const k=n=>n>=1000?(n/1000).toFixed(1)+"k":String(n||0);
+  return "· "+k(u.in)+" in / "+k(u.out)+" out"+(u.cached?" · "+k(u.cached)+" cached":"");
+}
+async function askTutor(key){
+  const s=stepFromKey(key);
+  pending[key]=true;
+  if($("#view-continue").classList.contains("active")) renderContinue($("#view-continue"));
+  const provider=activeProvider(), model=activeModel(), step=requestStep(s);
+  // The citation goes over as its own field so the bridge can pull that exact
+  // corpus document and hand it to a tool-less model, instead of parsing it back
+  // out of prose. The field name is the bridge's contract — do not rename it.
+  const body={provider,model,effort:effortFor(model),
+              stepKey:step.key,step,
+              citation:stepMeta(s).citation||"",
+              messages:buildMsgs(stepLogOf(key))};
+  try{
+    const r=await fetch(API+"/api/chat",{method:"POST",
+      headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+      body:JSON.stringify(body)});
+    let d={}; try{ d=await r.json(); }catch(_){}
+    if(!r.ok || d.error){ pushSys(key, (d.error||("Request failed — HTTP "+r.status))); bridgeOnline=(r.status!==0); }
+    else{ (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"assistant",provider:(d.provider||provider),model,resolved:(d.resolved||""),effort:(d.effort||""),usage:(d.usage||null),text:(d.text||"(empty reply)")}); bridgeOnline=true; }
+  }catch(e){
+    bridgeOnline=false;
+    pushSys(key, "Live tutor is offline. This message is held in this browser and goes to disk when the bridge returns. Open a terminal, run:\n  prep\nthen reload this page. Live chat uses the logged-in CLI for your selected provider.");
+  }
+  pending[key]=false; save();
+  if($("#view-continue").classList.contains("active")) renderContinue($("#view-continue"));
+}
+
+/* ---- close the session ------------------------------------------------------
+ * The end-of-session review could be a form: type what you covered, how the
+ * explain-back went, and three recap questions. A review the tired student has
+ * to write does not get written, and an empty recap drill teaches nothing.
+ *
+ * This reads the transcript back instead and drafts it. It runs on the cheap
+ * model under a schema (same call shape as Re-check), the result lands in the
+ * chat where the work happened, the recap cards go straight into the bank, and
+ * a session entry appears in the log. You can delete any of it — it is a draft
+ * that exists, not a form that does not.                                       */
+let reviewing={};
+const REVIEW_MIN_TURNS=4;
+function reviewable(key){
+  const log=stepLogOf(key);
+  return log.filter(e=>(e.role||"me")==="me"||isAssistantRole(e.role)).length>=REVIEW_MIN_TURNS;
+}
+function mergeRecap(cards,label){
+  state.recapBank=state.recapBank||[]; state.recap=state.recap||{};
+  let added=0;
+  (cards||[]).forEach((c,i)=>{
+    const q=String(c.q||"").trim(); if(!q) return;
+    // Same question twice teaches nothing and pollutes the weak list.
+    if(state.recapBank.some(x=>String(x.q||"").trim().toLowerCase()===q.toLowerCase())) return;
+    const id="r"+Date.now().toString(36)+i;
+    state.recapBank.push({id,q,a:String(c.a||""),stage:label});
+    state.recap[id]={got:0,missed:0};
+    added++;
+  });
+  return added;
+}
+async function closeSession(key){
+  const s=stepFromKey(key), m=stepMeta(s);
+  if(!reviewable(key)){ toast("Not enough of a session to review yet"); return; }
+  const provider=activeProvider();
+  reviewing[key]=true; focusStepKey=key; renderContinue($("#view-continue"));
+  try{
+    const r=await fetch(API+"/api/review",{method:"POST",
+      headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+      body:JSON.stringify({provider,stepKey:key,step:requestStep(s),
+        messages:buildMsgs(stepLogOf(key))})});
+    let d={}; try{ d=await r.json(); }catch(_){}
+    if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    const label=m.kind+" · "+m.title;
+    const added=mergeRecap(d.recap,label);
+    (state.stepLog[key]=state.stepLog[key]||[]).push(
+      {ts:Date.now(),role:"session",provider:(d.provider||provider),usage:(d.usage||null),session:d});
+    state.sessions=state.sessions||[];
+    state.sessions.push({
+      id:"sess"+Date.now().toString(36),
+      date:new Date().toISOString().slice(0,10),
+      title:label,
+      covered:d.covered||"",
+      explainBack:[d.gotRight||"",d.slipped?("Slipped: "+d.slipped):""].filter(Boolean).join(" "),
+      practice:"",
+      next:d.next||"",
+      redFlags:"",
+      recap:(d.recap||[]).map(c=>({q:c.q,a:c.a})),
+      stepKey:key
+    });
+    bridgeOnline=true;
+    toast(added?("Session closed · "+added+" recap card"+(added===1?"":"s")+" added"):"Session closed · no new cards");
+  }catch(e){
+    const off=/Failed to fetch|NetworkError|load failed/i.test(String(e&&e.message));
+    if(off) bridgeOnline=false;
+    pushSys(key, off?"The session review needs the live bridge. Run `prep` in a terminal, then reload."
+                    :("Session review failed: "+String(e&&e.message||e).slice(0,240)));
+  }
+  reviewing[key]=false; save(); renderContinue($("#view-continue")); refreshBadges();
+}
+function sessionBubble(e){
+  const r=e.session||{}, cards=r.recap||[];
+  return `<div class="bubble review"><div class="who">Session review · ${
+    e.provider?esc(providerLabel(e.provider))+" · ":""}${esc(modelLabel(r.model))} · ${esc(fmt(e.ts))}${
+    e.usage?`<span class="usage">${esc(usageLabel(e.usage))}</span>`:""}</div>
+    <div class="revcard">
+      <h4>What this session covered</h4>
+      ${r.covered?`<div class="rb"><b>Covered</b>${esc(r.covered)}</div>`:""}
+      ${r.gotRight?`<div class="rb"><b>You got right</b>${esc(r.gotRight)}</div>`:""}
+      ${r.slipped?`<div class="rb"><b>What slipped</b>${esc(r.slipped)}</div>`:""}
+      ${r.next?`<div class="rb"><b>Next</b>${esc(r.next)}</div>`:""}
+      ${cards.length?`<div class="rb"><b>Added to the recap drill</b>${cards.map(c=>
+        `<div class="recapq">${esc(c.q)}<div class="a">${esc(c.a)}</div></div>`).join("")}</div>`:""}
+    </div></div>`;
+}
+
+/* ---- Re-check progress ------------------------------------------------------
+ * Sends a digest, never the transcripts: for a grade, the last exchange plus a
+ * turn count is what the judgement actually turns on, and shipping full logs for
+ * every step at once would cost more than every chat turn that produced them.
+ * Scoped to steps that have chat but no tick — a delivered step needs no grading
+ * and an untouched one has nothing to read.                                     */
+let assessing=false;
+function assessCandidates(){
+  const out=[];
+  DATA.stages.forEach(st=>stageSteps(st.n).forEach(s=>{
+    if(stepDone(s)) return;
+    const log=stepLogOf(s.key);
+    const mine=log.filter(e=>(e.role||"me")==="me");
+    if(!mine.length) return;
+    const m=stepMeta(s);
+    const lastTutor=[...log].reverse().find(e=>isAssistantRole(e.role));
+    out.push({
+      key:s.key, title:m.title,
+      // The task is what gets graded. Without it the grader falls back to
+      // "did they seem engaged", which is exactly the wrong question.
+      task:m.prompt||"",
+      turns:log.length,
+      // Three of the student's own messages, not just the last: the last one is
+      // often a tangent, and a tangent is not evidence about the task.
+      said:mine.slice(-3).map(e=>e.text||""),
+      tutor:(lastTutor&&lastTutor.text)||""});
+  }));
+  return out;
+}
+async function recheckProgress(){
+  if(assessing) return;
+  const items=assessCandidates();
+  if(!items.length){
+    // Nothing to grade is not a failure: the local scores are already exact
+    // when every step is either ticked or untouched.
+    state.assessList=[]; state.assessAt=Date.now(); state.assessCost="nothing to grade";
+    save(); renderContinue($("#view-continue"));
+    toast("No steps in progress — the numbers are already exact"); return;
+  }
+  assessing=true; renderContinue($("#view-continue"));
+  const provider=activeProvider();
+  try{
+    const r=await fetch(API+"/api/assess",{method:"POST",
+      headers:{"content-type":"application/json","x-tutor-bridge":"1"},
+      body:JSON.stringify({provider,steps:items})});
+    let d={}; try{ d=await r.json(); }catch(_){}
+    if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    const known=new Set(items.map(i=>i.key));
+    const rows=(d.steps||[]).filter(x=>x&&known.has(x.key));   // ignore invented keys
+    state.assess=state.assess||{};
+    rows.forEach(x=>{ state.assess[x.key]={mastery:Math.max(0,Math.min(1,+x.mastery||0)),reason:x.reason||"",at:Date.now()}; });
+    state.assessList=rows;
+    state.assessAt=Date.now();
+    const u=d.usage||{};
+    state.assessCost=(u.in!=null)?(usageLabel(u).replace(/^· /,"")):"";
+    bridgeOnline=true;
+    toast(rows.length+" step"+(rows.length===1?"":"s")+" graded"+(d.capped?" ("+d.capped+" not graded)":""));
+  }catch(e){
+    // Say what actually broke. A blanket "bridge is offline" sent me looking at
+    // the wrong thing when the real answer was in the response body.
+    const off=/Failed to fetch|NetworkError|load failed/i.test(String(e&&e.message));
+    if(off) bridgeOnline=false;
+    toast(off?"Could not re-check — the bridge is offline. Run `prep` and try again."
+             :("Re-check failed: "+String(e&&e.message||e).slice(0,120)));
+  }
+  assessing=false; save(); renderContinue($("#view-continue"));
+}
+
+async function pingBridge(){
+  try{
+    const r=await fetch(API+"/api/health",{method:"GET",cache:"no-store"});
+    const d=await r.json();
+    bridgeProviders=(d&&d.providers&&typeof d.providers==="object")?d.providers:{
+      claude:!!(d&&d.claude),codex:!!(d&&d.codex)
+    };
+    bridgeUp=!!(r.ok&&d&&d.ok);
+    bridgeOnline=!!(bridgeUp&&providerAvailable(activeProvider()));
+  }catch(e){ bridgeProviders={}; bridgeOnline=false; bridgeUp=false; }
+  if($("#view-continue").classList.contains("active")) renderContinue($("#view-continue"));
+}
+
+/* ---- best resources per step ------------------------------------------------
+ * Deliberately short and deliberately specific: each entry names WHAT to read
+ * inside the source and roughly how long it takes. A bare book or paper title
+ * is not a resource — it is a thing that never gets opened. Corpus document
+ * names render as text; only http(s) links are clickable, so nothing here can
+ * be used to smuggle a javascript: URL into the page.                          */
+function resBlock(s,m){
+  const r=(m&&m.res)||[]; if(!r.length) return "";
+  const total=r.reduce((a,x)=>a+(+x.m||0),0);
+  return `<div><button class="qtoggle" data-q="res-${esc(s.key)}" data-label="Resources">Best resources${
+    total?" · ≈"+total+" min":""} ▾</button>
+    <div data-qbody="res-${esc(s.key)}" hidden><div class="reslist">${r.map(x=>`
+      <div class="resitem">${(+x.m)?`<span class="rm">${esc(String(x.m))} min</span>`:""}
+        <div class="rt">${esc(x.t||"")}</div>
+        <div class="rw">${esc(x.w||"")}</div>
+        ${x.u?(/^https?:\/\//i.test(x.u)
+          ? `<a class="ru" href="${esc(x.u)}" target="_blank" rel="noopener noreferrer">${esc(x.u)}</a>`
+          : `<span class="ru">${esc(x.u)}</span>`):""}
+      </div>`).join("")}</div></div></div>`;
+}
+function stepChat(s){
+  const m=stepMeta(s), log=stepLogOf(s.key), isDone=stepDone(s);
+  return `<div class="card stepcard">
+    <div class="steptag">${esc(m.kind)}${tierChip(m.tier)}</div>
+    <h2 class="steptitle">${esc(m.title)}</h2>
+    ${m.citation?`<div class="mono" style="color:var(--signal);font-size:.82rem;margin-bottom:4px">${esc(m.citation)}</div>`:""}
+    <div class="chatlog">
+      <div class="bubble tutor"><div class="who">Prompt</div>${esc(m.prompt)}</div>
+      ${m.hint?`<div><button class="qtoggle" data-q="hint-${esc(s.key)}" data-label="Hint">Show hint ▾</button>
+        <div class="bubble hint" data-qbody="hint-${esc(s.key)}" hidden><div class="who">Hint from the curriculum</div>${esc(m.hint)}</div></div>`:""}
+      ${resBlock(s,m)}
+      ${log.map(bubbleFor).join("")}
+      ${pending[s.key]?`<div class="bubble assistant think"><div class="who">Tutor · ${esc(providerLabel(activeProvider()))} · ${esc(modelLabel(activeModel()))}</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
+      ${reviewing[s.key]?`<div class="bubble review think"><div class="who">Session review · reading this session back</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
+    </div>
+    <div class="composer">
+      <textarea class="inp" id="stepMsg" rows="2" placeholder="Ask the tutor or explain your thinking — then Send (⌘/Ctrl+Enter)…"></textarea>
+      <button class="btn btn-primary" id="stepSend" data-stepkey="${esc(s.key)}">Send</button>
+    </div>
+    <div class="deliver-row">
+      ${isDone
+        ? `<span class="chip pass">Delivered ✓</span><button class="btn btn-sm btn-ghost" data-undo="${esc(s.key)}">Undo</button>`
+        : `<button class="btn btn-primary" data-deliver="${esc(s.key)}">${esc(m.deliver)} ✓</button><span class="hint">Delivered means you can explain it back in your own words.</span>`}
+      ${reviewable(s.key)?`<button class="btn btn-sm btn-ghost" data-closesess="${esc(s.key)}" ${reviewing[s.key]?"disabled":""}
+        title="Reads this session back, writes it to the session log, and adds its recap questions to the drill.">${
+        reviewing[s.key]?"Reviewing…":"Close the session ✦"}</button>`:""}
+    </div>
+  </div>`;
+}
+function sideProgress(steps,pct,done,remaining,cur){
+  const nextTitle=remaining?stepMeta(steps.find(s=>!stepDone(s))).title:"";
+  const tp=trackPct();
+  return `<div class="card pad">
+    <div class="ring" style="--p:${pct}"><span class="ringnum">${pct}%</span></div>
+    <div class="ringcap">${done} of ${steps.length} delivered${remaining?` · ${remaining} left`:""}${
+      pct>Math.round(done/steps.length*100)?" · part credit for work in progress":""}</div>
+    <div class="trackline"><span>Whole track</span><b>${tp}%</b></div>
+    <div class="tbar"><i style="width:${tp}%"></i></div>
+    <div class="sidehead">This stage's steps</div>
+    ${steps.map(s=>{ const d=stepDone(s),m=stepMeta(s),isCur=cur&&cur.key===s.key,sc=stepScore(s);
+      const part=!d&&sc>0, touched=!d&&!sc&&stepTouched(s.key);
+      // "chat, ungraded" and "graded, nothing delivered" look identical at 0%.
+      // The dot says you have been here; the % only ever means delivery.
+      return `<div class="steprow ${d?"done":""} ${part?"part":""} ${isCur?"cur":""}" data-focus="${esc(s.key)}" role="button" tabindex="0">
+        <span class="box">${d?ICON.check:(part?"<i></i>":"")}</span><span class="stx">${esc(m.title)}</span>${
+          part?`<span class="pctag">${Math.round(sc*100)}%</span>`
+             :(touched?`<span class="pctag dim" title="${stepGraded(s)?"Graded: nothing delivered on this step's task yet":"You have chatted here but it is not graded — press Re-check"}">${stepGraded(s)?"0%":"chat"}</span>`:"")}</div>`; }).join("")}
+    <div class="sidefoot hint">${remaining?("Next up: "+esc(nextTitle)):"All steps delivered ✓"}</div>
+    ${recheckPanel()}
+    ${spendPanel()}
+  </div>`;
+}
+/* ---- what this is costing you ---------------------------------------------
+ * Totalled from the usage stamped on every reply. A number you can watch
+ * answers "is this burn healthy" continuously instead of once. The model is
+ * shown because it is the largest single lever on the total.                  */
+function spendTotals(){
+  let turns=0,tin=0,tout=0,cost=0,costUnknown=0; const models={};
+  Object.values(state.stepLog||{}).forEach(log=>(log||[]).forEach(e=>{
+    if(!e.usage) return;
+    const known=e.usage.costKnown!==false&&e.usage.cost!=null;
+    if(!isAssistantRole(e.role)) return;
+    turns++; tin+=e.usage.in||0; tout+=e.usage.out||0;
+    if(known)cost+=e.usage.cost||0;else costUnknown++;
+    const m=e.resolved||e.model||"?"; models[m]=(models[m]||0)+(e.usage.in||0)+(e.usage.out||0);
+  }));
+  return {turns,tin,tout,cost,costUnknown,models};
+}
+function spendPanel(){
+  const t=spendTotals();
+  if(!t.turns) return "";
+  const top=Object.entries(t.models).sort((a,b)=>b[1]-a[1])[0];
+  return `<div class="assessbox">
+    <div class="sidehead">What you've spent</div>
+    <div class="spendrow"><span>${t.turns} repl${t.turns===1?"y":"ies"}</span><b>${t.costUnknown?(t.cost?"$"+t.cost.toFixed(2)+" known + unavailable":"cost unavailable"):"$"+t.cost.toFixed(2)}</b></div>
+    ${t.turns?`<div class="spendrow"><span>average per question</span><b>${Math.round(t.tin/t.turns)} in${t.costUnknown?" · provider omits cost":" · $"+(t.cost/t.turns).toFixed(3)}</b></div>`:""}
+    <div class="hint recheckhint">Mostly on ${esc(modelLabel(top[0]))}.${
+      /fable/i.test(top[0])?" Fable 5 bills about twice Opus 5 per token — worth checking whether the answers are actually better for this material.":""}</div>
+  </div>`;
+}
+/* ---- Re-check: grade the transcripts instead of guessing from turn counts ---
+ * Local scores can only count messages. This reads what was actually said —
+ * once, on demand, in a single call over every unmarked step that has chat on
+ * it. The verdict is advisory: it moves the number, and each row offers the
+ * tick, but marking a step delivered stays your call.                        */
+function recheckPanel(){
+  const rows=(state.assessList||[]);
+  const when=state.assessAt?fmt(state.assessAt):"";
+  const cost=state.assessCost;
+  return `<div class="assessbox">
+    <button class="btn btn-sm btn-ghost recheck" id="recheck" ${assessing?"disabled":""}>${
+      assessing?"Reading your transcripts…":"Re-check my progress"}</button>
+    <div class="hint recheckhint">${
+      assessing?"One call over every unmarked step that has chat on it."
+      :(when?("Last checked "+esc(when)+(cost?" · "+esc(cost):"")):"Grades how much of each step's own task you delivered. Side questions do not count. One efficient provider call.")}</div>
+    ${rows.length?`<div class="sidehead">Delivered against each task</div>${rows.map(r=>{
+      const s=stepFromKey(r.key);
+      /* A row can outlive the step it grades: assessList is persisted and the
+       * curriculum is re-cut. stepMeta would then dereference a missing DATA
+       * entry and take the whole Continue view down with a TypeError. */
+      const known=(s.type==="topic")?DATA.topics[s.id]
+                 :(s.type==="practice")?DATA.practice[s.id]:DATA.checks[s.id];
+      if(!known) return "";
+      const m=stepMeta(s), d=stepDone(s), pc=Math.round((r.mastery||0)*100);
+      return `<div class="assessrow">
+        <span class="amk ${pc?"":"zero"}">${pc}%</span>
+        <span class="atx"><b>${esc(m.title)}</b>${esc(r.reason||"")}</span>
+        ${d?`<span class="chip pass">✓</span>`
+           :(r.mastery>=0.85?`<button class="btn btn-sm btn-primary" data-deliver="${esc(r.key)}">Mark ✓</button>`:"")}
+      </div>`; }).join("")}`:""}
+  </div>`;
+}
+
+function renderOverview(el){
+  // the Session log lists state.sessions only, so this tile counts the same set
+  const done=practiceDone(), cp=checksPassed(), sess=state.sessions.length;
+  const pcount=practiceCount()||1, ccount=checkCount()||1;
+  const pct=Math.round(done/pcount*100);
+  const tcount=Object.keys(DATA.topics).length||1;
+  const m=DATA.meta||{};
+  const latest=[...state.sessions].reverse().find(s=>s.next);
+  const next=latest&&latest.next?latest.next:null;
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">${esc(m.role||"This track")}${m.employer?" · "+esc(m.employer):""}</div>
+      <h1>Prepare for one interview, not for everything.</h1>
+      <p class="sub">${esc(m.note||"")}</p>
+    </div>
+
+    ${next?`<div class="callout">
+      <span class="dot"></span>
+      <div>
+        <h3>Where the next session starts</h3>
+        <ol>${next.split(/\s*(?:\(\d\)|;)\s*/).filter(Boolean).map(x=>`<li>${esc(x)}</li>`).join("")}</ol>
+      </div>
+    </div>`:""}
+
+    <div class="stats">
+      <div class="card stat">
+        <div class="lab">Practice delivered</div>
+        <div class="val tnum">${done}<small> / ${practiceCount()}</small></div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+      </div>
+      <div class="card stat win">
+        <div class="lab">Topics delivered</div>
+        <div class="val tnum">${topicsDone()}<small> / ${Object.keys(DATA.topics).length}</small></div>
+        <div class="bar"><i style="width:${Math.round(topicsDone()/tcount*100)}%"></i></div>
+      </div>
+      <div class="card stat check">
+        <div class="lab">Checks cleared</div>
+        <div class="val tnum">${cp}<small> / ${checkCount()}</small></div>
+        <div class="bar"><i style="width:${Math.round(cp/ccount*100)}%"></i></div>
+      </div>
+      <div class="card stat">
+        <div class="lab">Sessions logged</div>
+        <div class="val tnum">${sess}</div>
+        <div class="bar"><i style="width:${Math.min(100,sess*10)}%"></i></div>
+      </div>
+    </div>
+
+    <div class="sect-title"><span class="kick">How this track was built</span><span class="rule"></span></div>
+    <div class="grid">
+      ${Object.entries(DATA.phases).map(([k,p],i)=>`
+        <div class="card tcard">
+          <div class="id">${i+1} · ${esc(k)}</div>
+          <h3>${esc(p.name)}</h3>
+          <p class="teach">${esc(p.desc)}</p>
+        </div>`).join("")}
+    </div>
+
+    <div class="sect-title"><span class="kick">The stages</span><span class="rule"></span></div>
+    <div class="grid">
+      ${DATA.stages.map(st=>`
+        <div class="card tcard">
+          <div class="id">Stage ${st.n}</div>
+          <h3>${esc(st.name)}</h3>
+          <p class="teach">${esc(st.focus||"")}</p>
+        </div>`).join("")}
+    </div>
+    <p class="hint" style="margin-top:12px">Open <span class="mono">Stage path</span> to work through it a stage at a time.</p>
+  `;
+}
+
+function renderStages(el){
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">The stage path</div>
+      <h1>${DATA.stages.length} stage${DATA.stages.length===1?"":"s"}, in order.</h1>
+      <p class="sub">Each node is a stage, and a track is as long as the time before the interview allows. The filled line tracks how far you have travelled. Click a stage to open its topics, practice and checks.</p>
+    </div>
+    <div class="path" id="path">
+      ${DATA.stages.map(st=>{
+        const status=stageStatus(st.n);
+        const hasCheck=Object.values(DATA.checks).some(c=>c.s===st.n);
+        const filled=status==="done";
+        const nodeClass=status==="done"?"done":(status==="doing"?"doing":"");
+        const practices=Object.entries(DATA.practice).filter(([,h])=>h.s===st.n);
+        return `
+        <div class="stage-row">
+          <div class="spine ${filled?"filled":""}">
+            <div class="node ${nodeClass} ${hasCheck?"check":""}">${hasCheck?"◆":st.n}</div>
+          </div>
+          <div class="body">
+            <button class="stagebtn" data-stage="${st.n}" aria-expanded="false">
+              <div class="grow">
+                <div class="stagenum">Stage ${st.n}</div>
+                <div class="ttl">${esc(st.name)}</div>
+                <div class="meta">
+                  ${tierChip(stageTier(st.n))}
+                  ${hasCheck?`<span class="chip check">Check</span>`:""}
+                  ${practices.map(([id,h])=>{
+                    const ps=(state.practice[id]||{}).status;
+                    if(h.portfolio&&ps!=="done"&&ps!=="outstanding") return `<span class="chip win">Portfolio piece</span>`;
+                    if(ps==="outstanding") return `<span class="chip alert">${esc(id)} outstanding</span>`;
+                    if(ps==="done") return `<span class="chip win">${esc(id)} done</span>`;
+                    return "";
+                  }).join("")}
+                </div>
+              </div>
+              <span class="stagestatus">${status==="done"?ICON.check:""}${status==="done"?"Done":(status==="doing"?"In progress":"Not started")}</span>
+            </button>
+            <div class="stagedetail" data-detail="${st.n}"></div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function stageDetailHTML(n){
+  const topics=Object.entries(DATA.topics).filter(([,t])=>t.s===n);
+  const practices=Object.entries(DATA.practice).filter(([,h])=>h.s===n);
+  const checks=Object.entries(DATA.checks).filter(([,c])=>c.s===n);
+  return `<div class="stagepanel">
+    ${topics.length?`<h4>Topics in this stage</h4>${topics.map(([id,t])=>`
+      <div class="trow">
+        <div class="cite">${esc(id)}${t.citation?` · <span class="mono">${esc(t.citation)}</span>`:""}</div>
+        <div>
+          <div class="teach">${esc(t.teach)}</div>
+          <div class="q">
+            <button class="qtoggle" data-q="${id}">Question ▾</button>
+            <div class="qbody socratic" data-qbody="${id}" hidden>${esc(t.question)}</div>
+          </div>
+          <label class="checkline" style="margin-top:10px">
+            <input type="checkbox" data-topic="${id}" ${state.topics[id].done?"checked":""}/>
+            <span class="checkbox">${ICON.check}</span> Read &amp; explained back
+          </label>
+        </div>
+      </div>`).join("")}`:""}
+    ${practices.length?`<h4 style="margin-top:16px">Practice</h4>${practices.map(([id,h])=>`
+      <div class="trow"><div class="cite">${esc(id)}${h.portfolio?" · portfolio":""}</div>
+        <div>
+          <div class="teach"><b>${esc(h.label)}</b> — ${esc(h.desc)}</div>
+          <div style="margin-top:10px">${segHTML(id,(state.practice[id]||{}).status)}</div>
+        </div></div>`).join("")}`:""}
+    ${checks.length?`<h4 style="margin-top:16px">Checks</h4>${checks.map(([id,c])=>`
+      <div class="trow"><div class="cite" style="color:var(--gate)">${esc(id)}</div>
+        <div><div class="teach"><b>${esc(c.label)}</b> — ${esc(c.desc)}</div>
+        <div style="margin-top:10px">${checkSegHTML(id)}</div></div></div>`).join("")}`:""}
+  </div>`;
+}
+function segHTML(id,cur){
+  const opts=[["todo","To do"],["doing","In progress"],["done","Done"],["outstanding","Outstanding"]];
+  return `<div class="seg" data-practice="${esc(id)}" role="group" aria-label="Practice status">
+    ${opts.map(([v,l])=>`<button data-v="${v}" class="${cur===v?"on":""}">${l}</button>`).join("")}</div>`;
+}
+function checkSegHTML(id){
+  const cur=state.checks[id]?state.checks[id].result:"";
+  return `<div class="seg" data-check="${esc(id)}" role="group" aria-label="Check result">
+    ${[["","Not taken"],["pass","Cleared"],["fail","Fell short"],["retaken","Retaken"]].map(([v,l])=>`<button data-v="${v}" class="${cur===v?"on":(v===""&&!cur?"on":"")}">${l}</button>`).join("")}</div>`;
+}
+
+/* Grouped by tier: the tier is what tells you whether a topic is worth an hour
+ * or a sentence. A track that has no depth or reference topics shows no such
+ * tab. */
+function renderCurriculum(el){
+  const tiers=["core","depth","reference"].filter(k=>Object.values(DATA.topics).some(t=>t.tier===k));
+  const active=(tiers.indexOf(el.dataset.tier)>=0)?el.dataset.tier:(tiers[0]||"core");
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Curriculum</div>
+      <h1>Every topic, and what it is worth.</h1>
+      <p class="sub">Core is the small share that carries most of the interview value. Depth is worth real time once the core is delivered. Reference you only have to recognise. Each card names the corpus document behind it.</p>
+    </div>
+    <div class="tabs" role="tablist">
+      ${tiers.map(k=>{
+        const total=Object.values(DATA.topics).filter(t=>t.tier===k).length;
+        const done=Object.entries(DATA.topics).filter(([id,t])=>t.tier===k&&state.topics[id].done).length;
+        return `<button class="tab ${active===k?"active":""}" data-tier="${k}" role="tab" aria-selected="${active===k}">${esc(TIER_LABEL[k]||k)}<span class="n">${done}/${total}</span></button>`;
+      }).join("")}
+    </div>
+    <div class="grid">
+      ${Object.entries(DATA.topics).filter(([,t])=>t.tier===active).map(([id,t])=>`
+        <div class="card tcard">
+          <div class="id">${esc(id)} · stage ${t.s}</div>
+          <h3>${esc(t.concept)}</h3>
+          <div class="cite">${esc(t.citation||"no citation yet")}</div>
+          <p class="teach">${esc(t.teach)}</p>
+          <div style="margin-top:2px">
+            <button class="qtoggle" data-q="c-${id}">Question ▾</button>
+            <div class="qbody socratic" data-qbody="c-${id}" hidden>${esc(t.question)}</div>
+          </div>
+          <div class="foot">
+            <label class="checkline">
+              <input type="checkbox" data-topic="${id}" ${state.topics[id].done?"checked":""}/>
+              <span class="checkbox">${ICON.check}</span> Read &amp; explained back
+            </label>
+          </div>
+        </div>`).join("")}
+    </div>`;
+}
+
+function renderPractice(el){
+  const entries=Object.entries(DATA.practice);
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Practice</div>
+      <h1>One written thing per stage.</h1>
+      <p class="sub">Each stage ends in something you wrote in your own words. Portfolio pieces are the ones worth polishing and sending. Track status and keep notes on each.</p>
+    </div>
+    <div class="grid">
+      ${entries.length?entries.map(([id,h])=>{
+        const st=state.practice[id]||{status:"todo",notes:""};
+        return `<div class="card tcard pcard">
+          <div class="toprow">
+            <div>
+              <div class="id">${esc(id)} · stage ${h.s}</div>
+              <h3 style="margin-top:4px">${esc(h.label)}</h3>
+            </div>
+            ${h.portfolio?`<span class="chip win">Portfolio</span>`:""}
+          </div>
+          <p class="desc">${esc(h.desc)}</p>
+          <div>${segHTML(id,st.status)}</div>
+          <textarea class="notes" data-notes="${esc(id)}" placeholder="Notes, draft, or feedback…">${esc(st.notes)}</textarea>
+        </div>`;
+      }).join(""):emptyState("No practice yet","A generated track adds one written piece per stage.")}
+    </div>`;
+}
+
+function renderSessions(el){
+  const all=[...state.sessions].sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Session log</div>
+      <h1>Every session, recorded.</h1>
+      <p class="sub">An append-only log: what was covered, how the explain-back went, what practice was set, and the recap questions that went into the drill. Closing a session from a step writes one of these for you.</p>
+      <div style="margin-top:16px"><button class="btn btn-primary" id="addSession">${ICON.sessions} Log a session</button></div>
+    </div>
+    ${all.length?all.map(s=>`
+      <div class="sess">
+        <div class="date">${esc(s.date)}</div>
+        <h3>${esc(s.title)}</h3>
+        ${block("Covered",s.covered)}
+        ${block("Explain-back result",s.explainBack)}
+        ${block("Practice set",s.practice)}
+        ${s.next?block("Next session starts",s.next):""}
+        ${block("Watch out for",s.redFlags)}
+        ${(s.recap&&s.recap.length)?`<div class="block"><b>Recap questions added to the bank</b>
+          ${s.recap.map(r=>`<div class="recapq">${esc(r.q)}<div class="a">${esc(r.a)}</div></div>`).join("")}</div>`:""}
+        <button class="btn btn-ghost btn-sm delSession" data-id="${esc(s.id)}" style="margin-top:8px">Delete</button>
+      </div>`).join(""):emptyState("No sessions logged yet","Close a session from a step, or log one by hand.")}
+  `;
+}
+function block(label,val){ return val?`<div class="block"><b>${esc(label)}</b><p>${esc(val)}</p></div>`:""; }
+
+function renderQA(el){
+  const list=[...state.qa].sort((a,b)=>b.ts-a.ts);
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Q&amp;A log</div>
+      <h1>The back-and-forth, captured.</h1>
+      <p class="sub">Log every question you ask and the answer you land on. Tag it to a stage or a theme. This is your searchable record of the whole track.</p>
+    </div>
+    <div class="card pad" style="margin-bottom:22px">
+      <div class="field"><label for="qaQ">Question</label>
+        <input class="inp" id="qaQ" placeholder="e.g. When does an index stop helping?"/></div>
+      <div class="field"><label for="qaA">Answer / what you landed on</label>
+        <textarea class="inp" id="qaA" placeholder="The answer, in your own words…"></textarea></div>
+      <div class="row2">
+        <div class="field"><label for="qaStage">Stage</label>
+          <select class="inp" id="qaStage"><option value="">—</option>${DATA.stages.map(st=>`<option value="${st.n}">Stage ${st.n} · ${esc(st.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="qaTag">Tag</label>
+          <input class="inp" id="qaTag" placeholder="e.g. caching, indexes, system design"/></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary" id="qaAdd">Save entry</button></div>
+    </div>
+    <div id="qaList">
+      ${list.length?list.map(item=>`
+        <div class="card qa-item">
+          <div class="qmeta">
+            <span class="ts">${esc(fmt(item.ts))}</span>
+            ${item.stage?`<span class="chip">Stage ${esc(item.stage)}</span>`:""}
+            ${item.tag?`<span class="chip tag">${esc(item.tag)}</span>`:""}
+            <button class="del" data-del="${esc(item.id)}">Delete</button>
+          </div>
+          <div class="qq">${esc(item.q)}</div>
+          <div class="aa">${esc(item.a)}</div>
+        </div>`).join(""):emptyState("No questions logged yet","Ask, answer, and save your first exchange above.")}
+    </div>`;
+}
+function fmt(ts){ const d=new Date(ts); return d.toISOString().slice(0,16).replace("T"," "); }
+
+let recapQueue=[], recapIdx=0, recapFlipped=false;
+function renderRecap(el){
+  const bank=state.recapBank||[];
+  const weak=bank.filter(q=>state.recap[q.id]&&state.recap[q.id].missed>=2);
+  if(!recapQueue.length){ recapQueue=shuffle([...bank]); recapIdx=0; recapFlipped=false; }
+  const cur=recapQueue[recapIdx];
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Recap drill · spaced repetition</div>
+      <h1>Make it survive to the interview.</h1>
+      <p class="sub">The recap bank. Flip to reveal, then mark whether you got it. Miss a question twice and it lands on the weak list until you answer it cold.</p>
+    </div>
+    ${bank.length?`
+    <div class="flash">
+      <div class="flashcard">
+        <div class="qtext">${esc(cur.q)}</div>
+        ${recapFlipped?`<div class="atext">${esc(cur.a)}</div>`:""}
+        <div class="tag">${esc(cur.stage||"")} · card ${recapIdx+1} / ${recapQueue.length}</div>
+      </div>
+      <div class="flash-actions">
+        ${!recapFlipped?`<button class="btn btn-primary" id="rcFlip">Reveal answer</button>`:`
+          <button class="btn" id="rcMiss" style="border-color:var(--alert);color:var(--alert)">Missed it</button>
+          <button class="btn btn-primary" id="rcGot">Got it</button>`}
+        <button class="btn btn-ghost" id="rcSkip">Skip</button>
+      </div>
+    </div>
+    ${weak.length?`<div class="weaklist">
+      <div class="sect-title"><span class="kick">Weak list · missed twice or more</span><span class="rule"></span></div>
+      ${weak.map(q=>`<div class="weakitem"><span>${esc(q.q)}</span><span class="mono">×${state.recap[q.id].missed}</span></div>`).join("")}
+    </div>`:""}
+    `:emptyState("The recap bank is empty","Close a session on a step and its recap questions land here.")}
+  `;
+}
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+/* The interview question bank. Self-graded, keyed by index, and the citation
+ * behind each answer stays hidden until you have committed to one. */
+function renderQuestions(el){
+  const bank=DATA.questions||[];
+  const graded=Object.values(state.questions);
+  const correct=graded.filter(g=>g==="correct").length;
+  const partial=graded.filter(g=>g==="partial").length;
+  const score=correct+partial*0.5;
+  const total=bank.length||1;
+  const bar=Math.round(score/total*100);
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Interview questions</div>
+      <h1>The questions you should be able to answer cold.</h1>
+      <p class="sub">Answer out loud with nothing open, self-grade, then reveal the corpus document the answer comes from. "I don't know, but here is how I'd find out" is full credit. A confident wrong answer is not.</p>
+      <div class="stats" style="grid-template-columns:repeat(3,1fr);margin-top:18px">
+        <div class="card stat"><div class="lab">Self-graded score</div><div class="val tnum">${score}<small> / ${bank.length}</small></div><div class="bar"><i style="width:${bar}%"></i></div></div>
+        <div class="card stat win"><div class="lab">Correct</div><div class="val tnum">${correct}</div></div>
+        <div class="card stat check"><div class="lab">Partial</div><div class="val tnum">${partial}</div></div>
+      </div>
+    </div>
+    ${bank.length?bank.map((q,i)=>{
+      const g=state.questions[i]||"";
+      return `<div class="card qcard">
+        <div class="qhead"><span class="num">Q${i+1}</span><span class="qtext">${esc(q.q)}</span></div>
+        <div class="grades" data-question="${i}">
+          ${[["correct","Correct"],["partial","Partial"],["miss","Missed"]].map(([v,l])=>`<button class="gbtn ${g===v?"on":""}" data-g="${v}">${l}</button>`).join("")}
+          <button class="gbtn" data-reveal="${i}" style="margin-left:auto">Reveal answer ▾</button>
+        </div>
+        <div class="src" data-src="${i}"><span class="lab">The answer:</span> ${esc(q.a)}<br><span class="lab">Where it comes from:</span> <span class="mono">${esc(q.where||"—")}</span></div>
+      </div>`;
+    }).join(""):emptyState("The question bank is empty","A generated track fills this from the corpus.")}`;
+}
+
+function renderStory(el){
+  const o=DATA.story||{claims:[],numbers:[],risks:[]};
+  const claims=o.claims||[], numbers=o.numbers||[], risks=o.risks||[];
+  el.innerHTML=`
+    <div class="vhead">
+      <div class="kicker">Your story</div>
+      <h1>Own every line you have already sent.</h1>
+      <p class="sub">A resume line you cannot defend is a live liability. For each claim: what it means in plain words, where its evidence lives, and the boundary you will not cross. Never quote a number without its caveat.</p>
+    </div>
+    <div class="sect-title"><span class="kick">Claims you have to defend</span><span class="rule"></span></div>
+    <div class="card pad" style="overflow-x:auto">
+      ${claims.length?`<table class="numtable">
+        <thead><tr><th>Claim</th><th>Evidence</th><th>Honest boundary</th></tr></thead>
+        <tbody>${claims.map(c=>`<tr>
+          <td class="metric">${esc(c.claim)}</td>
+          <td class="caveat">${esc(c.evidence)}</td>
+          <td class="src">${esc(c.boundary)}</td></tr>`).join("")}</tbody>
+      </table>`:emptyState("No claims yet","Add the lines from your own resume, hardest first.")}
+    </div>
+    <div class="sect-title"><span class="kick">Numbers, with their caveats</span><span class="rule"></span></div>
+    <div class="card pad" style="overflow-x:auto">
+      ${numbers.length?`<table class="numtable">
+        <thead><tr><th>Metric</th><th>Value</th><th>Caveat</th><th>Source</th></tr></thead>
+        <tbody>${numbers.map(n=>`<tr>
+          <td class="metric">${esc(n.metric)}</td>
+          <td class="value">${esc(n.value)}</td>
+          <td class="caveat">${esc(n.caveat)}</td>
+          <td class="src">${esc(n.source)}</td></tr>`).join("")}</tbody>
+      </table>`:emptyState("No numbers yet","Any figure you have put on a resume belongs here with its caveat.")}
+    </div>
+    <div class="sect-title"><span class="kick">Weak spots — volunteer these, don't hide them</span><span class="rule"></span></div>
+    <div class="card pad">
+      ${risks.length?risks.map(r=>`<div class="risk"><span class="ic">${ICON.warn}</span><p>${esc(r)}</p></div>`).join("")
+        :emptyState("Nothing listed","Naming the weak spot first is what makes the strong claim believable.")}
+    </div>
+  `;
+}
+function emptyState(h,p){ return `<div class="empty">${ICON.empty}<h3>${esc(h)}</h3><p>${esc(p)}</p></div>`; }
+
+/* ---- back to top ----------------------------------------------------------
+ * rAF-throttled and passive: this fires on every scroll frame and must not
+ * compete with rendering a chat. The threshold is roughly where the heading
+ * leaves the screen, which is exactly when the pinned bar starts earning its
+ * place, so the two appear together.                                          */
+const REDUCED_MOTION=window.matchMedia("(prefers-reduced-motion:reduce)");
+let topTick=false;
+function paintToTop(){
+  topTick=false;
+  const b=document.getElementById("toTop");
+  if(b) b.classList.toggle("show",window.scrollY>300);
+}
+window.addEventListener("scroll",()=>{
+  if(!topTick){ topTick=true; requestAnimationFrame(paintToTop); }
+},{passive:true});
+function scrollToTop(){
+  window.scrollTo({top:0,behavior:REDUCED_MOTION.matches?"auto":"smooth"});
+  paintToTop();
+}
+
+/* =====================================================================
+ *  EVENTS (delegation)
+ * ===================================================================== */
+document.addEventListener("click",e=>{
+  const t=e.target;
+
+  if(t.closest("#toTop")){ scrollToTop(); return; }
+
+  // nav
+  const nav=t.closest(".navlink"); if(nav){ location.hash="#"+nav.dataset.view; closeRail(); return; }
+
+  // continue: send a response into the step log
+  if(t.id==="stepSend"){ const key=t.dataset.stepkey, ta=$("#stepMsg"), txt=((ta&&ta.value)||"").trim();
+    if(!txt){ toast("Write something first"); ta&&ta.focus(); return; }
+    state.stepLog=state.stepLog||{};
+    (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"me",text:txt});
+    if(ta) ta.value="";           // sent, so it must not come back as a draft
+    focusStepKey=key; save(); renderContinue($("#view-continue")); askTutor(key); return; }
+  // continue: re-grade every in-progress step from its transcript
+  if(t.closest("#recheck")){ recheckProgress(); return; }
+  // continue: mark a step delivered
+  const dv=t.closest("[data-deliver]");
+  if(dv){ const s=stepFromKey(dv.dataset.deliver); setStepDone(s,true); focusStepKey=null;
+    if(stageComplete(s.stage)) contStage=s.stage; toast("Delivered ✓"); renderContinue($("#view-continue")); refreshBadges(); return; }
+  // continue: undo a delivered step
+  const cs=t.closest("[data-closesess]");
+  if(cs){ closeSession(cs.dataset.closesess); return; }
+  const undo=t.closest("[data-undo]");
+  if(undo){ setStepDone(stepFromKey(undo.dataset.undo),false); focusStepKey=undo.dataset.undo; renderContinue($("#view-continue")); refreshBadges(); return; }
+  // continue: focus a step from the side list
+  const jp=t.closest("[data-jump]");
+  if(jp){ const [sn,key]=String(jp.dataset.jump).split("|");
+    contStage=+sn; focusStepKey=key; renderContinue($("#view-continue")); return; }
+  const fs=t.closest("[data-focus]");
+  if(fs){ focusStepKey=fs.dataset.focus; renderContinue($("#view-continue")); return; }
+  // continue: change stage / start next stage
+  const cst=t.closest("[data-cstage]");
+  if(cst){ contStage=+cst.dataset.cstage; focusStepKey=null; renderContinue($("#view-continue")); return; }
+  const sst=t.closest("[data-startstage]");
+  if(sst){ contStage=+sst.dataset.startstage; focusStepKey=null; renderContinue($("#view-continue")); return; }
+
+  // stage expand
+  const stagebtn=t.closest(".stagebtn");
+  if(stagebtn){
+    const n=stagebtn.dataset.stage;
+    const box=$(`.stagedetail[data-detail="${n}"]`);
+    const open=stagebtn.getAttribute("aria-expanded")==="true";
+    $$(".stagedetail").forEach(d=>{ if(d!==box) d.innerHTML=""; });
+    $$(".stagebtn").forEach(b=>{ if(b!==stagebtn) b.setAttribute("aria-expanded","false"); });
+    if(open){ box.innerHTML=""; stagebtn.setAttribute("aria-expanded","false"); }
+    else{ box.innerHTML=stageDetailHTML(+n); stagebtn.setAttribute("aria-expanded","true"); }
+    return;
+  }
+
+  // socratic reveal
+  const qt=t.closest(".qtoggle");
+  if(qt){ const id=qt.dataset.q; const body=$(`[data-qbody="${id}"]`); if(body){ body.hidden=!body.hidden; const lab=qt.dataset.label||"Question"; qt.textContent=lab+" "+(body.hidden?"▾":"▴"); } return; }
+
+  // tier tab
+  const tab=t.closest(".tab");
+  if(tab){ const el=$("#view-curriculum"); el.dataset.tier=tab.dataset.tier; renderCurriculum(el); return; }
+
+  // practice status seg
+  const segBtn=t.closest(".seg [data-v]");
+  if(segBtn){
+    const seg=segBtn.closest(".seg");
+    if(seg.dataset.practice){
+      state.practice[seg.dataset.practice].status=segBtn.dataset.v; save();
+      seg.querySelectorAll("button").forEach(b=>b.classList.toggle("on",b===segBtn));
+      // refresh stage/overview badges if affecting
+      refreshBadges();
+      return;
+    }
+    if(seg.dataset.check){
+      const cid=seg.dataset.check;
+      state.checks[cid]=state.checks[cid]||{}; state.checks[cid].result=segBtn.dataset.v||""; save();
+      seg.querySelectorAll("button").forEach(b=>b.classList.toggle("on",b===segBtn));
+      refreshBadges(); return;
+    }
+  }
+
+  // question-bank grade
+  const gbtn=t.closest(".grades [data-g]");
+  if(gbtn){ const wrap=gbtn.closest(".grades"); state.questions[wrap.dataset.question]=gbtn.dataset.g; save();
+    wrap.querySelectorAll("[data-g]").forEach(b=>b.classList.toggle("on",b===gbtn));
+    // update header score without full re-render jump
+    renderQuestions($("#view-questions")); return; }
+  const rev=t.closest("[data-reveal]");
+  if(rev){ const box=$(`[data-src="${rev.dataset.reveal}"]`); box.classList.toggle("show"); rev.textContent=box.classList.contains("show")?"Hide answer ▴":"Reveal answer ▾"; return; }
+
+  // qa
+  if(t.id==="qaAdd"){ addQA(); return; }
+  const del=t.closest("[data-del]");
+  if(del){ state.qa=state.qa.filter(x=>x.id!==del.dataset.del); save(); renderQA($("#view-qa")); return; }
+
+  // recap
+  if(t.id==="rcFlip"){ recapFlipped=true; renderRecap($("#view-recap")); return; }
+  if(t.id==="rcGot"||t.id==="rcMiss"){ markRecap(t.id==="rcGot"); return; }
+  if(t.id==="rcSkip"){ advanceRecap(); return; }
+
+  // sessions
+  if(t.id==="addSession"){ openSessionModal(); return; }
+  const ds=t.closest(".delSession");
+  if(ds){ state.sessions=state.sessions.filter(x=>x.id!==ds.dataset.id); save(); renderSessions($("#view-sessions")); return; }
+
+  // theme + rail
+  if(t.closest("#themeBtn")||t.closest("#themeBtnM")){ toggleTheme(); return; }
+  if(t.closest("#menuBtn")){ openRail(); return; }
+  if(t.closest("#railToggle")){ toggleRail(); return; }
+  if(t.closest("#sideToggle")){ toggleSide(); return; }
+  if(t.id==="backdrop"){ closeRail(); return; }
+
+  // export/import
+  if(t.closest("#exportBtn")){ exportData(); return; }
+  if(t.closest("#importBtn")){ $("#importFile").click(); return; }
+
+  // modal
+  if(t.id==="modalBg"){ closeModal(); return; }
+  if(t.closest("[data-close]")){ closeModal(); return; }
+  if(t.id==="saveSession"){ saveSessionFromModal(); return; }
+});
+
+// checkbox change (topics)
+document.addEventListener("change",e=>{
+  const cb=e.target.closest("[data-topic]");
+  if(cb){ state.topics[cb.dataset.topic].done=cb.checked; save(); refreshBadges();
+    // update curriculum tab counts if on that view
+    if($("#view-curriculum").classList.contains("active")) renderCurriculum($("#view-curriculum"));
+    return; }
+  const imp=e.target.closest("#importFile");
+  if(imp&&imp.files&&imp.files[0]){ importData(imp.files[0]); return; }
+  const pvd=e.target.closest("#tutorProvider");
+  if(pvd){
+    const old=activeProvider(); state.models=state.models||Object.assign({},DEFAULT_MODELS);
+    state.models[old]=currentModel(state.model,old);
+    state.provider=currentProvider(pvd.value);
+    state.model=currentModel(state.models[state.provider],state.provider);
+    bridgeOnline=providerAvailable(state.provider);
+    save(); toast("Tutor provider: "+providerLabel(state.provider));
+    renderContinue($("#view-continue")); pingBridge(); return;
+  }
+  const mdl=e.target.closest("#tutorModel");
+  // Re-render on a model change: the effort control shows the level remembered for
+  // whichever model is selected, so leaving it stale would show the wrong one.
+  if(mdl){ const p=activeProvider(); state.model=currentModel(mdl.value,p);
+    state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model; save();
+    toast("Tutor model: "+modelLabel(state.model)+" · thinking "+effortLabel(effortFor(state.model)));
+    renderContinue($("#view-continue")); return; }
+  const eff=e.target.closest("#tutorEffort");
+  if(eff){ const m=activeModel(); setEffortFor(m,eff.value);
+    toast(modelLabel(m)+" thinking: "+effortLabel(eff.value)
+      +(eff.value?"":" (no --effort flag sent)")); return; }
+});
+
+// notes autosave
+document.addEventListener("input",e=>{
+  const n=e.target.closest("[data-notes]");
+  if(n){ state.practice[n.dataset.notes].notes=n.value; clearTimeout(n._t); n._t=setTimeout(save,400); }
+});
+
+// keyboard: Esc closes modal/rail; Cmd/Ctrl+Enter sends the step message
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){ closeModal(); closeRail(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==="Enter"&&e.target&&e.target.id==="stepMsg"){
+    e.preventDefault(); const btn=$("#stepSend"); btn&&btn.click();
+  }
+});
+
+function refreshBadges(){
+  const v=state.lastView;
+  if(v==="stages") renderStages($("#view-stages"));
+  if(v==="overview") renderOverview($("#view-overview"));
+}
+
+/* ---- Q&A ---- */
+function addQA(){
+  const q=$("#qaQ").value.trim(), a=$("#qaA").value.trim();
+  if(!q){ toast("Add a question first"); $("#qaQ").focus(); return; }
+  state.qa.push({id:makeId(),ts:Date.now(),q,a,stage:$("#qaStage").value,tag:$("#qaTag").value.trim()});
+  save(); renderQA($("#view-qa")); toast("Entry saved");
+}
+
+/* ---- recap ---- */
+function markRecap(got){
+  const cur=recapQueue[recapIdx]; if(!cur) return;
+  state.recap[cur.id]=state.recap[cur.id]||{got:0,missed:0};
+  if(got) state.recap[cur.id].got++; else state.recap[cur.id].missed++;
+  save(); advanceRecap();
+}
+function advanceRecap(){
+  recapFlipped=false; recapIdx++;
+  if(recapIdx>=recapQueue.length){ recapQueue=[]; toast("Deck complete — reshuffled"); }
+  renderRecap($("#view-recap"));
+}
+
+/* ---- sessions modal ---- */
+function openSessionModal(){
+  $("#modal").innerHTML=`
+    <h2 id="modalTitle">Log a session</h2>
+    <p class="msub">Appends to your session log and adds any recap questions to the drill bank.</p>
+    <div class="row2">
+      <div class="field"><label for="sDate">Date</label><input class="inp" id="sDate" type="date"/></div>
+      <div class="field"><label for="sTitle">Title</label><input class="inp" id="sTitle" placeholder="e.g. Session 3 — Stage 2, topic T3"/></div>
+    </div>
+    <div class="field"><label for="sCov">Covered</label><textarea class="inp" id="sCov" placeholder="What was taught, and from which corpus document…"></textarea></div>
+    <div class="field"><label for="sEB">Explain-back result</label><textarea class="inp" id="sEB" placeholder="How the explain-back went…"></textarea></div>
+    <div class="field"><label for="sPr">Practice set</label><input class="inp" id="sPr" placeholder="e.g. P2 — the load-bearing answer, written out"/></div>
+    <div class="field"><label for="sRF">Watch out for</label><input class="inp" id="sRF" placeholder="Cadence, misreads, anything you skated over…"/></div>
+    <div class="field"><label>Recap questions (with answers)</label>
+      <input class="inp" id="sRQ1" placeholder="Q1 | answer" style="margin-bottom:8px"/>
+      <input class="inp" id="sRQ2" placeholder="Q2 | answer" style="margin-bottom:8px"/>
+      <input class="inp" id="sRQ3" placeholder="Q3 | answer"/>
+      <span class="hint">Format: question | answer</span>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Cancel</button>
+      <button class="btn btn-primary" id="saveSession">Save session</button>
+    </div>`;
+  openModal();
+  $("#sDate").value=new Date().toISOString().slice(0,10);
+  setTimeout(()=>$("#sTitle").focus(),50);
+}
+function saveSessionFromModal(){
+  const date=$("#sDate").value||new Date().toISOString().slice(0,10);
+  const title=$("#sTitle").value.trim()||"Session";
+  const recap=[];
+  ["sRQ1","sRQ2","sRQ3"].forEach(id=>{
+    const v=$("#"+id).value.trim(); if(v&&v.includes("|")){ const [q,a]=v.split("|"); recap.push({q:q.trim(),a:a.trim()}); }
+    else if(v){ recap.push({q:v,a:""}); }
+  });
+  const s={id:makeId(),date,title,
+    covered:$("#sCov").value.trim(),explainBack:$("#sEB").value.trim(),
+    practice:$("#sPr").value.trim(),redFlags:$("#sRF").value.trim(),recap};
+  state.sessions.push(s);
+  // add recap to bank
+  recap.forEach((r,i)=>{ const id="u"+s.id+"q"+i; state.recapBank.push({id,q:r.q,a:r.a,stage:title}); state.recap[id]={got:0,missed:0}; });
+  recapQueue=[]; save(); closeModal(); renderSessions($("#view-sessions")); toast("Session logged");
+}
+
+/* ---- modal + rail + theme ---- */
+let lastFocus=null;
+function openModal(){ lastFocus=document.activeElement; $("#modalBg").classList.add("open"); }
+function closeModal(){
+  const bg=$("#modalBg");
+  if(!bg||!bg.classList.contains("open")) return;   // Escape elsewhere is not ours
+  bg.classList.remove("open");
+  if(lastFocus){ lastFocus.focus(); lastFocus=null; }
+}
+function openRail(){ $("#rail").classList.add("open"); $("#backdrop").classList.add("open"); }
+function closeRail(){ $("#rail").classList.remove("open"); $("#backdrop").classList.remove("open"); }
+/* Desktop collapse. Paints from railHidden rather than reading the DOM back, so
+ * boot and click take the identical path and cannot disagree. */
+function applyRail(){
+  const app=$(".app"), btn=$("#railToggle");
+  if(app) app.classList.toggle("rail-hidden",railHidden);
+  if(btn){
+    const label=railHidden?"Show sidebar":"Hide sidebar";
+    btn.setAttribute("aria-expanded",railHidden?"false":"true");
+    btn.setAttribute("aria-label",label);
+    btn.title=label;
+  }
+}
+function toggleRail(){ railHidden=!railHidden; applyRail(); savePrefs(); }
+/* The progress panel's collapse. The class is also written by the template on
+ * every render, so a re-render never resurrects a panel you folded. */
+function sideToggleBtn(pct){
+  const lab=sideHidden?"Show progress panel":"Hide progress panel";
+  return `<button class="sidetoggle" id="sideToggle" type="button" aria-controls="contPanel"
+      aria-expanded="${sideHidden?"false":"true"}" aria-label="${esc(lab)}" title="${esc(lab)}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      <span class="sidepct">${esc(String(pct))}%</span></button>`;
+}
+function applySide(){
+  const c=$(".cont"), b=$("#sideToggle");
+  if(c) c.classList.toggle("side-hidden",sideHidden);
+  if(b){
+    const lab=sideHidden?"Show progress panel":"Hide progress panel";
+    b.setAttribute("aria-expanded",sideHidden?"false":"true");
+    b.setAttribute("aria-label",lab);
+    b.title=lab;
+  }
+}
+function toggleSide(){ sideHidden=!sideHidden; applySide(); savePrefs(); }
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute("data-theme")==="light"?"dark":"light";
+  document.documentElement.setAttribute("data-theme",cur); state.theme=cur; save();
+}
+
+/* ---- export / import ---- */
+function exportData(){
+  const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download="prepwright-progress-"+new Date().toISOString().slice(0,10)+".json";
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  toast("Progress exported");
+}
+const MAX_IMPORT_BYTES=16*1024*1024;
+function safeImportTree(v,depth=0){
+  if(depth>12) return false;
+  if(v===null||typeof v==="boolean"||typeof v==="number") return true;
+  if(typeof v==="string") return v.length<=200000;
+  if(Array.isArray(v)) return v.length<=10000&&v.every(x=>safeImportTree(x,depth+1));
+  if(typeof v!=="object") return false;
+  const keys=Object.keys(v);
+  if(keys.length>10000||keys.some(k=>k==="__proto__"||k==="prototype"||k==="constructor")) return false;
+  return keys.every(k=>safeImportTree(v[k],depth+1));
+}
+function importData(file){
+  if(!file||file.size>MAX_IMPORT_BYTES){ toast("Import failed — file is too large"); return; }
+  const r=new FileReader();
+  r.onload=()=>{
+    try{ const s=JSON.parse(r.result);
+      if(!s||Array.isArray(s)||typeof s!=="object"||!safeImportTree(s)) throw new Error("unsafe shape");
+      if(s.stepLog&&typeof s.stepLog!=="object") throw new Error("bad step log");
+      state=hydrate(s);
+      // The only deliberate replace in the app. Say so, or the bridge refuses a
+      // restore that legitimately carries less than the file it lands on.
+      savePrefs(); lastPushedJSON="";
+      pushState({force:true,intent:"replace",reconciling:!reconciled});
+      if(state.theme)document.documentElement.setAttribute("data-theme",state.theme);
+      recapQueue=[]; render(state.lastView||"overview"); toast("Progress imported");
+    }catch(e){ toast("Import failed — invalid file"); }
+  };
+  r.readAsText(file);
+}
+
+/* ---- toast ---- */
+let toastT;
+function toast(msg){ const el=$("#toast"); el.textContent=msg; el.classList.add("show");
+  clearTimeout(toastT); toastT=setTimeout(()=>el.classList.remove("show"),2200); }
+
+/* =====================================================================
+ *  INIT
+ * ===================================================================== */
+function buildNav(){
+  $("#nav").innerHTML=NAV.map(n=>`<button class="navlink" data-view="${n.id}">
+    ${ICON[n.id]}<span>${esc(n.label)}</span></button>`).join("");
+}
+function routeFromHash(){
+  const v=(location.hash||"#continue").slice(1);
+  render(NAV.some(n=>n.id===v)?v:"continue");
+}
+window.addEventListener("hashchange",routeFromHash);
+
+(function init(){
+  // theme: stored → else prefers-color-scheme
+  if(state.theme) document.documentElement.setAttribute("data-theme",state.theme);
+  else if(window.matchMedia&&window.matchMedia("(prefers-color-scheme:light)").matches)
+    document.documentElement.setAttribute("data-theme","light");
+  buildNav();
+  applyRail();               // restore the sidebar's collapsed/expanded state
+  location.hash="#continue"; // always land on the resume screen
+  routeFromHash();
+  pingBridge();              // detect the live tutor bridge, update the status pill
+  reconcileWithDisk();       // adopt the disk copy if it is newer, else push ours up
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Prepwright — what must never reach version control.
+#
+# Two categories, and the second is the one that bites:
+#   1. Ordinary build and editor noise.
+#   2. Study data. Every track holds a job description, a transcript of what the
+#      candidate did not know, and a corpus researched for them. That is private
+#      by default. It is ignored by directory, not by extension, so a new file
+#      type inside a track is ignored the day it is invented.
+# ---------------------------------------------------------------------------
+
+# --- runtime study data: tracks, corpora, transcripts, state, backups -------
+# The store normally lives in ~/.prepwright, outside this tree. PREPWRIGHT_HOME
+# is a supported way to move it, and pointing it at a directory inside the repo
+# is the obvious thing to do while debugging, so every name that store writes is
+# ignored here as well.
+/var/
+/progress/
+/tracks/
+/corpus/
+/archive/
+/trash/
+/quarantine/
+/library.bak/
+VERSION
+library.db
+library.db-*
+library.lock
+*.pwk
+*.pwk.sha256
+*.cards.jsonl
+*.purge.json
+*.part
+*.state.json
+state.json
+high-water.json
+corrupt-*.json
+clobbered-*.json
+
+# --- anything a job description or resume was dropped into ------------------
+/inbox/
+/imported/
+*_JobDescription.md
+*_FitReport.md
+
+# --- local audit notes that quote what they flag ----------------------------
+# An audit note has to reproduce the text it is asking you to change, so it is
+# useful on disk and must never reach a commit.
+/docs/RESIDUE-*.md
+
+# --- secrets: nothing here should ever exist, so fail loudly if it does ------
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keychain
+credentials.json
+auth.json
+identities.txt
+*.age
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# --- tooling scratch --------------------------------------------------------
+# A browser-automation run drops page snapshots and console logs here, and a
+# snapshot of the tutor page contains whatever was on it.
+.playwright-cli/
+
+# --- os / editor ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
