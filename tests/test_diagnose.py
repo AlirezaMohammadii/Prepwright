@@ -176,6 +176,58 @@ class TheFitReportIsReadAsData(Base):
         self.assertEqual({c["claim_id"] for c in claims}, {"c04", "c05"})
         self.assertIn("1,200+ tests", claims[0]["claim"])
 
+    def test_a_matrix_with_no_number_column_is_read_too(self):
+        """Two real fit reports on disk disagree about the shape. A parser
+        pinned to "| <n> | requirement | ..." reads the other as zero rows and
+        produces a gap list with nothing on it."""
+        fit = D.claims_from_fit_report(
+            "## Requirement matrix\n\n"
+            "| Requirement | Verdict | Evidence |\n|---|---|---|\n"
+            "| Practical GRC experience | PARTIAL | App-security engineering only |\n"
+            "| AI and ML risk concepts | MET | Five years of adversarial-ML work |\n")
+        self.assertEqual([r["verdict"] for r in fit["rows"]], ["PARTIAL", "MET"])
+        self.assertEqual(fit["rows"][0]["requirement"], "Practical GRC experience")
+        self.assertEqual(fit["rows"][0]["n"], 1)
+
+    def test_the_columns_are_read_from_the_header_not_counted_from_the_left(self):
+        fit = D.claims_from_fit_report(
+            "## Requirement matrix\n\n"
+            "| # | Criterion | Notes | Status |\n|---|---|---|---|\n"
+            "| 1 | Governance frameworks | never applied one | MISSING |\n")
+        self.assertEqual(fit["rows"][0]["verdict"], "MISSING")
+        self.assertEqual(fit["rows"][0]["requirement"], "Governance frameworks")
+
+    def test_a_row_carrying_two_verdicts_takes_the_weaker(self):
+        """A real row reads "MET (security) / PARTIAL (governance)". Taking the
+        first loses the half the candidate is short of, and the cost of an extra
+        probe is one question against an interview."""
+        fit = D.claims_from_fit_report(
+            "## Requirement matrix\n\n"
+            "| Requirement | Verdict | Evidence |\n|---|---|---|\n"
+            "| AI security and governance | MET (security) / PARTIAL (governance) |"
+            " threat models yes, governance no |\n")
+        self.assertEqual(fit["rows"][0]["verdict"], "PARTIAL")
+        self.assertEqual(len(fit["weak"]), 1)
+
+    def test_a_red_team_written_as_prose_is_one_objection_not_three(self):
+        """Splitting prose into sentences would manufacture three objections out
+        of one, which is the same invention the posting parser refuses."""
+        fit = D.claims_from_fit_report(
+            "## Red team\n\nA screener sees a researcher, not a GRC analyst."
+            " There is no audit history. The rubric terms are absent.\n\n"
+            "## Scores\n\nNothing here should be parsed.\n")
+        self.assertEqual(len(fit["red_team"]), 1)
+        self.assertIn("screener sees a researcher", fit["red_team"][0])
+        self.assertNotIn("should be parsed", fit["red_team"][0])
+
+    def test_a_separator_row_is_never_read_as_a_requirement(self):
+        fit = D.claims_from_fit_report(
+            "## Requirement matrix\n\n"
+            "| Requirement | Verdict | Evidence |\n|:---|:---:|---:|\n"
+            "| Something real | MET | evidence |\n")
+        self.assertEqual(len(fit["rows"]), 1)
+        self.assertEqual(fit["rows"][0]["requirement"], "Something real")
+
     def test_an_unreadable_verdict_is_marked_not_dropped(self):
         """Dropping a row shortens the gap list without saying so."""
         fit = D.claims_from_fit_report(

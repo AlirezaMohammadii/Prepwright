@@ -166,10 +166,18 @@ def requirements_from_posting(text):
 # list somebody already did the work for; the evidence column is a list of
 # claims the candidate will be asked to defend in an interview.
 
-_MATRIX_ROW = re.compile(r"^\|\s*(?P<n>\d+)\s*\|(?P<rest>.*)\|\s*$")
+_TABLE_ROW = re.compile(r"^\|(?P<rest>.*)\|\s*$")
+_RULE_ROW = re.compile(r"^[\s|:-]+$")
 _VERDICT = re.compile(r"\b(MISSING|UNVERIFIED|PARTIAL|MET|PROCESS REQUIREMENT)\b")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
+_LISTED = re.compile(r"^(?:\d+[.)]|[-*\u2022])\s+")
 
+# Weakest first. A row reading "MET (security) / PARTIAL (governance)" carries
+# two verdicts, and taking the first one loses the half the candidate is short
+# of. Pessimism is the rule everywhere else in this module and it is the rule
+# here: the cost of an extra probe is one question, the cost of a missed gap is
+# the interview.
+VERDICT_ORDER = ("MISSING", "UNVERIFIED", "PARTIAL", "MET", "PROCESS REQUIREMENT")
 WEAK_VERDICTS = ("MISSING", "UNVERIFIED", "PARTIAL")
 
 
@@ -181,6 +189,39 @@ def _section_of(markdown, name):
     return (m.group("body").strip() if m else "")
 
 
+def _verdict_of(cell):
+    """The weakest verdict named in one cell, or UNKNOWN."""
+    found = set(_VERDICT.findall(_BOLD.sub(r"\1", cell).upper()))
+    for name in VERDICT_ORDER:
+        if name in found:
+            return name
+    return "UNKNOWN"
+
+
+def _matrix_columns(cells):
+    """Which column holds the requirement, the verdict and the evidence.
+
+    Read from the header rather than assumed by position. Two real fit reports
+    on disk disagree about the shape: one leads with a `#` column and one does
+    not, and a parser pinned to `| <n> | requirement | ...` reads the second as
+    zero rows and produces a gap list with nothing on it.
+    """
+    lower = [c.strip().lower() for c in cells]
+    want = {"requirement": ("requirement", "criterion", "criteria", "what they ask"),
+            "verdict": ("verdict", "status", "assessment", "result"),
+            "evidence": ("evidence", "why", "notes", "detail")}
+    found = {}
+    for field, names in want.items():
+        for i, name in enumerate(lower):
+            if any(n in name for n in names):
+                found[field] = i
+                break
+    if "requirement" not in found or "verdict" not in found:
+        return None
+    found.setdefault("evidence", min(found["verdict"] + 1, len(cells) - 1))
+    return found
+
+
 def claims_from_fit_report(markdown):
     """The requirement matrix, the steelman and the red team, as data.
 
@@ -188,28 +229,64 @@ def claims_from_fit_report(markdown):
     dropping a row silently would shorten the gap list without saying so.
     """
     md = str(markdown or "")
-    rows = []
-    for line in _section_of(md, "Requirement matrix").split("\n"):
-        m = _MATRIX_ROW.match(line.strip())
+    lines = [ln.strip() for ln in _section_of(md, "Requirement matrix").split("\n")]
+    rows, columns, n = [], None, 0
+    for i, line in enumerate(lines):
+        m = _TABLE_ROW.match(line)
         if not m:
             continue
-        cells = [c.strip() for c in m.group("rest").split("|")]
-        if len(cells) < 3:
+        raw = m.group("rest")
+        if _RULE_ROW.match(raw):
             continue
-        requirement, verdict_cell, evidence = cells[0], cells[1], cells[2]
-        v = _VERDICT.search(_BOLD.sub(r"\1", verdict_cell).upper())
+        # A row followed by a rule row is the header, by markdown's own rule.
+        # Deciding that from the column NAMES instead reads "| # | R | V | E |"
+        # as a requirement called "R", because no name matched. The separator is
+        # a fact about the table; the names are a guess about the author.
+        nxt = next((lines[j] for j in range(i + 1, len(lines)) if lines[j]), "")
+        is_header = bool(_TABLE_ROW.match(nxt)
+                         and _RULE_ROW.match(_TABLE_ROW.match(nxt).group("rest")))
+        cells = [c.strip() for c in raw.split("|")]
+        if is_header:
+            # Named columns when the author named them, otherwise the last three,
+            # which is the shape every fit report seen so far ends in.
+            columns = _matrix_columns(cells) or {
+                "requirement": max(0, len(cells) - 3),
+                "verdict": max(0, len(cells) - 2),
+                "evidence": len(cells) - 1}
+            continue
+        if columns is None:
+            # A table with no header at all. Read it rather than return nothing.
+            columns = {"requirement": max(0, len(cells) - 3),
+                       "verdict": max(0, len(cells) - 2),
+                       "evidence": len(cells) - 1}
+        if len(cells) <= columns["verdict"]:
+            continue
+        n += 1
         rows.append({
-            "n": int(m.group("n")),
-            "requirement": _BOLD.sub(r"\1", requirement)[:400],
-            "verdict": (v.group(1) if v else "UNKNOWN"),
-            "evidence": _BOLD.sub(r"\1", evidence)[:600],
+            "n": n,
+            "requirement": _BOLD.sub(r"\1", cells[columns["requirement"]])[:400],
+            "verdict": _verdict_of(cells[columns["verdict"]]),
+            "evidence": _BOLD.sub(r"\1", cells[columns["evidence"]]
+                                  if columns["evidence"] < len(cells) else "")[:600],
         })
-    red = [ln.strip() for ln in _section_of(md, "Red team").split("\n")
-           if ln.strip() and re.match(r"^\d+[.)]\s", ln.strip())]
+
+    # Numbered or bulleted objections when the section is written as a list, and
+    # the whole block as ONE objection when it is written as prose. Splitting
+    # prose into sentences would manufacture three objections out of one, which
+    # is the same invention the posting parser refuses.
+    block = _section_of(md, "Red team")
+    listed = [ln.strip() for ln in block.split("\n")
+              if ln.strip() and _LISTED.match(ln.strip())]
+    if listed:
+        red = [_LISTED.sub("", item)[:600] for item in listed]
+    else:
+        joined = " ".join(block.split())
+        red = [joined[:600]] if len(joined) > 40 else []
+
     return {
         "rows": rows,
         "steelman": _section_of(md, "Steelman")[:2000],
-        "red_team": [re.sub(r"^\d+[.)]\s*", "", r)[:600] for r in red],
+        "red_team": red,
         "weak": [r for r in rows if r["verdict"] in WEAK_VERDICTS],
         "met": [r for r in rows if r["verdict"] == "MET"],
     }
