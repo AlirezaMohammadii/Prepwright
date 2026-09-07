@@ -1,7 +1,7 @@
 # Prepwright runtime integrity manifest.
 # Every file the bridge loads. Regenerate with tools/make_manifest.sh.
 # Verified by prep-launcher.sh, which refuses to start on a mismatch.
-c2cb3d7a8e6de1d5486c207c32ba0b8c1ed8ee69972295110baba7a068c53ad2  bridge.py
+5e7a140493e5b356f203fd2483c8c57418652526e2e86f8f45c45bcb755f4e09  bridge.py
 5640abe58376e94e86a76c9b18b6ac7b2f0074c2662820b701e4725951082c54  index.html
 c961bfbafba09d999b6cc34e204e06186c19dd21d4f28d5b37cb1e570bd0c580  prepwright/__init__.py
 91290c732742e68ad8894e56721bc68db751336dea69341172e51d7938db68c4  prepwright/assess.py

@@ -147,8 +147,12 @@ def _validate_provider_model(provider, model):
 # needs following.
 from prepwright import config as PC          # noqa: E402
 from prepwright import corpus as PCORPUS     # noqa: E402
+from prepwright import curriculum as PCURR   # noqa: E402
+from prepwright import diagnose as PDIAG     # noqa: E402
+from prepwright import intake as PINTAKE     # noqa: E402
 from prepwright import keep as PK            # noqa: E402
 from prepwright import pagestate as PS       # noqa: E402
+from prepwright import research as PRESEARCH # noqa: E402
 from prepwright import state as PSTATE       # noqa: E402
 from prepwright import track as PTRACK       # noqa: E402
 
@@ -203,6 +207,89 @@ def current_track_id():
             track_id = PTRACK.create_track(DEFAULT_TRACK_TITLE)
         _write_current_track(track_id)
         return track_id
+
+
+# ---- the pipeline, as the page sees it -------------------------------------
+# Seven stages, in order. The page renders one at a time and never asks the
+# candidate to guess which one they are in. `flow_state` derives the answer from
+# the store rather than storing it, for the same reason staleness is derived:
+# a stage recorded in a row is a stage that can disagree with the track.
+STAGES = ("welcome", "intake", "confirm", "diagnose", "approve", "research",
+          "curriculum", "learn")
+
+MAX_RESEARCH_URLS = 12
+# Twelve hosts at the per-fetch ceiling is nine minutes. Handler.timeout bounds
+# idle sockets and not a running handler, so nothing server-side would stop it:
+# what this protects is the candidate, who otherwise watches a spinner with no
+# way to tell a slow fetch from a hung one.
+RESEARCH_BUDGET_SECONDS = 100
+
+
+def flow_state(handle):
+    """Which stage this track is in, and what the page needs to draw it.
+
+    Read-only and cheap. Every stage is decided by a fact on disk: a posting
+    exists, gaps exist, every gap is decided, the corpus has documents, steps
+    exist. Nothing here can advance a track; only the routes below can, and each
+    of those refuses when its own precondition is unmet.
+    """
+    intake = handle.intake()
+    gaps = PDIAG.gap_list(handle)
+    summary = PDIAG.summary(handle)
+    steps = PCURR.steps_of(handle)
+    docs = handle.conn.execute(
+        "SELECT COUNT(*) c FROM doc WHERE status='ready'").fetchone()["c"]
+    turns = handle.conn.execute("SELECT COUNT(*) c FROM turn").fetchone()["c"]
+
+    if intake is None:
+        stage = "intake"
+    elif not gaps:
+        stage = "diagnose"
+    elif not summary["decided"]:
+        stage = "approve"
+    elif not docs:
+        stage = "research"
+    elif not steps:
+        stage = "curriculum"
+    else:
+        stage = "learn"
+
+    lib = PSTATE.open_library()
+    try:
+        row = lib.execute(
+            "SELECT title, employer, role_title, source_kind, source_path,"
+            "       created_utc FROM track WHERE track_id=?",
+            (handle.track_id,)).fetchone()
+        meta = {k: row[k] for k in row.keys()} if row else {}
+    finally:
+        lib.close()
+
+    return {
+        "trackId": handle.track_id,
+        "stage": stage,
+        "stages": list(STAGES),
+        "track": meta,
+        "posting": {
+            "kind": intake["kind"] if intake else None,
+            "bytes": intake["body_bytes"] if intake else 0,
+            "capturedUtc": intake["captured_utc"] if intake else None,
+            "sourcePath": intake["source_path"] if intake else None,
+            "excerpt": (intake["body"][:600] if intake else ""),
+        },
+        "gaps": summary,
+        "corpus": {"documents": docs},
+        "curriculum": {"steps": len(steps),
+                       "tiers": {t: sum(1 for x in steps if x["tier"] == t)
+                                 for t in PCURR.TIERS}},
+        "turns": turns,
+    }
+
+
+def _switch_track(track_id):
+    """Point this bridge at a track. Under the same lock that resolves one."""
+    with _track_gate:
+        _write_current_track(track_id)
+    return track_id
 
 
 def open_state_track(take_lease):
@@ -1493,6 +1580,34 @@ class Handler(SimpleHTTPRequestHandler):
             finally:
                 handle.close()
             return self._json(200, snapshot)
+        if route == "/api/flow":
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            try:
+                handle = open_state_track(take_lease=False)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Flow", exc)
+            try:
+                return self._json(200, flow_state(handle))
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Flow", exc)
+            finally:
+                handle.close()
+        if route == "/api/tracks":
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            current = current_track_id()
+            lib = PSTATE.open_library()
+            try:
+                rows = lib.execute(
+                    "SELECT track_id, title, employer, role_title, created_utc,"
+                    "       touched_utc FROM track WHERE lifecycle='active'"
+                    " ORDER BY touched_utc DESC, created_utc DESC").fetchall()
+            finally:
+                lib.close()
+            return self._json(200, {
+                "current": current,
+                "tracks": [{k: r[k] for k in r.keys()} for r in rows]})
         if route == "/favicon.ico":
             # 204, not a file. The page ships no icon asset, and an unanswered
             # favicon is a console error on every load that makes "zero console
@@ -1605,11 +1720,326 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             handle.close()
 
+    # ---- the pipeline routes ------------------------------------------
+    def _pipeline(self, route, payload):
+        """intake, diagnose, gap, research, curriculum, track.
+
+        One method because they share every rule: validate the client's fields
+        here and never trust them, open one handle for the request and close it
+        in a finally, refuse by name with a 400 the candidate can act on, and
+        turn a store fault into a 500 with a reference id rather than a stack
+        trace in a browser.
+
+        None of these calls a model. The judgement inside `diagnose` and the
+        prerequisite edges inside `curriculum` both have deterministic
+        fallbacks, so the whole pipeline runs with the provider unavailable and
+        says which parts were graded without one.
+        """
+        try:
+            if route == "/api/intake":
+                return self._route_intake(payload)
+            if route == "/api/track":
+                return self._route_track(payload)
+        except (PINTAKE.IntakeRefused, PRESEARCH.FetchRefused, ValueError) as exc:
+            return self._json(400, {"error": str(exc)})
+        except PRESEARCH.FetchFailed as exc:
+            return self._json(502, {"error": str(exc)})
+        except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+            return self._failure(500, "Intake", exc)
+
+        try:
+            handle = open_state_track(take_lease=True)
+        except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+            return self._failure(500, "Track open", exc)
+        try:
+            if route == "/api/diagnose":
+                return self._route_diagnose(handle, payload)
+            if route == "/api/gap":
+                return self._route_gap(handle, payload)
+            if route == "/api/research":
+                return self._route_research(handle, payload)
+            if route == "/api/curriculum":
+                return self._route_curriculum(handle, payload)
+            return self._json(404, {"error": "Not found."})
+        except (PDIAG.DiagnoseRefused, PCURR.CurriculumRefused,
+                PRESEARCH.FetchRefused, ValueError) as exc:
+            return self._json(400, {"error": str(exc)})
+        except PRESEARCH.FetchFailed as exc:
+            return self._json(502, {"error": str(exc)})
+        except PSTATE.CapExceeded as exc:
+            return self._json(507, {"error": str(exc)})
+        except PSTATE.TrackMoved as exc:
+            return self._json(409, {"error": str(exc)})
+        except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+            return self._failure(500, route.split("/")[-1].title(), exc)
+        finally:
+            handle.close()
+
+    def _route_intake(self, payload):
+        """Build a track from a URL or from pasted text. Both are first-class.
+
+        The URL path fetches through `research`, which is the only module with
+        network access, so this route inherits its whole SSRF guard rather than
+        carrying a second copy. A page that answers but yields no posting body
+        comes back as a 422 carrying whatever identity was readable, so the page
+        can open the paste box with the employer and role already filled in
+        instead of showing a failure the candidate cannot act on.
+        """
+        url = str(payload.get("url") or "").strip()[:2000]
+        text = str(payload.get("text") or "")[:PC.INTAKE_MAX_BYTES * 2]
+        folder = payload.get("applicationFolder")
+        folder = str(folder)[:1000] if isinstance(folder, str) and folder.strip() else None
+        if not url and not text.strip():
+            raise ValueError("Give me a job link or paste the description.")
+
+        if text.strip():
+            posting = PINTAKE.posting_from_text(
+                text,
+                employer=str(payload.get("employer") or "")[:200],
+                role_title=str(payload.get("roleTitle") or "")[:200],
+                location=str(payload.get("location") or "")[:200],
+                url=url,
+                source_kind=("freeform" if payload.get("freeform") else "pasted"))
+        else:
+            posting = PINTAKE.posting_from_url(url)
+            if not posting["confident"]:
+                return self._json(422, {
+                    "error": posting["note"],
+                    "needsPaste": True,
+                    "employer": posting.get("employer"),
+                    "roleTitle": posting.get("role_title"),
+                    "location": posting.get("location"),
+                    "finalUrl": posting.get("final_url"),
+                })
+
+        app = PINTAKE.read_application_folder(folder) if folder else None
+        track_id, report = PINTAKE.create_from_posting(posting, application=app)
+        _switch_track(track_id)
+        handle = open_state_track(take_lease=False)
+        try:
+            report["flow"] = flow_state(handle)
+        finally:
+            handle.close()
+        return self._json(200, report)
+
+    def _route_track(self, payload):
+        """Switch which track this bridge serves."""
+        track_id = str(payload.get("trackId") or "").strip()
+        if not re.match(PC.TRACK_ID_RE, track_id):
+            raise ValueError("That is not a track id.")
+        lib = PSTATE.open_library()
+        try:
+            row = lib.execute(
+                "SELECT lifecycle FROM track WHERE track_id=?",
+                (track_id,)).fetchone()
+        finally:
+            lib.close()
+        if row is None:
+            raise ValueError("There is no track %s." % track_id)
+        if row["lifecycle"] != "active":
+            raise ValueError("Track %s is %s, so it cannot be opened."
+                             % (track_id, row["lifecycle"]))
+        _switch_track(track_id)
+        handle = open_state_track(take_lease=False)
+        try:
+            return self._json(200, {"ok": True, "flow": flow_state(handle)})
+        finally:
+            handle.close()
+
+    def _route_diagnose(self, handle, payload):
+        """Build the probe plan, or turn answers into a proposed gap list.
+
+        Two actions rather than two routes, because they are one conversation:
+        `plan` is the questions, `propose` is what the answers imply. Proposing
+        twice is refused rather than appending a second list, since gap ids are
+        a primary key and the second call would fail halfway through with rows
+        from the first still in place.
+        """
+        action = str(payload.get("action") or "plan")
+        intake = handle.intake()
+        if intake is None:
+            raise ValueError("There is no posting on this track yet.")
+        requirements = PDIAG.requirements_from_posting(intake["body"])
+        fit = self._fit_report_for(handle)
+        limit = payload.get("limit")
+        limit = int(limit) if isinstance(limit, int) and 1 <= limit <= 60 else 24
+        plan, cut = PDIAG.probe_plan(requirements, fit, limit=limit)
+
+        if action == "plan":
+            return self._json(200, {
+                "probes": plan, "cut": cut,
+                "requirements": len(requirements),
+                "fitReport": bool(fit and fit.get("rows")),
+            })
+        if action != "propose":
+            raise ValueError("Unknown diagnose action.")
+        if PDIAG.gap_list(handle):
+            raise ValueError(
+                "This track already has a gap list. Decide the gaps you have"
+                " before proposing more.")
+
+        raw = payload.get("answers")
+        answers = {}
+        if isinstance(raw, dict):
+            for key, value in list(raw.items())[:200]:
+                if isinstance(key, str) and isinstance(value, str):
+                    answers[key[:16]] = value[:4000]
+        verdicts = payload.get("verdicts")
+        graded_by = "model"
+        if not isinstance(verdicts, list):
+            verdicts = PDIAG.verdicts_without_a_model(plan, answers)
+            graded_by = "length only, so nothing was graded better than shaky"
+        rows = PDIAG.proposals_from(plan, verdicts)
+        PDIAG.propose(handle, rows)
+        return self._json(200, {
+            "proposed": len(rows), "gradedBy": graded_by,
+            "gaps": PDIAG.gap_list(handle),
+            "summary": PDIAG.summary(handle),
+            "flow": flow_state(handle),
+        })
+
+    def _fit_report_for(self, handle):
+        """The imported fit report, read from this track's own intake directory.
+
+        Never from the resume folder. That folder was read once at track
+        creation and hashed; reopening it here would let an edit on the other
+        side change a diagnostic that has already been run.
+        """
+        intake_dir = os.path.join(handle.dir, "intake")
+        try:
+            names = sorted(n for n in os.listdir(intake_dir)
+                           if n.endswith("_FitReport.md"))
+        except OSError:
+            return None
+        for name in names:
+            path = os.path.join(intake_dir, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    return PDIAG.claims_from_fit_report(fh.read(512 * 1024))
+            except OSError:
+                continue
+        return None
+
+    def _route_gap(self, handle, payload):
+        """One decision on one gap. The candidate is the only thing that opens
+        the gate, so this is the only route that can approve anything."""
+        gap_id = str(payload.get("gapId") or "").strip()[:40]
+        status = str(payload.get("status") or "").strip()
+        if not gap_id:
+            raise ValueError("Which gap?")
+        if status not in ("approved", "declined"):
+            raise ValueError("A gap is either approved or declined.")
+        rev = payload.get("rev")
+        rev = int(rev) if isinstance(rev, int) else None
+        if status == "approved":
+            PDIAG.approve(handle, gap_id, expected_rev=rev)
+        else:
+            PDIAG.decline(handle, gap_id, expected_rev=rev)
+        return self._json(200, {
+            "ok": True, "gaps": PDIAG.gap_list(handle),
+            "summary": PDIAG.summary(handle), "flow": flow_state(handle)})
+
+    def _route_research(self, handle, payload):
+        """Fetch the URLs the candidate supplied and store what came back.
+
+        The candidate supplies them. This route will not search, will not follow
+        a link out of a fetched page, and will not accept a URL the page did not
+        get from a person. That is the grounding claim: the model never chooses
+        the evidence.
+
+        One URL failing does not fail the batch. Each result carries its own
+        outcome so the page can show which sources landed and which did not.
+        """
+        raw = payload.get("urls")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("Paste at least one https link to a source you trust.")
+        urls, seen = [], set()
+        for item in raw[:MAX_RESEARCH_URLS]:
+            url = str(item or "").strip()[:2000]
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        if not urls:
+            raise ValueError("None of those were usable links.")
+        vetting = str(payload.get("vetting") or "secondary")
+        if vetting not in ("primary", "secondary", "vendor", "community"):
+            vetting = "secondary"
+        trust = payload.get("trust")
+        trust = int(trust) if isinstance(trust, int) and 1 <= trust <= 5 else 3
+
+        # Bounded across the batch, not only per URL, so a slow set returns the
+        # sources that did land instead of holding the page indefinitely. What
+        # the deadline stops is reported, never dropped in silence.
+        deadline = time.time() + RESEARCH_BUDGET_SECONDS
+        results = []
+        for url in urls:
+            if time.time() > deadline:
+                results.append({"url": url, "ok": False,
+                                "why": "the batch ran out of time before this one;"
+                                       " add it on its own"})
+                continue
+            try:
+                got = PRESEARCH.fetch(url)
+                text = PRESEARCH.text_of(got)
+                doc_id = PCORPUS.ingest_text(
+                    handle, text, origin_url=got["asked_url"],
+                    vetting=vetting, trust=trust, final_url=got["final_url"])
+                if doc_id is None:
+                    results.append({"url": url, "ok": False,
+                                    "why": "nothing citable: the page has no headings"})
+                else:
+                    results.append({"url": url, "ok": True, "docId": doc_id,
+                                    "finalUrl": got["final_url"],
+                                    "bytes": got["bytes"],
+                                    "sha256": got["sha256"],
+                                    "fetchedUtc": got["fetched_utc"]})
+            except (PRESEARCH.FetchRefused, PRESEARCH.FetchFailed) as exc:
+                results.append({"url": url, "ok": False, "why": str(exc)})
+            except PSTATE.CapExceeded as exc:
+                results.append({"url": url, "ok": False, "why": str(exc)})
+        return self._json(200, {
+            "results": results,
+            "stored": sum(1 for r in results if r["ok"]),
+            "flow": flow_state(handle)})
+
+    def _route_curriculum(self, handle, payload):
+        """Approved gaps plus this track's corpus into a written plan."""
+        if PCURR.steps_of(handle):
+            raise ValueError(
+                "This track already has a curriculum. Building a second one over"
+                " it would renumber steps the transcript already points at.")
+        gaps = PDIAG.approved(handle)
+        if not gaps:
+            raise ValueError(
+                "No gap has been approved yet, so there is nothing to plan.")
+        # A partial corpus defers the gaps it does not cover, which is normal
+        # and is reported. An EMPTY corpus is a precondition, not a deferral:
+        # answering 200 with a plan of zero steps reads as success and leaves
+        # the candidate looking at an empty curriculum with nothing saying why.
+        if not handle.conn.execute(
+                "SELECT COUNT(*) c FROM doc WHERE status='ready'").fetchone()["c"]:
+            raise ValueError(
+                "This track has no corpus yet, so every step would have nothing"
+                " to teach from. Add the sources you trust first.")
+        edges = payload.get("edges")
+        edges = edges if isinstance(edges, list) else ()
+        built = PCURR.build(handle, gaps, edges=edges)
+        built["flow"] = flow_state(handle)
+        return self._json(200, built)
+
     def do_POST(self):
         route = self.path.split("?")[0]
         if self._reject_bad_host():
             return
-        if route not in ("/api/chat", "/api/state", "/api/assess", "/api/review"):
+        # /api/chat has no `if route ==` test of its own: it is the residual
+        # branch at the end of this method. A new route must be added HERE and
+        # given an explicit block BEFORE that fall-through, or its requests are
+        # answered by the tutor.
+        if route not in ("/api/chat", "/api/state", "/api/assess", "/api/review",
+                         "/api/intake", "/api/diagnose", "/api/gap",
+                         "/api/research", "/api/curriculum", "/api/track"):
             return self._json(404, {"error": "Not found."})
 
         if not self._authorized():
@@ -1624,6 +2054,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(413, {"error": "Request body is too large."})
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
+
+        if route in ("/api/intake", "/api/diagnose", "/api/gap",
+                     "/api/research", "/api/curriculum", "/api/track"):
+            return self._pipeline(route, payload)
 
         if route == "/api/assess":
             try:
