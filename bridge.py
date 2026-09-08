@@ -149,10 +149,12 @@ from prepwright import config as PC          # noqa: E402
 from prepwright import corpus as PCORPUS     # noqa: E402
 from prepwright import curriculum as PCURR   # noqa: E402
 from prepwright import diagnose as PDIAG     # noqa: E402
+from prepwright import ingest as PINGEST    # noqa: E402
 from prepwright import intake as PINTAKE     # noqa: E402
 from prepwright import keep as PK            # noqa: E402
 from prepwright import pagestate as PS       # noqa: E402
 from prepwright import research as PRESEARCH # noqa: E402
+from prepwright import security as PSEC      # noqa: E402
 from prepwright import state as PSTATE       # noqa: E402
 from prepwright import track as PTRACK       # noqa: E402
 
@@ -241,20 +243,22 @@ PROVIDER_DISCOVER_MODELS = {
 }
 
 
-def _discovery_report(provider, model, out):
-    """The run's ledger entry, trimmed by entries until it fits its column.
+def _trim_report(body, discarded):
+    """Serialise a ledger entry, dropping whole discards until it fits.
 
     `research_run.queries` is charged against MARK_MAX_BYTES. Trimming the
     SERIALISED form to that many bytes produces text that is not JSON, and the
     only reader parses it, so the whole discard list disappears silently. This
     drops whole entries instead and records how many it dropped, because a
     ledger that quietly shows nothing is worse than one that says it is partial.
+
+    One copy, two callers: a discovery run and a supplied file both write this
+    column, and the second must not reintroduce the bug the first one fixed.
     """
-    kept = list(out["discarded"])
+    kept = list(discarded)
     dropped = 0
     while True:
-        body = {"kind": "discover", "provider": provider, "model": model,
-                "stored": out["stored"], "discarded": kept}
+        body = dict(body, discarded=kept)
         if dropped:
             body["discarded_not_recorded"] = dropped
         text = json.dumps(body)
@@ -265,6 +269,30 @@ def _discovery_report(provider, model, out):
         cut = max(1, len(kept) // 2)
         kept = kept[:-cut]
         dropped += cut
+
+
+def _discovery_report(provider, model, out):
+    """The ledger entry for one discovery run."""
+    return _trim_report({"kind": "discover", "provider": provider,
+                         "model": model, "stored": out["stored"]},
+                        out["discarded"])
+
+
+def _file_report(report, error=None):
+    """The ledger entry for one supplied file, stored or refused.
+
+    A refused file still gets a row. "I pointed at that PDF and nothing
+    happened" is the complaint this prevents: the ledger says the file was read,
+    what the extractor was, and why it was refused.
+    """
+    if error:
+        return _trim_report({"kind": "file", "file": report, "error": error}, [])
+    return _trim_report({
+        "kind": "file", "file": report["name"], "title": report["title"],
+        "how": report["how"], "sections": report["sections"],
+        "kept": report["kept"], "stored": report["stored"],
+        "coverage": (report.get("coverage") or {}).get("ratio"),
+    }, report.get("dropped") or [])
 
 
 def flow_state(handle):
@@ -576,39 +604,9 @@ OLD_STUDENT_CHARS = 420
 OLD_TUTOR_CHARS = 190
 
 
-def _trusted_executable(name, fallbacks=()):
-    """Resolve a CLI and reject files another local account could replace."""
-    candidates = [shutil.which(name)] + [os.path.expanduser(p) for p in fallbacks]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        real = os.path.realpath(candidate)
-        try:
-            info = os.stat(real)
-        except OSError:
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            continue
-        if info.st_uid not in (0, os.getuid()):
-            continue
-        if info.st_mode & 0o022:  # group/world writable executable
-            continue
-        parent, parents_ok = os.path.dirname(real), True
-        while parent and parent != os.path.dirname(parent):
-            try:
-                parent_info = os.stat(parent)
-            except OSError:
-                parents_ok = False
-                break
-            if (parent_info.st_uid not in (0, os.getuid())
-                    or parent_info.st_mode & 0o022):
-                parents_ok = False
-                break
-            parent = os.path.dirname(parent)
-        if not parents_ok:
-            continue
-        return real
-    return None
+# Moved to prepwright/security.py: the PDF extractor needs the same ownership
+# check the provider CLIs need, and two copies of that check is one too many.
+_trusted_executable = PSEC.trusted_executable
 
 
 def claude_bin():
@@ -1933,7 +1931,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._route_curriculum(handle, payload)
             return self._json(404, {"error": "Not found."})
         except (PDIAG.DiagnoseRefused, PCURR.CurriculumRefused,
-                PRESEARCH.FetchRefused, ValueError) as exc:
+                PRESEARCH.FetchRefused, PINGEST.IngestRefused, ValueError) as exc:
             return self._json(400, {"error": str(exc)})
         except PRESEARCH.FetchFailed as exc:
             return self._json(502, {"error": str(exc)})
@@ -2207,6 +2205,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._route_discover(handle, payload)
         if action == "quarantine":
             return self._route_quarantine(handle, payload)
+        if action in ("preview_file", "ingest_file"):
+            return self._route_file(handle, payload, commit=(action == "ingest_file"))
         if action not in ("fetch", ""):
             raise ValueError("Unknown research action %r." % action)
         raw = payload.get("urls")
@@ -2401,6 +2401,64 @@ class Handler(SimpleHTTPRequestHandler):
             "asked": calls["n"],
             "skipped": skipped,
             "flow": flow_state(handle)})
+
+    # A supplied resource is bounded the same way a pasted URL is. The path is
+    # the candidate's own file on their own machine, so the limit that matters is
+    # not authorisation but the goal: a goal long enough to be a document is a
+    # goal nobody wrote on purpose.
+    GOAL_MAX_CHARS = 600
+    PATH_MAX_CHARS = 1024
+
+    def _route_file(self, handle, payload, commit):
+        """Read a file the candidate supplied. Preview, or preview and store.
+
+        Two actions rather than one because the cut is the interesting part and
+        the candidate should see it before it spends a track's document budget:
+        `preview_file` reads, measures and ranks without writing a byte, and
+        `ingest_file` does the same work and then commits. Both cost zero
+        provider tokens; `prepwright.ingest` opens no socket and calls no model,
+        which is asserted by its own test rather than left as a claim.
+
+        The run is recorded in `research_run` exactly as a discovery run is, so a
+        supplied PDF and a found page appear in one ledger with one provenance
+        story, and the sections the cut dropped are recorded with their reasons
+        next to the sources discovery rejected with theirs.
+        """
+        path = str(payload.get("path") or "").strip()[:self.PATH_MAX_CHARS]
+        if not path:
+            raise ValueError("Name the file you want to study from.")
+        goal = str(payload.get("goal") or "").strip()[:self.GOAL_MAX_CHARS]
+        depth = str(payload.get("depth") or "focused").strip().lower()
+        vetting = str(payload.get("vetting") or "community")
+        if vetting not in ("primary", "secondary", "vendor", "community"):
+            vetting = "community"
+        try:
+            trust = max(1, min(5, int(payload.get("trust") or 3)))
+        except (TypeError, ValueError):
+            trust = 3
+        if not commit:
+            report = PINGEST.preview(path, goal, vetting=vetting, trust=trust,
+                                     depth=depth)
+            return self._json(200, {"ok": bool(report.get("ok")),
+                                    "committed": False, "report": report})
+        run_id = "f-" + secrets.token_hex(6)
+        handle.start_research_run(run_id, "supplied file: %s | goal: %s"
+                                  % (os.path.basename(path), goal or "(none)"))
+        try:
+            report = PINGEST.ingest_file(handle, path, goal, vetting=vetting,
+                                         trust=trust, run_id=run_id, depth=depth)
+        except Exception as exc:                              # noqa: BLE001
+            # The run row is closed on every path. A run left 'running' is
+            # indistinguishable in the ledger from one still in flight, and a
+            # refused ingest is a fact worth keeping rather than a gap.
+            handle.finish_research_run(
+                run_id, "failed",
+                queries=_file_report(os.path.basename(path), str(exc)[:400]))
+            raise
+        handle.finish_research_run(
+            run_id, "ok", queries=_file_report(report),
+            bytes_fetched=int(report.get("bytes") or 0))
+        return self._json(200, {"ok": True, "committed": True, "report": report})
 
     def _route_ledger(self, handle, _payload):
         """Every source in this track, with where it came from and what it cost.

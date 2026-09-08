@@ -75,6 +75,7 @@ without weakening any of that.
 | Agentic orchestration | **No.** `/langgraph-architect` ran 2026-09-08. The dossier is committed at `langgraph-design/dossier.json`, machine-validated, verdict `plain_code` with zero triggering needs. Deterministic code owns all control flow, and a model call is always one bounded, schema-shaped request. A graph runtime would break stdlib-only and no-API-key. |
 | Research sources | **Changed this session, on the owner's instruction.** The app finds them. The fetch decides. Model memory only nominates a URL. `research.discover` fetches every nomination through the same SSRF guard a pasted link goes through, checks the page shares vocabulary with the gap, and records every discard with its reason. The candidate can still paste URLs, and can distrust anything the app found. |
 | The goal the design serves | The owner's words: roughly 20% of the material covering roughly 80% of the gaps, shortest path to interview-ready. Keep what serves that, drop what does not. Stages group by tier for this reason, and discovery takes one source per gap for the same one. |
+| Supplied resources | **New this session.** The candidate points at a file and says what to learn from it. `prepwright/ingest.py` reads PDF, Word, Excel, CSV, HTML, Markdown and text, proves the extraction is prose, and keeps only the part that answers the goal. No model is called and no socket is opened: a 300-page book and an empty file cost the same number of tokens to ingest, which is zero. |
 | Where the page lands | `#start`, which renders whichever stage the track is in. |
 
 Six ADRs in `docs/adr/`. **Read 0003 then 0004 first**: 0003 is the delta
@@ -96,7 +97,20 @@ protocol, 0004 is per-track evidence and the manifest.
 | The app runs clean from the launcher | `./prep-launcher.sh`: page loads, `/favicon.ico` 204, `/api/flow` 200, zero console errors |
 | Every one of the 11 views renders on a real adopted curriculum | click each `[data-view]` in turn, then `playwright-cli console` |
 
-**Verified in a browser, on the real Wingtip track (`t-93c97fdd6d77`), this session.**
+**Verified this session, on a supplied 1.9 MB PDF (NIST AI 100-1).**
+
+| Claim | Evidence |
+|---|---|
+| A PDF becomes teachable corpus | 1.9 MB PDF, `pdftotext`, 122,041 characters, 172 sections, 0.1 s, **zero model tokens**. The text is 15.9x smaller than the container it came out of, and the pack cap means only ~3 KB of it reaches a model per turn however large the resource is. |
+| The cut is the product | `focused` keeps 20 of 172 sections on a real goal, `balanced` 81, `broad` 109. `focused` is the default because a twelfth of a document is the fraction one candidate needs before one interview. |
+| Garbage is refused, not stored | `gate()` refuses six named failure modes and every refusal quotes the measurement that failed. Removing `max_longest_run` makes its own test fail. |
+| A resource that does not answer is said so | Goal "agent orchestration tool calling planning memory LLM evaluation" against the AI RMF: 0 of 172 sections kept, and the warning names the ideas the book does not contain. |
+| One track's corpus cannot re-enter another as a supplied file | `resolve()` refuses any path under `config.HOME`. Removing the check makes its own test fail. |
+| A teaching turn is grounded in the supplied PDF | Scratch track `t-3216946fb811`, step `3:topic:S03`, `grounded=True`, cites `['D04§s04','D04§s06','D05§s01','D04§s10','D01§s04','D01§s09']`, `citations.invented=[]`, pack `d73f29bb4fc386bd`. |
+| The tutor still refuses to remember a version | Asked which edition it was teaching: "every excerpt I have is headed 'nist.pdf, date not stated' ... I won't supply one from memory - a remembered version number is exactly the thing you'd repeat confidently in the room and be wrong about." |
+| The whole panel works in a browser | Path + goal + depth, Check it first, Add it to this track. Report renders, ledger updates, **zero console errors**. |
+
+**Verified in a browser, on the real Wingtip track (`t-93c97fdd6d77`), an earlier session.**
 
 | Claim | Evidence |
 |---|---|
@@ -117,6 +131,48 @@ binary here), so `discover` has only run against `claude`. The iPhone
 `./prep-launcher.sh` from the repo.
 
 ## 5. What was built this session
+
+- **`prepwright/ingest.py` is new**, 900 lines, the owner-supplied resource path.
+  Format readers for PDF (poppler when present and ownership-checked, a modest
+  stdlib inflate-and-scan reader otherwise), Word (real heading styles, which is
+  a better outline than any heuristic recovers from flat text), Excel, CSV/TSV,
+  HTML and text. Then `gate()`, then `outline()`/`strip_running()`, then
+  `select()`, then `group()`. **It imports no provider and opens no socket, and
+  a test asserts that by reading its own source.**
+- **`prepwright/security.py` stopped being a stub.** `trusted_executable` moved
+  out of `bridge.py` into it, because the PDF extractor needs the same ownership
+  check the provider CLIs need and two copies of that check is one too many.
+  This is a real slice of Task C: it has no dependency on `PORT`, which is what
+  blocks the rest.
+- **`bridge.py`** gained `_route_file` (`preview_file` and `ingest_file` as
+  ACTIONS on `/api/research`, per trap 20) and `_trim_report`, which is
+  `_discovery_report`'s trimming loop lifted out so a supplied file and a
+  discovery run cannot diverge on the bug trap 24 records.
+- **`index.html`** gained `fileBox()`, `fileReportHtml()`, `fileAction()` in the
+  Sources view, and made the probe conversation reachable from the gap-approval
+  stage.
+- **`tests/test_ingest.py`** is new: 32 tests. **`tests/test_pipeline_routes.py`**
+  gained 7 more over real HTTP.
+
+### The token argument, since it is the reason to build this at all
+
+Ingestion is where a naive design burns tokens: hand a 300-page PDF to a model
+and ask it to summarise. This does none of that.
+
+| Stage | Cost |
+|---|---|
+| Read the file | 0 tokens. `pdftotext`, `zipfile`, `csv`, `zlib`. |
+| Find its structure | 0 tokens. Heading heuristics, or real Word styles. |
+| Decide what answers the goal | 0 tokens. `curriculum.score_sections`, the same scorer the pack uses. |
+| Teach from it | `PACK_MAX_BYTES` = 12,000 bytes, about 3k tokens, **per turn, whatever the resource's size**. |
+
+Markdown is not cheaper than plain text for the same words. It is very slightly
+more, because `#` and `*` are characters too. The 15.9x saving measured above is
+extraction, not format: it is the PDF container, its fonts and its binary
+streams not being sent. What markdown buys is structure, and structure is what
+lets the cut happen locally instead of in a model.
+
+## 5b. What the previous session built
 
 - **`research.py`** gained the whole discovery half. The module docstring used to
   say "The model never finds the sources". The owner changed that promise, so the
@@ -147,7 +203,7 @@ binary here), so `discover` has only run against `claude`. The iPhone
 
 ## 6. The work, in dependency order
 
-### Task P. PDF sources are refused, and they are the best sources. **NEXT.**
+### Task P. PDF sources are refused. **DONE this session. Kept for the reasoning.**
 
 The strongest finding of the session, with evidence. Four of the ten discards on
 the second discovery run were NIST PDFs: `NIST.AI.100-1` (the AI RMF itself),
@@ -157,14 +213,37 @@ pipeline cannot read one. `ALLOWED_CONTENT` in `research.py` excludes
 `application/pdf`, and `corpus.parse_loose` splits on `## ` headings an extracted
 PDF would not have.
 
-It was NOT built this session on purpose. A fragile extractor emits garbled text
-into a corpus the tutor treats as ground truth, which is the one failure this
-product must not have. If you build it: `zlib` is stdlib and handles
-`/FlateDecode`, then scan `Tj`/`TJ` operators, then gate hard on a prose-quality check
-AND infer headings, and refuse the document when either is unconvincing. A
-A refusal is honest. Garbage is not.
+**Built.** The caution was right and is now a mechanism rather than a reason to
+refuse: `ingest.gate()` measures seven properties of an extraction and refuses
+anything that does not read as prose, quoting the measurement that failed.
+`pdftotext` is preferred when present and ownership-checked; the stdlib reader is
+the floor, and when the floor produces something unconvincing the refusal names
+the fix rather than storing it. A refusal is honest. Garbage is not, and now
+neither can happen silently.
 
-### Task E. The plan is still 8 hours, because the owner has not answered probes.
+### Task E. The probes are now reachable, and are waiting for the owner. **NEXT.**
+
+**Track `t-454d410f0522`, "Agentic AI Consultant at Proseware"**, is at the gap
+stage with **17 gaps proposed and none decided**. Every one carries "No answer
+given", because the diagnostic was driven through `/api/diagnose {action:
+propose}` directly rather than through the conversation.
+
+The blocker the last handoff described is gone. It said the remedy was to start
+a second track from the same posting, and the reason was a real defect: the
+probe conversation rendered only in the diagnostic stage, so a track that
+reached gap approval with the questions unanswered had no way back to them.
+`approveCard()` now offers the conversation, and `probePlan` short-circuits to
+`probeCard()` from there. Verified in a browser: the button loads 17 questions,
+P01 asking "Build the agent system the posting names
+- explain how you would do this, and name the closest thing you have actually
+done."
+
+**Only the owner can answer them.** Inventing answers corrupts the plan at its
+root, which is why this is a handoff and not a task.
+
+### Task E1. The old Wingtip track is still 8 hours.
+
+
 
 The real Wingtip track was diagnosed before the judge existed, so all 20 of its gaps
 carry `why = "graded without a model: length only"`, every gap graded `none`, and
@@ -300,6 +379,29 @@ until this session.
     in `adoptCurriculum` or it will parse and break.
 24. **Bounding a JSON report by slicing its serialised bytes produces text that
     is not JSON.** The only reader parses it, so the data disappears silently.
+25. **zsh does not word-split an unquoted variable.** `for P in "python3"
+    "/usr/bin/python3 -I -S"; do $P -m unittest ...` silently runs nothing for
+    the third interpreter and prints an empty section that reads as a pass. Run
+    the three commands literally.
+26. **Two report shapes that the page branches on must carry the same keys.**
+    `preview()` returned `ok` and `ingest_file()` did not, so a successful
+    ingest rendered as "Not stored. That file could not be read." with the
+    documents sitting in the corpus. `tests/test_ingest.py::
+    test_both_reports_answer_the_same_questions` compares the two.
+27. **A route helper's arity is not checked until it runs.** `_discovery_report`
+    takes `(provider, model, out)`; calling it with one argument passed
+    `py_compile`, passed `orphan_scan`, and killed the request at run time. Four
+    route tests went red at once and the first traceback was a connection error,
+    which reads like a dead server rather than a wrong call.
+28. **A relative score floor collapses against a single dominant match**, and a
+    scorer that sums term hits over a body is biased toward long sections. Both
+    matter for choosing what to ingest out of a whole book and neither matters
+    inside a pack, where sections are all near the cap. `ingest._by_density`
+    corrects the second HERE rather than in `score_sections`, whose ranking is
+    settled behaviour.
+29. **`/api/gap` takes `status`, not `action`.** Sending the wrong key returns a
+    400 that a script ignoring status codes will not see, and the failure
+    surfaces two steps later as "No gap has been approved yet".
     Drop whole entries and record how many.
 
 ## 9. The adversarial hunt: the recipe that works
@@ -360,7 +462,14 @@ which is the argument for running the hunt before the commit rather than after.
 5. **`/api/health` bypasses the session gate**, so the live pill stays green
    while every gated route returns 403. Restarting the bridge under an open page
    produces a green pill and a dead app. `bridge.py:1676`.
-6. **Declining every gap is a terminal state** with no way out from the page.
+6. **`track.phase` is written once at creation and never read or updated.** Every
+   track in the library says `intake` forever, including ones that have taught
+   turns. Nothing depends on it, because `flow_state` computes the real stage
+   from the data, which is why this has never broken anything. It is worse than
+   an unused column: it is an authoritative-looking one that is always wrong, and
+   the CHECK constraint on it makes it look maintained. Either drive it from
+   `flow_state` or drop it.
+7. **Declining every gap is a terminal state** with no way out from the page.
    The stage advances to research, discovery refuses ("nothing is approved"), and
    pasting sources does not help because the curriculum has nothing to plan.
    `bridge.py:300`.
@@ -387,12 +496,38 @@ were invisible in the source and obvious in thirty seconds of clicking: a
 ran because the bridge process was stale. A third, the cross-track write, was
 invisible in the browser too and needed the hunt.
 
+## 11b. What this session found and fixed, in its own code
+
+Five defects, all written the same day, all caught before the commit. Four by a
+test, one only by clicking.
+
+| Was | Now |
+|---|---|
+| `strip_running` counted every repeated short line and deleted the body of its own test fixture along with the page header. | Only lines that would otherwise be READ AS HEADINGS are removed, which is the actual harm. A checklist repeating "not applicable" keeps it. |
+| `_APPENDIX` matched "Part 2 comprises the Core of the Framework. It describes four specific funct" and produced a citation heading cut off mid-word. | A line over 45 characters carrying a sentence boundary is prose, whatever it starts with. |
+| `ingest_file`'s report omitted `ok`, so a successful ingest rendered as "Not stored. That file could not be read." while three documents sat in the corpus. **Invisible in the source and obvious in ten seconds of clicking.** | `ok` is returned, and a test compares the key sets of both reports. |
+| `_route_file` called `_discovery_report` with one argument instead of three. | `_trim_report` extracted; `_discovery_report` and `_file_report` both call it, so trap 24's fix has one home. |
+| Selection ranked long sections over precise ones, and one dominant match dropped everything else under the relative floor. | `_by_density` divides by the square root of the body's term count. Coverage of the goal is now reported and warned about separately from the cut. |
+
 ## 12. Definition of done for the next session
 
-- Task P decided: either a PDF reader with a quality gate that refuses garbage,
-  or a written decision not to build one, recorded in the nomination prompt.
-- Task E: the owner answers the probes on a fresh track, and the plan that comes
-  out is shorter than 500 minutes.
+- **The adversarial hunt has not been run on this session's code.** 900 new lines
+  in `ingest.py`, a new route, and a new panel, and the hunt is the gate that
+  caught 14 defects last round with 8 of them same-day. It was not run because
+  the owner did not ask for multi-agent orchestration this session and the tool
+  requires that in the owner's own words. **Ask, then run it**: four lenses over
+  `ingest.py` + `_route_file`, plus the two lenses still unrun from round 1
+  (concurrency, error-path coverage).
+- Task E: the owner answers the 17 probes on `t-454d410f0522`, and the plan that
+  comes out is shorter than the Wingtip track's 500 minutes.
+- Uploading rather than typing a path. The file never crosses the HTTP boundary
+  today, which is the safer design and the reason no body cap had to move, but
+  it costs the owner a Finder shortcut. If it is built, it belongs behind the
+  same `resolve()` and the same `gate()`.
+- `origin_sha256` on a supplied file is the hash of the markdown the extractor
+  built, not of the PDF. The file's own hash is in the report and the ledger, so
+  re-verification is possible but needs the same extractor. Decide whether that
+  is good enough or whether `write_doc` should carry both.
 - The `max_steps` / time-budget cut fires on a graded gap list.
 - The six unfixed hunt findings in §10 closed, or each one refused in writing.
 - Task C: `PORT` moved to `config.py`, then `security.py` and `provider.py` split

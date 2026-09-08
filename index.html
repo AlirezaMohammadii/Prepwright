@@ -369,6 +369,22 @@ textarea.probe-answer{min-height:48px;width:100%}
 .dwhy{font-size:.78rem;color:var(--muted);margin-top:2px}
 /* The track switcher. */
 .findbox{background:var(--surface-2);margin:12px 0}
+/* a supplied resource: the form, and the report on what the cut kept */
+.filebox .fl{display:block;margin:10px 0 2px;font-size:13px;font-weight:600}
+.filebox .fl input,.filebox .fl select{display:block;width:100%;margin-top:4px;
+  padding:7px 9px;font:inherit;font-size:13px;color:var(--ink);
+  background:var(--surface);border:1px solid var(--line);border-radius:6px}
+.filebox .fl input:focus,.filebox .fl select:focus{outline:2px solid var(--accent);
+  outline-offset:-1px}
+.tiny{font-size:11.5px;margin:3px 0 0}
+.srcreport{margin:12px 0;background:var(--surface-2)}
+.statrow{display:flex;flex-wrap:wrap;gap:6px 18px;margin:8px 0;font-size:12.5px;
+  color:var(--muted)}
+.statrow b{color:var(--ink);font-size:14px}
+.warnbox{margin:12px 0;border-left:3px solid var(--warn,#b8860b)}
+p.warn{color:var(--warn,#b8860b);margin:8px 0 0}
+ul.tight{margin:6px 0 0;padding-left:18px}
+ul.tight li{margin:2px 0;font-size:12.5px}
 .switcher{margin-top:20px}
 .trow{display:flex;align-items:center;gap:10px;padding:7px 0;
   border-top:1px solid var(--line)}
@@ -2725,6 +2741,12 @@ function approveCard(){
   const gaps=(flow&&flow.gapList)||[];
   const g=(flow&&flow.gaps)||{by_status:{}};
   const left=(g.by_status&&g.by_status.proposed)||0;
+  /* The conversation is reachable from here, not only from the stage before it.
+   * Answering the questions is the single thing that shortens the plan, and a
+   * track that reached this stage with the questions unanswered had no way back
+   * to them: the only remedy was to start a second track from the same posting,
+   * which is what the last handoff actually recommended. */
+  if(probePlan && probePlan.probes && probePlan.probes.length) return probeCard();
   if(!gaps.length){
     return `<div class="card pad stagecard"><h2>Approve the gaps</h2>
       <p class="muted">Loading the list…</p>
@@ -2734,6 +2756,14 @@ function approveCard(){
     <h2>Approve the gaps</h2>
     <p class="muted small">${esc(String(left))} still to decide, of ${esc(String(gaps.length))}.
       Decline anything you can already explain; it stays on the record either way.</p>
+    ${left?`<div class="card pad findbox">
+      <div class="sh"><b>Answer a few questions instead</b><span>Faster than
+        deciding ${esc(String(left))} of these by hand.</span></div>
+      <p class="muted small">One question per thing the posting asks for. What you
+      can already explain is dropped rather than taught, so the plan comes out
+      shorter and only covers what you actually need before this interview.</p>
+      <div class="row"><button class="btn btn-primary" id="btnProbe">Start the conversation</button></div>
+    </div>`:""}
     <ul class="gaplist">${gaps.map(function(x){
       const decided=x.status!=="proposed";
       return `<li class="gap ${esc(x.status)}">
@@ -2798,6 +2828,8 @@ function researchCard(stage){
       under Sources, and distrusting one stops it reaching any future answer.</p>
       <div class="row"><button class="btn btn-primary" id="btnDiscover">Find sources for my gaps</button></div>
     </div>
+    ${fileBox()}
+    <div id="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
     <details class="fold" ${(flow&&flow.corpus&&flow.corpus.documents)?"":"open"}>
       <summary>Or paste links you already trust</summary>${form}</details>
     ${list}
@@ -2969,6 +3001,8 @@ document.addEventListener("click", async function(ev){
     });
     return;
   }
+  if(t.id==="btnFilePreview"){ await fileAction(false); return; }
+  if(t.id==="btnFileIngest"){ await fileAction(true); return; }
   if(t.id==="btnLedgerRetry"){ ledger=null; ledgerErr=""; renderSources($("#view-sources")); return; }
   if(t.hasAttribute&&t.hasAttribute("data-quarantine")){
     const docId=t.getAttribute("data-quarantine"), to=t.getAttribute("data-to");
@@ -3939,6 +3973,99 @@ function discardsOf(run){
   catch(_){ return []; }
 }
 
+/* ---- studying from a resource the candidate already has --------------------
+ *
+ * The file never crosses the HTTP boundary. The page sends a path and the
+ * bridge opens it, which is the right shape for an app that runs on the same
+ * machine as the file: no upload cap to raise, no request boundary to widen,
+ * and `ingest.resolve` already refuses anything inside Prepwright's own store.
+ *
+ * Two buttons, not one. Reading and cutting a resource costs no tokens, so the
+ * candidate can see exactly what would be stored, and what would be left out,
+ * before any of a track's 48-document budget is spent on it.
+ */
+let filePreview=null, fileGoal="", fileDepth="focused";
+
+function fileBox(){
+  const f=filePreview||{};
+  return `<div class="card pad findbox filebox">
+    <div class="sh"><b>Study from a file you already have</b><span>PDF, Word,
+      Excel, CSV, Markdown, HTML or plain text.</span></div>
+    <p class="muted small">Say what you want to learn from it and Prepwright keeps
+    the part that answers that, in the resource's own words, with the rest listed
+    and left out. Reading the file costs nothing: no part of it is sent anywhere,
+    and only the sections a step actually teaches from ever reach a model.</p>
+    <label class="fl">Path to the file
+      <input id="fPath" type="text" spellcheck="false" placeholder="/Users/you/Documents/handbook.pdf"
+             value="${esc(f.path||"")}"></label>
+    <p class="muted tiny">In Finder, select the file and press
+      <b>\u2325\u2318C</b> to copy its full path, then paste it here.</p>
+    <label class="fl">What do you want to learn from it
+      <input id="fGoal" type="text" spellcheck="false"
+             placeholder="agent orchestration, tool calling, memory across turns"
+             value="${esc(fileGoal)}"></label>
+    <label class="fl">How much of it to keep
+      <select id="fDepth">
+        <option value="focused"${fileDepth==="focused"?" selected":""}>Focused \u2014 only what is squarely on the goal</option>
+        <option value="balanced"${fileDepth==="balanced"?" selected":""}>Balanced</option>
+        <option value="broad"${fileDepth==="broad"?" selected":""}>Broad \u2014 anything that touches it</option>
+      </select></label>
+    <div class="row">
+      <button class="btn btn-ghost" id="btnFilePreview">Check it first</button>
+      <button class="btn btn-primary" id="btnFileIngest">Add it to this track</button>
+    </div>
+  </div>`;
+}
+
+function fileReportHtml(r){
+  if(!r) return "";
+  if(!r.ok) return `<div class="card pad warnbox"><b>Not stored.</b>
+    <p class="small">${esc(r.reason||"That file could not be read.")}</p></div>`;
+  const cov=r.coverage||{};
+  const drops=(r.dropped||[]).slice(0,12);
+  return `<div class="card pad srcreport">
+    <div class="sh"><b>${esc(r.title||r.name||"Resource")}</b>
+      <span>read with ${esc(r.how||"?")}${r.committed?" \u00b7 stored":" \u00b7 preview only"}</span></div>
+    <div class="statrow">
+      <span><b>${esc(String(r.sections||0))}</b> sections in the file</span>
+      <span><b>${esc(String(r.kept||0))}</b> match your goal</span>
+      <span><b>${esc(String(r.documents||0))}</b> document(s)</span>
+      <span>${cov.goal_terms?("<b>"+Math.round((cov.ratio||0)*100)+"%</b> of your goal is covered"):"whole resource"}</span>
+    </div>
+    ${r.warning?`<p class="warn small">${esc(r.warning)}</p>`:""}
+    ${(r.headings||[]).length?`<details class="fold" open><summary>What it will teach from</summary>
+      <ul class="tight">${(r.headings||[]).slice(0,20).map(h=>`<li>${esc(h)}</li>`).join("")}</ul></details>`:""}
+    ${drops.length?`<details class="fold"><summary>Left out (${esc(String(r.dropped_total||drops.length))})</summary>
+      <ul class="tight">${drops.map(d=>`<li>${esc(d.heading||"")} \u2014 <span class="muted">${esc(d.why||"")}</span></li>`).join("")}</ul></details>`:""}
+  </div>`;
+}
+
+async function fileAction(commit){
+  const path=($("#fPath")&&$("#fPath").value||"").trim();
+  if(!path){ toast("Paste the path to the file first"); return; }
+  fileGoal=($("#fGoal")&&$("#fGoal").value||"").trim();
+  fileDepth=($("#fDepth")&&$("#fDepth").value||"focused");
+  await withBusy(commit?"Reading the file and storing what matches\u2026"
+                      :"Reading the file\u2026", async function(){
+    let d;
+    try{
+      d=await apiPost("/api/research",{action:commit?"ingest_file":"preview_file",
+        path:path, goal:fileGoal, depth:fileDepth});
+    }catch(err){
+      filePreview={ok:false, reason:(err&&err.message)||String(err), path:path};
+      return;
+    }
+    filePreview=Object.assign({}, d.report||{}, {committed:!!d.committed, path:path});
+    if(commit){
+      flow=d.flow||flow;
+      ledger=null;
+      toast((filePreview.documents||0)+" document(s) stored from "
+            +(filePreview.name||"the file"));
+    }
+  });
+  renderSources($("#view-sources"));
+}
+
 function renderSources(el){
   if(!ledger&&!ledgerErr){
     el.innerHTML=`<div class="vhead"><h1>Sources</h1></div>
@@ -3963,6 +4090,8 @@ function renderSources(el){
       <p class="sub">${esc(String(live))} in use of ${esc(String(docs.length))} held${
         drops?(" · "+esc(String(drops))+" nominations rejected"):""}.
       The tutor may quote only these.</p></div>
+    ${fileBox()}
+    <div id="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
     ${docs.length?`<div class="srclist">${docs.map(d=>{
       const serves=d.serves||[];
       const quarantined=d.status!=="ready";

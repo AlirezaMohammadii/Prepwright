@@ -360,3 +360,123 @@ class TrackSwitchingOverHttp(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+HANDBOOK = """# Agent Engineering Handbook
+
+## Agent orchestration
+An orchestrator decomposes a request into steps and dispatches each to a tool.
+Planning happens before dispatch so the sequence can be inspected and bounded.
+
+## Tool calling
+A tool call is a structured request the model emits and the runtime executes.
+The runtime validates arguments against a schema before anything runs.
+
+## Memory in an agent loop
+Short term memory is the current transcript. Long term memory is retrieved and
+must be cited, so an agent can say where a remembered fact came from.
+
+## Office parking policy
+Bays are allocated by seniority each March and reviewed by the facilities team.
+
+## Catering arrangements
+Sandwich platters are ordered on Tuesdays for the Wednesday leadership meeting.
+"""
+
+
+class ASuppliedResourceIsReadWithoutAModel(Base):
+    """The file-ingest actions on /api/research, over real HTTP.
+
+    These run with PREPWRIGHT_NO_MODEL=1 like every other route test, which is
+    the point: reading a resource and cutting it to a goal must complete with
+    every provider call failing closed, because ingestion is not allowed to
+    depend on one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tmp = tempfile.mkdtemp(prefix="prepwright-route-file-")
+        cls.book = os.path.join(cls.tmp, "handbook.md")
+        with open(cls.book, "w", encoding="utf-8") as handle:
+            handle.write(HANDBOOK)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        super().tearDownClass()
+
+    def _docs(self):
+        status, body = self.b.call("GET", "/api/ledger")
+        self.assertEqual(status, 200, body)
+        return body
+
+    def test_a_preview_writes_nothing(self):
+        self._intake()
+        before = json.dumps(self._docs())
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "preview_file", "path": self.book,
+            "goal": "agent orchestration tool calling memory"})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["committed"])
+        self.assertTrue(body["report"]["ok"], body["report"].get("reason"))
+        self.assertEqual(before, json.dumps(self._docs()),
+                         "preview changed the store")
+
+    def test_the_goal_cuts_the_resource_before_it_is_stored(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "preview_file", "path": self.book,
+            "goal": "agent orchestration tool calling memory", "depth": "focused"})
+        self.assertEqual(status, 200, body)
+        headings = " ".join(body["report"]["headings"]).lower()
+        self.assertIn("orchestration", headings)
+        self.assertNotIn("parking", headings)
+        self.assertNotIn("catering", headings)
+
+    def test_ingesting_stores_documents_and_records_the_run(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": self.book,
+            "goal": "agent orchestration tool calling memory"})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["committed"])
+        self.assertGreater(body["report"]["documents"], 0)
+        self.assertEqual(len(body["report"]["stored"]),
+                         body["report"]["documents"])
+        ledger = json.dumps(self._docs())
+        self.assertIn("handbook.md", ledger,
+                      "a supplied file did not reach the source ledger")
+
+    def test_a_file_inside_the_store_is_refused_over_http(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file",
+            "path": os.path.join(self.b.home, "library.db"), "goal": "anything"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("storage", body["error"])
+
+    def test_a_missing_file_is_a_400_that_names_the_path(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": os.path.join(self.tmp, "nope.md"),
+            "goal": "anything"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("nope.md", body["error"])
+
+    def test_an_unreadable_format_is_a_400_not_a_500(self):
+        self._intake()
+        bad = os.path.join(self.tmp, "slides.key")
+        with open(bad, "w", encoding="utf-8") as handle:
+            handle.write("x" * 600)
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": bad, "goal": "anything"})
+        self.assertEqual(status, 400, body)
+        self.assertIn(".key", body["error"])
+
+    def test_an_empty_path_says_what_to_do(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": "  "})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Name the file", body["error"])
