@@ -335,6 +335,48 @@ textarea.notes:focus{border-color:var(--signal-dim);outline:none}
   border-radius:var(--radius-sm);padding:10px 12px;font-family:inherit;font-size:.92rem;width:100%}
 .inp:focus{border-color:var(--signal-dim);outline:none}
 textarea.inp{resize:vertical;min-height:80px}
+/* The diagnostic. One card per question, tight enough that twenty of them read
+ * as a form to work through rather than twenty screens to survive. */
+.probes{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+.card.probe{padding:12px 14px;background:var(--surface-2)}
+.probe .id{font-size:.72rem;letter-spacing:.02em;color:var(--muted);
+  text-transform:uppercase;margin-bottom:4px}
+.probe-about{font-weight:600;line-height:1.35;margin-bottom:2px}
+.probe p.muted{margin:2px 0 8px}
+textarea.probe-answer{min-height:48px;width:100%}
+/* The source ledger. Ranked by how far the source is from the thing it
+ * describes, so a standard sits above an article about that standard. */
+.btn-sm{padding:5px 10px;font-size:.8rem}
+.srclist{display:flex;flex-direction:column;gap:12px}
+.card.src.quarantined{opacity:.55}
+.srctop{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.vet{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+  padding:2px 7px;border-radius:99px;border:1px solid var(--line)}
+.vet-primary{color:var(--signal);border-color:var(--signal-dim)}
+.vet-secondary,.vet-vendor{color:var(--text);opacity:.85}
+.vet-community,.vet-quar{color:var(--muted)}
+.trust,.srcid{font-size:.72rem;color:var(--muted)}
+.card.src h3{margin:2px 0 6px;font-size:1rem;line-height:1.3}
+.srcmeta{display:flex;gap:14px;flex-wrap:wrap;font-size:.76rem;color:var(--muted);
+  margin-bottom:6px}
+.srcserves{font-size:.78rem;color:var(--muted);margin:6px 0 8px}
+.card.run{margin-top:12px}
+.drops{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.drop{border-left:2px solid var(--line);padding-left:10px}
+.dstage{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);margin-right:8px}
+.durl{font-size:.76rem;word-break:break-all}
+.dwhy{font-size:.78rem;color:var(--muted);margin-top:2px}
+/* The track switcher. */
+.findbox{background:var(--surface-2);margin:12px 0}
+.switcher{margin-top:20px}
+.trow{display:flex;align-items:center;gap:10px;padding:7px 0;
+  border-top:1px solid var(--line)}
+.trow:first-of-type{border-top:none}
+.tname{flex:1;min-width:0}
+.tid{font-size:.72rem;color:var(--muted)}
+.tnow{font-size:.72rem;color:var(--signal);text-transform:uppercase;
+  letter-spacing:.06em}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 
 /* session timeline */
@@ -830,6 +872,7 @@ textarea.inp{resize:vertical;min-height:80px}
         <section id="view-recap" class="view"></section>
         <section id="view-questions" class="view"></section>
         <section id="view-story" class="view"></section>
+        <section id="view-sources" class="view"></section>
       </div>
     </main>
   </div>
@@ -1675,6 +1718,7 @@ const ICON={
   recap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 019-9 9 9 0 016.7 3M21 12a9 9 0 01-9 9 9 9 0 01-6.7-3"/><path d="M18 3v3h-3M6 21v-3h3"/></svg>',
   questions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 11v4c0 1.5 3.6 3 8 3s8-1.5 8-3v-4"/></svg>',
   story:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>',
+  sources:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v9a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M8 12h8M8 15.5h5"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>',
   warn:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>',
   empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/></svg>'
@@ -1690,7 +1734,8 @@ const NAV=[
   {id:"qa",label:"Q&A log"},
   {id:"recap",label:"Recap drill"},
   {id:"questions",label:"Interview questions"},
-  {id:"story",label:"Your story"}
+  {id:"story",label:"Your story"},
+  {id:"sources",label:"Sources"}
 ];
 
 /* progress calculations */
@@ -1715,9 +1760,17 @@ function stageStatus(n){
  * with the bridge: <stage>:topic|practice|check:<id>. */
 function stageSteps(n){
   const steps=[];
-  Object.entries(DATA.topics).filter(([,t])=>t.s===n).forEach(([id])=>steps.push({key:n+":topic:"+id,type:"topic",id,stage:n}));
-  Object.entries(DATA.practice).filter(([,h])=>h.s===n).forEach(([id])=>steps.push({key:n+":practice:"+id,type:"practice",id,stage:n}));
-  Object.entries(DATA.checks).filter(([,c])=>c.s===n).forEach(([id])=>steps.push({key:n+":check:"+id,type:"check",id,stage:n}));
+  /* `k.key||mint` is the whole difference between a placeholder track and a real
+   * one. The page used to mint every step key from a stage number and a local
+   * id. A curriculum written by the bridge already HAS a key -- the same string
+   * `curriculum.step_key` minted and `/api/chat` validates -- and minting a
+   * second one here would produce a key no pinned slice answers to, which is a
+   * teaching turn with an empty pack. Adopted topics carry `key`; the
+   * placeholder track does not, and mints exactly as before. */
+  const mint=(t,type,id)=>(t&&t.key)?String(t.key):(n+":"+type+":"+id);
+  Object.entries(DATA.topics).filter(([,t])=>t.s===n).forEach(([id,t])=>steps.push({key:mint(t,"topic",id),type:"topic",id,stage:n}));
+  Object.entries(DATA.practice).filter(([,h])=>h.s===n).forEach(([id,h])=>steps.push({key:mint(h,"practice",id),type:"practice",id,stage:n}));
+  Object.entries(DATA.checks).filter(([,c])=>c.s===n).forEach(([id,c])=>steps.push({key:mint(c,"check",id),type:"check",id,stage:n}));
   return steps;
 }
 function stepDone(s){
@@ -1787,7 +1840,20 @@ function stepScore(s){
 function stepGraded(s){ return !!((state.assess||{})[s.key]); }
 function pctOf(steps){ return steps.length?Math.round(steps.reduce((a,s)=>a+stepScore(s),0)/steps.length*100):0; }
 function trackPct(){ const all=[]; DATA.stages.forEach(st=>all.push(...stageSteps(st.n))); return pctOf(all); }
-function stepFromKey(k){ const p=k.split(":"); return {key:k,stage:+p[0],type:p[1],id:p[2]}; }
+/* The key is minted by the curriculum and the id is chosen by the page, so the
+ * two are not the same string and one cannot be parsed out of the other. A real
+ * step key is "8:topic:S08" while the topic it names is keyed by its gap, g08:
+ * parsing gave stepMeta an id that is not in DATA.topics, and every render site
+ * that dereferences it threw. STEP_INDEX is the map adoptCurriculum builds while
+ * it knows both; the parse stays as the fallback for the placeholder track,
+ * which mints its own keys and for which parsing is correct. */
+let STEP_INDEX={};
+function stepFromKey(k){
+  k=String(k||"");
+  const known=STEP_INDEX[k];
+  if(known) return {key:k,stage:known.stage,type:known.type,id:known.id};
+  const p=k.split(":"); return {key:k,stage:+p[0],type:p[1],id:p[2]};
+}
 /* ---- tiers ------------------------------------------------------------------
  * core      = the small share that produces the answer you are actually asked for
  * depth     = real depth, worth time only once every core topic is delivered
@@ -1812,7 +1878,7 @@ function tierChip(tier){
 function coreSpine(){
   return Object.entries(DATA.topics)
     .filter(([,t])=>t.tier==="core")
-    .map(([id,t])=>({id,s:t.s,concept:t.concept,key:t.s+":topic:"+id}))
+    .map(([id,t])=>({id,s:t.s,concept:t.concept,key:t.key||(t.s+":topic:"+id)}))
     .sort((a,b)=>a.s-b.s||a.id.localeCompare(b.id));
 }
 function stepMeta(s){
@@ -1848,7 +1914,7 @@ function render(view,opts){
   el.classList.add("active");
   ({start:renderStart,continue:renderContinue,overview:renderOverview,stages:renderStages,curriculum:renderCurriculum,
     practice:renderPractice,sessions:renderSessions,qa:renderQA,recap:renderRecap,
-    questions:renderQuestions,story:renderStory}[view])(el);
+    questions:renderQuestions,story:renderStory,sources:renderSources}[view])(el);
   $$("#nav .navlink").forEach(a=>a.classList.toggle("active",a.dataset.view===view));
   state.lastView=view;
   if(!opts.silent) save();
@@ -2313,6 +2379,142 @@ async function apiPost(path, body){
   if(!r.ok) throw Object.assign(new Error(d.error||("HTTP "+r.status)),{status:r.status,data:d});
   return d;
 }
+/* ---- adopting the written curriculum --------------------------------------
+ * DATA ships one synthetic track so the page runs before anything real exists.
+ * The moment the bridge reports a written plan, that placeholder is replaced in
+ * place: meta, stages, topics, practice, checks, questions and story all come
+ * from the store. `phases`, `claude` and `codex` are carried over untouched --
+ * the first describes the pipeline, the other two are the model registries, and
+ * PROVIDER_MODELS captured them at script-eval time, so reassigning either one
+ * would leave the model picker pointing at a list nothing reads.
+ *
+ * Stages group by TIER, not one stage per step. The curriculum already orders
+ * steps so nothing is taught before what it depends on, and `ord` keeps that
+ * order; what a reader needs on top of it is which steps are the small share
+ * that carries most of the interview. Three named blocks say that; twenty
+ * single-step stages say nothing.
+ *
+ * A topic is keyed by its GAP id, not by its position. Marks -- the ticks, the
+ * practice statuses -- are stored under that key, and a gap id survives a
+ * re-cut of the plan while a step ordinal does not. The step key the bridge
+ * minted rides along as `key` and is what a teaching turn is stored under.
+ */
+const TIER_BLOCKS=[
+  {tier:"core",     name:"The core",
+   focus:"The small share of this job's material that carries most of the interview. Everything else waits until this is cold."},
+  {tier:"depth",    name:"Depth",
+   focus:"Where a follow-up question goes once the core answer lands. Enough to stay credible when pushed."},
+  {tier:"reference",name:"Reference",
+   focus:"Recognise, answer in a sentence, move on. Not worth an hour before the interview."}
+];
+let adoptedSig="";
+
+/* Every id the page is about to render must exist in `state`, because four
+ * render sites dereference state.topics[id].done with no guard and a missing
+ * entry is a TypeError that blanks the screen. Additive only: an entry for a
+ * topic that has left the plan is left alone. The store is append-only, so
+ * deleting here would not remove anything on disk, and a re-cut that brings the
+ * topic back would find its tick still there. */
+function seedFor(bucket, ids, blank){
+  let added=0;
+  ids.forEach(id=>{ if(!bucket[id]){ bucket[id]=blank(); added++; } });
+  return added;
+}
+
+function adoptCurriculum(f){
+  const list=(f && Array.isArray(f.stepList)) ? f.stepList : [];
+  if(!list.length) return false;
+  /* Rebuild only when the plan actually changed. loadFlow runs after every
+   * pipeline action as well as at boot, and rebuilding DATA under a view that is
+   * already on screen would throw away open disclosure state for no reason. */
+  const sig=list.map(s=>[s.key,s.status,s.tier,s.ord,(s.slices||[]).length].join("~")).join("|");
+  if(sig===adoptedSig) return false;
+  adoptedSig=sig;
+
+  const blocks=TIER_BLOCKS.filter(b=>list.some(s=>s.tier===b.tier));
+  const stageOf={};
+  DATA.stages=blocks.map((b,i)=>{
+    stageOf[b.tier]=i+1;
+    const mine=list.filter(s=>s.tier===b.tier);
+    const mins=mine.reduce((a,s)=>a+(+s.minutes||0),0);
+    return {n:i+1,name:b.name,
+      focus:b.focus+" "+mine.length+" step"+(mine.length===1?"":"s")
+            +(mins?", about "+mins+" minutes.":".")};
+  });
+
+  const topics={};
+  list.slice().sort((a,b)=>(a.ord||0)-(b.ord||0)).forEach(s=>{
+    const parts=String(s.key||"").split(":");
+    const id=String(s.gapId||parts[2]||("S"+s.ord));
+    const first=(s.slices&&s.slices[0])||null;
+    const label=s.tier?(s.tier.charAt(0).toUpperCase()+s.tier.slice(1)):"Step";
+    topics[id]={
+      s:stageOf[s.tier]||1, tier:s.tier||"core", key:s.key, ord:s.ord,
+      concept:s.title||("Step "+s.ord),
+      /* The document a reader would open first, named the way the ledger names
+       * it. Never a filename the candidate has no way to resolve. */
+      citation:first?(first.docTitle||first.docId||""):"",
+      teach:"["+label+" \u00b7 "+(+s.minutes||0)+"m] "+(s.objective||""),
+      question:s.objective||"Explain this out loud, without notes.",
+      res:(s.slices||[]).map(sl=>({
+        t:(sl.docTitle||sl.docId||"a pinned section")
+          +(sl.publisher?(" \u00b7 "+sl.publisher):"")
+          +(sl.publishedOn?(" \u00b7 "+sl.publishedOn):""),
+        u:sl.originUrl||((sl.docId||"")+"\u00a7"+(sl.secId||"")),
+        w:(sl.heading||"a pinned section")
+          +(sl.vetting?("  \u2014 "+sl.vetting+", trust "+(sl.trust||"?")+"/5"):""),
+        m:0}))
+    };
+  });
+  DATA.topics=topics;
+  STEP_INDEX={};
+  Object.keys(topics).forEach(id=>{
+    STEP_INDEX[topics[id].key]={type:"topic",id:id,stage:topics[id].s};
+  });
+
+  /* One written thing and one cold check per block. Both are derived from the
+   * real step titles rather than invented: a study instruction is not a factual
+   * claim, so it does not need a citation, and writing then explaining without
+   * notes is the part of preparation a tutor cannot do for you. */
+  const practice={}, checks={};
+  DATA.stages.forEach(st=>{
+    const mine=Object.entries(topics).filter(([,t])=>t.s===st.n);
+    if(!mine.length) return;
+    const names=mine.slice(0,3).map(([,t])=>t.concept).join("; ");
+    const more=mine.length>3?(" and "+(mine.length-3)+" more"):"";
+    practice["PR"+st.n]={s:st.n,label:st.name+" \u00b7 one page, in your own words",
+      portfolio:st.n===1,
+      desc:"Write one page covering "+names+more+". Write it after the teaching, not "
+          +"during. If a sentence needs the corpus open in front of you, it is not "
+          +"yours yet."};
+    checks["CK"+st.n]={s:st.n,label:st.name+" \u00b7 explain all "+mine.length+" cold",
+      desc:"Explain each of these with nothing open, including one thing each of them "
+          +"does not cover. Falling short is a signal to repeat the step, not to push "
+          +"on. \u201cI don't know, but here is how I'd find out\u201d counts; a confident "
+          +"wrong answer does not."};
+  });
+  DATA.practice=practice; DATA.checks=checks;
+
+  const meta=(f && f.track) || {};
+  DATA.meta={
+    track:meta.title||"This track", role:meta.role_title||"", employer:meta.employer||"",
+    sourceKind:meta.source_kind||"", targetDate:"", generatedAt:meta.created_utc||"",
+    note:"Cut from the gaps you approved and the sources in this track's corpus. "
+        +"The tutor may teach only from the sections pinned to a step, and says so "
+        +"when a step's sources do not cover what you asked."};
+  /* The placeholder bank and the placeholder resume story described a job that
+   * does not exist. Emptied rather than reworded: the bank fills from the recaps
+   * you close, and an empty screen that says so is honest where invented rows
+   * are not. */
+  DATA.questions=[]; DATA.story={claims:[],numbers:[],risks:[]};
+
+  seedFor(state.topics,   Object.keys(topics),   ()=>({done:false}));
+  seedFor(state.practice, Object.keys(practice), ()=>({status:"todo",notes:""}));
+  state.checks=state.checks||{};
+  seedFor(state.checks,   Object.keys(checks),   ()=>({result:"",notes:""}));
+  return true;
+}
+
 async function loadFlow(quiet){
   try{
     const r=await fetch(API+"/api/flow",{cache:"no-store",
@@ -2320,7 +2522,18 @@ async function loadFlow(quiet){
     if(!r.ok) throw new Error("HTTP "+r.status);
     flow=await r.json(); flowErr="";
   }catch(e){ flow=null; flowErr=String(e.message||e); }
+  /* Before any render, so no screen draws the placeholder over a real plan. */
+  const adopted=flow?adoptCurriculum(flow):false;
   if(!quiet && $("#view-start").classList.contains("active")) renderStart($("#view-start"));
+  else if(adopted){
+    /* The plan changed under a view that is already on screen. Redraw whichever
+     * one it is, quietly: `silent` because adopting is not a candidate action to
+     * save, `keepScroll` because yanking the page to the top mid-read is how a
+     * background refresh announces itself as a bug. */
+    const act=document.querySelector(".view.active");
+    const id=(act&&act.id&&act.id.indexOf("view-")===0)?act.id.slice(5):"";
+    if(id) render(id,{silent:true,keepScroll:true});
+  }
 }
 
 /* The rail. Where you are, what is behind you, what is left. Stages you have
@@ -2362,7 +2575,46 @@ function renderStart(el){
     </div>
     ${stage==="intake"?"":stageRail(stage)}
     ${flowBusy?`<div class="card pad busy"><span class="dots"><i></i><i></i><i></i></span> ${esc(flowBusy)}</div>`:""}
-    <div id="stageBody">${stageBody(stage)}</div>`;
+    <div id="stageBody">${stageBody(stage)}</div>
+    ${trackSwitcher()}`;
+  if(trackList===null) loadTracks().then(()=>{
+    if(el.classList.contains("active")) renderStart(el);
+  });
+}
+
+/* ---- which job am I working on --------------------------------------------
+ * `current_track_id()` was the whole selection mechanism and it is a file on
+ * disk, so the answer to "which job is this" was whichever one was touched last
+ * -- which after an import is the newest, not necessarily the one you meant.
+ * The API to switch has existed since the store landed; this is the control for
+ * it. Hidden when there is only one track, because a picker with one option is
+ * furniture. */
+let trackList=null;
+async function loadTracks(){
+  try{
+    const r=await fetch(API+"/api/tracks",{cache:"no-store",
+      headers:{"x-tutor-bridge":"1"}});
+    trackList=r.ok?(await r.json()):{tracks:[],current:null};
+  }catch(_){ trackList={tracks:[],current:null}; }
+}
+function trackSwitcher(){
+  const d=trackList||{tracks:[]};
+  const rows=d.tracks||[];
+  if(rows.length<2) return "";
+  return `<div class="card pad switcher">
+    <div class="sh"><b>Tracks</b><span>One job at a time. Switching changes the
+      plan, the corpus and the progress on screen.</span></div>
+    ${rows.map(t=>{
+      const on=t.track_id===d.current;
+      const label=(t.role_title&&t.employer)?(t.role_title+" at "+t.employer)
+                 :(t.title||t.track_id);
+      return `<div class="trow ${on?"on":""}">
+        <span class="tname">${esc(label)}</span>
+        <span class="mono tid">${esc(t.track_id)}</span>
+        ${on?`<span class="tnow">open</span>`
+            :`<button class="btn btn-sm" data-track="${esc(t.track_id)}">Switch</button>`}
+      </div>`;}).join("")}
+  </div>`;
 }
 
 /* A fetch that succeeds advances the stage on the next reply, so the screen
@@ -2412,18 +2664,60 @@ function intakeCard(){
   </div>`;
 }
 
+/* The probes, once they have been fetched. Held here rather than in `flow`,
+ * because the bridge derives flow from the store on every poll and a plan that
+ * has not been proposed yet is not in the store: putting it there would make it
+ * vanish under the candidate mid-answer. */
+let probePlan=null;
+
 function diagnoseCard(){
   const g=(flow&&flow.gaps)||{};
+  if(probePlan && probePlan.probes && probePlan.probes.length) return probeCard();
   return `<div class="card pad stagecard">
     <h2>A short conversation</h2>
     <p class="muted small">Prepwright has read ${esc(String((flow&&flow.posting&&flow.posting.bytes)||0))} bytes
     of the posting${(flow&&flow.posting&&flow.posting.sourcePath)?" and the application folder you pointed at":""}.</p>
+    <p class="muted small">Answering these is what shortens the plan. Anything you
+    can already explain is dropped rather than taught, so a few minutes here buys
+    back hours of studying things you know.</p>
     <div class="row">
       <button class="btn btn-primary" id="btnProbe">Start the conversation</button>
       <button class="btn" id="btnSkipProbe">Skip it and list everything as unlearned</button>
     </div>
     <p class="muted small next">Next: you approve the list before anything is planned.</p>
     ${g.total?`<p class="muted small">${esc(String(g.total))} already proposed.</p>`:""}
+  </div>`;
+}
+
+/* One question per thing the posting asks for, plus the claims your own
+ * application makes. Leaving one blank is an answer: it grades as `none` and the
+ * topic stays on the plan. */
+const PROBE_SOURCE_LABEL={posting:"the posting", resume:"your application"};
+function probeCard(){
+  const probes=probePlan.probes||[];
+  const cut=probePlan.cut||{};
+  return `<div class="card pad stagecard">
+    <h2>${esc(String(probes.length))} questions</h2>
+    <p class="muted small">Answer in your own words, a sentence or two. Say what you
+    actually did, not what the term means. Leave one blank if you have not touched
+    it: a blank is graded as unlearned and stays on the plan, which is the honest
+    outcome and not a penalty.</p>
+    ${cut.total?`<p class="muted small">${esc(String(cut.total))} more did not fit
+      and are treated as unlearned.</p>`:""}
+    <div class="probes">${probes.map((p,i)=>`
+      <div class="card pad probe">
+        <div class="id">${esc(p.probe_id)} · from ${esc(PROBE_SOURCE_LABEL[p.source]||p.source||"")}${
+          p.kind?(" · "+esc(p.kind)):""}</div>
+        <div class="probe-about">${esc(p.about||"")}</div>
+        <p class="muted small">${esc(p.prompt||"")}</p>
+        <textarea class="inp probe-answer" data-probe="${esc(p.probe_id)}" rows="2"
+          placeholder="What you have actually done here, or leave blank"></textarea>
+      </div>`).join("")}</div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn btn-primary" id="btnGrade">Grade my answers</button>
+      <button class="btn" id="btnSkipProbe">Skip the rest and list everything as unlearned</button>
+    </div>
+    <p class="muted small next">Next: you approve the list before anything is planned.</p>
   </div>`;
 }
 
@@ -2491,11 +2785,21 @@ function researchCard(stage){
   </div>`;
 
   return `<div class="card pad stagecard">
-    <h2>Add the sources you trust</h2>
-    <p class="muted small">https only. Prepwright records the address it finally read,
-    the size and a hash of the bytes, so a citation can be checked against its
-    source later.</p>
-    ${form}
+    <h2>Sources</h2>
+    <p class="muted small">Prepwright teaches only from what is here. It records the
+    address it finally read, the size and a hash of the bytes, so a citation can be
+    checked against its source later.</p>
+    <div class="card pad findbox">
+      <div class="sh"><b>Let Prepwright look</b><span>One search per gap, against
+        standards bodies, regulators and official documentation first.</span></div>
+      <p class="muted small">Every address it finds is fetched and read here before
+      anything is stored. A page that does not answer, or answers about something
+      else, is thrown away with its reason recorded. You can see and undo all of it
+      under Sources, and distrusting one stops it reaching any future answer.</p>
+      <div class="row"><button class="btn btn-primary" id="btnDiscover">Find sources for my gaps</button></div>
+    </div>
+    <details class="fold" ${(flow&&flow.corpus&&flow.corpus.documents)?"":"open"}>
+      <summary>Or paste links you already trust</summary>${form}</details>
     ${list}
     <p class="muted small next">Next: a plan built from your gaps and these sources.</p>
   </div>`;
@@ -2595,9 +2899,33 @@ document.addEventListener("click", async function(ev){
     });
     return;
   }
-  if(t.id==="btnProbe"||t.id==="btnSkipProbe"){
+  if(t.id==="btnProbe"){
+    await withBusy("Reading the posting…", async function(){
+      probePlan=await apiPost("/api/diagnose",{action:"plan"});
+    });
+    return;
+  }
+  if(t.id==="btnGrade"){
+    /* Read the boxes now, before the render that follows replaces them. */
+    const answers={};
+    document.querySelectorAll(".probe-answer").forEach(el=>{
+      const id=el.getAttribute("data-probe"), said=(el.value||"").trim();
+      if(id&&said) answers[id]=said.slice(0,4000);
+    });
+    const n=Object.keys(answers).length;
+    await withBusy(n?("Grading "+n+" answer(s)…"):"Working through the posting…",
+      async function(){
+        const d=await apiPost("/api/diagnose",{action:"propose",answers:answers});
+        probePlan=null;
+        flow=d.flow||flow; if(flow) flow.gapList=d.gaps||[];
+        toast("Graded by "+(d.gradedBy||"unknown")+" \u00b7 "+(d.proposed||0)+" to learn");
+      });
+    return;
+  }
+  if(t.id==="btnSkipProbe"){
     await withBusy("Working through the posting…", async function(){
       const d=await apiPost("/api/diagnose",{action:"propose"});
+      probePlan=null;
       flow=d.flow||flow; if(flow) flow.gapList=d.gaps||[];
     });
     return;
@@ -2609,6 +2937,7 @@ document.addEventListener("click", async function(ev){
       const d=await apiPost("/api/research",{urls:raw,
         vetting:(($("#inVet")||{}).value||"secondary")});
       flow=d.flow||flow; if(flow) flow.research={results:d.results||[]};
+      ledger=null;   // the corpus changed; the Sources screen must re-read it
     });
     return;
   }
@@ -2621,7 +2950,62 @@ document.addEventListener("click", async function(ev){
     await withBusy("Building the plan…", async function(){
       const d=await apiPost("/api/curriculum",{});
       flow=d.flow||flow;
+      /* Pinning changes which steps a document serves, and that is a column on
+       * the Sources screen. */
+      ledger=null;
     });
+    return;
+  }
+  if(t.id==="btnDiscover"){
+    await withBusy("Looking for sources and reading each one…", async function(){
+      const d=await apiPost("/api/research",
+        {action:"discover",provider:activeProvider(),model:activeModel()});
+      flow=d.flow||flow;
+      const drops=(d.discarded||[]).length;
+      toast((d.stored||0)+" source(s) stored"
+            +(drops?(" \u00b7 "+drops+" rejected, see Sources"):"")
+            +(d.note?(" \u00b7 "+d.note):""));
+      ledger=null;
+    });
+    return;
+  }
+  if(t.id==="btnLedgerRetry"){ ledger=null; ledgerErr=""; renderSources($("#view-sources")); return; }
+  if(t.hasAttribute&&t.hasAttribute("data-quarantine")){
+    const docId=t.getAttribute("data-quarantine"), to=t.getAttribute("data-to");
+    await withBusy(to==="ready"?"Restoring…":"Quarantining…", async function(){
+      await apiPost("/api/research",{action:"quarantine",docId:docId,status:to});
+      ledger=null; await loadLedger();
+    });
+    renderSources($("#view-sources"));
+    return;
+  }
+  if(t.hasAttribute&&t.hasAttribute("data-track")){
+    const id=t.getAttribute("data-track");
+    /* Flush first, switch second, RELOAD third. In that order, and the order is
+     * the whole fix.
+     *
+     * The obvious version of this handler switched the bridge and then called
+     * reconcileWithDisk(), which merges whatever this page is holding with what
+     * it reads from disk. What the page was holding was the OUTGOING track's
+     * document. reconcileWithDisk overwrites `trackId` from the GET before the
+     * merge, so the bridge's cross-track guard compared B to B and never fired,
+     * and the next diff emitted a turn op for every one of track A's
+     * transcripts against track B's store. The store is append-only, so there
+     * would have been no way to take them out again.
+     *
+     * A reload is not a shortcut here, it is the correct instrument: a track
+     * switch is a rare, deliberate act, and the only way to guarantee that no
+     * byte of the old document survives into the new one is to stop having the
+     * old document. The flush before it is what stops the outgoing track losing
+     * work, and it has to happen while the bridge still points at that track. */
+    await withBusy("Switching track…", async function(){
+      if(syncState==="pending"||syncState==="saving"||syncState==="error"){
+        clearTimeout(syncTimer);
+        try{ await pushState({}); }catch(_){ /* reported by the sync pill */ }
+      }
+      await apiPost("/api/track",{trackId:id});
+    });
+    location.reload();
     return;
   }
 }, false);
@@ -3522,6 +3906,108 @@ function importData(file){
     }catch(e){ toast("Import failed — invalid file"); }
   };
   r.readAsText(file);
+}
+
+/* ---- the source ledger -----------------------------------------------------
+ * Every document this track can teach from, where it came from, who published
+ * it, when the page says it was written, how it was ranked and which steps it
+ * serves. Plus the discovery runs, including what they threw away.
+ *
+ * This screen is the reason the app is allowed to go looking for sources on its
+ * own. Nothing enters the corpus without being fetched and checked, and this is
+ * where that work is auditable after the fact: distrust one and its sections
+ * stop reaching any future pack, while the row and its provenance stay put.
+ */
+let ledger=null, ledgerErr="";
+const VET_ORDER={primary:0,vendor:1,secondary:2,community:3};
+
+async function loadLedger(){
+  try{
+    const r=await fetch(API+"/api/ledger",{cache:"no-store",
+      headers:{"x-tutor-bridge":"1"}});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    ledger=await r.json(); ledgerErr="";
+  }catch(e){ ledger=null; ledgerErr=String(e.message||e); }
+}
+
+function discardsOf(run){
+  /* The run stores its report as JSON in one column, because the alternative is
+   * a table for something only this screen reads. A run written by an older
+   * build, or one that failed before it could write a report, parses to nothing
+   * and says so rather than throwing. */
+  try{ const q=JSON.parse(run.queries||"{}"); return Array.isArray(q.discarded)?q.discarded:[]; }
+  catch(_){ return []; }
+}
+
+function renderSources(el){
+  if(!ledger&&!ledgerErr){
+    el.innerHTML=`<div class="vhead"><h1>Sources</h1></div>
+      <div class="card pad"><p class="muted">Reading the ledger…</p></div>`;
+    loadLedger().then(()=>{ if(el.classList.contains("active")) renderSources(el); });
+    return;
+  }
+  if(ledgerErr){
+    el.innerHTML=`<div class="vhead"><h1>Sources</h1></div>
+      <div class="card pad"><p class="muted">The bridge did not answer: ${esc(ledgerErr)}</p>
+      <div class="row"><button class="btn" id="btnLedgerRetry">Try again</button></div></div>`;
+    return;
+  }
+  const docs=(ledger.documents||[]).slice().sort((a,b)=>
+    (VET_ORDER[a.vetting]-VET_ORDER[b.vetting])||(b.trust-a.trust)||
+    String(a.doc_id).localeCompare(String(b.doc_id)));
+  const runs=ledger.runs||[];
+  const live=docs.filter(d=>d.status==="ready").length;
+  const drops=runs.reduce((a,r)=>a+discardsOf(r).length,0);
+
+  el.innerHTML=`<div class="vhead"><h1>Sources</h1>
+      <p class="sub">${esc(String(live))} in use of ${esc(String(docs.length))} held${
+        drops?(" · "+esc(String(drops))+" nominations rejected"):""}.
+      The tutor may quote only these.</p></div>
+    ${docs.length?`<div class="srclist">${docs.map(d=>{
+      const serves=d.serves||[];
+      const quarantined=d.status!=="ready";
+      return `<div class="card pad src ${quarantined?"quarantined":""}">
+        <div class="srctop">
+          <span class="vet vet-${esc(d.vetting)}">${esc(d.vetting)}</span>
+          <span class="trust">trust ${esc(String(d.trust))}/5</span>
+          <span class="mono srcid">${esc(d.doc_id)}</span>
+          ${quarantined?`<span class="vet vet-quar">${esc(d.status)}</span>`:""}
+        </div>
+        <h3>${esc(d.title||"(untitled)")}</h3>
+        <div class="srcmeta">
+          <span>${esc(d.publisher||"publisher not recorded")}</span>
+          <span>${d.published_on?("dated "+esc(d.published_on)):"no date on the page"}</span>
+          <span>${esc(String(d.n_sections))} section${d.n_sections===1?"":"s"}</span>
+          <span>fetched ${esc((d.fetched_utc||"").slice(0,10))}</span>
+        </div>
+        ${/^https?:\/\//i.test(d.origin_url||"")
+          ? `<a class="ru" href="${esc(d.origin_url)}" target="_blank" rel="noopener noreferrer">${esc(d.origin_url)}</a>`
+          : `<span class="ru">${esc(d.origin_url||"")}</span>`}
+        <div class="srcserves">${serves.length
+          ? "Teaches: "+serves.map(s=>esc(s.gapId||s.stepKey)).join(", ")
+          : "Not pinned to any step yet."}</div>
+        <div class="row">
+          <button class="btn btn-sm" data-quarantine="${esc(d.doc_id)}"
+            data-to="${quarantined?"ready":"quarantined"}">${
+            quarantined?"Trust it again":"Distrust this source"}</button>
+        </div>
+      </div>`;}).join("")}</div>`
+      : `<div class="card pad"><p class="muted">Nothing has been fetched into this
+         track yet.</p></div>`}
+    ${runs.length?`<div class="vhead" style="margin-top:26px"><h2>Discovery runs</h2>
+      <p class="sub">What was looked for, and what was turned away.</p></div>
+      ${runs.map(r=>{const dd=discardsOf(r);
+        return `<div class="card pad run">
+        <div class="srctop"><span class="mono srcid">${esc(r.run_id)}</span>
+          <span class="trust">${esc(r.status)}</span>
+          <span class="trust">${esc((r.started_utc||"").replace("T"," ").slice(0,16))}</span>
+          <span class="trust">${esc(String(r.tool_calls))} model call${r.tool_calls===1?"":"s"}</span></div>
+        ${dd.length?`<div class="drops">${dd.map(x=>`
+          <div class="drop"><span class="dstage">${esc(x.stage||"")}</span>
+            <span class="durl">${esc((x.url||"").slice(0,110))}</span>
+            <div class="dwhy">${esc(x.why||"")}</div></div>`).join("")}</div>`
+          : `<p class="muted small">Nothing was rejected on this run.</p>`}
+      </div>`;}).join("")}`:""}`;
 }
 
 /* ---- toast ---- */

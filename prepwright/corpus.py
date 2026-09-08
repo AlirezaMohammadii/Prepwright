@@ -124,7 +124,8 @@ def fit_sections(pairs):
 
 
 def ingest_text(handle, text, origin_url, slug=None, title=None,
-                vetting="community", trust=2, final_url=None):
+                vetting="community", trust=2, final_url=None,
+                publisher=None, published_on=None, run_id=None):
     """Write one loose markdown document into this track's corpus.
 
     Returns the new doc_id, or None when the text carries no citable section.
@@ -135,6 +136,13 @@ def ingest_text(handle, text, origin_url, slug=None, title=None,
     not set one is ingesting something nobody vetted. A research fetch that knows
     its source passes its own. The schema allows exactly primary, secondary,
     vendor and community, and trust runs 1 to 5.
+
+    `publisher`, `published_on` and `run_id` are the ledger's three columns. The
+    first two are read off the fetched page rather than claimed by whoever
+    nominated it, and the third points at the discovery run that looked for it,
+    so a document can say what it is, when it was written and why it was sought.
+    All three stay None for the seed directory, which has no publisher, no date
+    and no run.
     """
     raw = str(text or "").encode("utf-8")
     parsed_title, pairs = parse_loose(text)
@@ -155,6 +163,9 @@ def ingest_text(handle, text, origin_url, slug=None, title=None,
         vetting=vetting,
         trust=int(trust),
         final_url=final_url or origin_url,
+        publisher=publisher,
+        published_on=published_on,
+        run_id=run_id,
     )
     return doc_id
 

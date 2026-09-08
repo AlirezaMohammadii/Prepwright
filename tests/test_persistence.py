@@ -427,6 +427,38 @@ class CrossTrackIsolation(Base):
                 with self.assertRaises(S.IsolationError):
                     S.track_dir(bad)
 
+    def test_a_trailing_newline_does_not_make_an_id_or_a_doc_name_valid(self):
+        """`$` in a Python regex also matches before a trailing newline.
+
+        `track_dir` matches the raw argument with no strip, so with `$` rather
+        than `\\Z` the id "t-93c97fdd6d77\\n" passed the gate and os.path.join
+        received a newline. That half is a real behaviour change: revert the
+        `\\Z` in config.py and the first assertion below fails.
+
+        `DOC_NAME_RE` is defence in depth and is stated as such rather than
+        overclaimed. Its one unstripped caller, `write_doc`, builds the name
+        itself, and `corpus_path` strips before matching (state.py), so no
+        caller reaches the anchor with a trailing newline today. The pattern is
+        asserted directly, because that is the level the guard actually lives
+        at, and a test that pretended otherwise would pass for the wrong reason.
+        """
+        real_id, handle = self.a_track()
+        try:
+            _doc_id, file_name = self.a_doc(handle, "anchors", "material")
+        finally:
+            handle.close()
+
+        with self.assertRaises(S.IsolationError):
+            S.track_dir(real_id + "\n")
+        self.assertTrue(S.track_dir(real_id), "the real id stopped resolving")
+
+        self.assertIsNone(S._DOC_NAME.match(file_name + "\n"),
+                          "DOC_NAME_RE accepts a name carrying a trailing newline")
+        self.assertIsNotNone(S._DOC_NAME.match(file_name),
+                             "DOC_NAME_RE stopped accepting a real doc name")
+        self.assertIsNone(S._TRACK_ID.match(real_id + "\n"),
+                          "TRACK_ID_RE accepts an id carrying a trailing newline")
+
 
 # ============================================================================
 class CapsAndAppendOnly(Base):

@@ -119,7 +119,21 @@ def _document_frequency(index):
     """
     df = {}
     for sec in index:
-        for t in set(terms(sec["heading"] + " " + sec["concept"] + " " + sec["body"])):
+        # The SAME four fields `score_sections` scores against, doc_title
+        # included. It was counted over heading, concept and body only while
+        # scoring weighted a doc_title hit at 2.0, so a term living in document
+        # titles and nowhere else never entered df at all. `df.get(term, 1)`
+        # then returned the sentinel meant for "appears in exactly one section",
+        # and the rarity weight handed 1 + sqrt(n) -- the largest value this
+        # corpus can produce -- to the word shared by the most documents.
+        #
+        # The consequence was not noise, it was eviction: on a corpus of one
+        # multi-section standard, every section of it cleared RELATIVE_FLOOR
+        # together and filled PACK_MAX_SECTIONS, pushing the genuinely matching
+        # sections out of the step's slice. Counting titles here is what makes
+        # the comment below true rather than aspirational.
+        for t in set(terms(sec["heading"] + " " + sec["concept"] + " "
+                           + sec["doc_title"] + " " + sec["body"])):
             df[t] = df.get(t, 0) + 1
     return df
 
@@ -138,6 +152,17 @@ def _document_frequency(index):
 # every corpus.
 MIN_TERMS = 2
 RELATIVE_FLOOR = 0.25
+
+
+def document_frequency(index):
+    """How many sections each term appears in. Public because callers batch.
+
+    `score_sections` computes this itself when it is not given one, which is the
+    right default for a single query. A caller scoring twenty gaps against the
+    same corpus would then rebuild it twenty times, so it is exposed rather than
+    reached for through the private name.
+    """
+    return _document_frequency(index)
 
 
 def score_sections(index, query, df=None):
@@ -364,8 +389,23 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
     steps, deferred = [], []
     for gap in ordered:
         title = (gap.get("label") or "").strip()[:160] or gap["gap_id"]
-        objective = (gap.get("why") or "").strip()[:400]
-        scored = score_sections(index, "%s %s" % (title, objective), df=df) if index else []
+        why = (gap.get("why") or "").strip()[:400]
+        # `why` is the DIAGNOSTIC's reason this is a gap, not a learning
+        # objective, and the two were the same field until it started showing.
+        # For an ungraded probe it reads "No answer given."; for the fallback
+        # grader it reads "graded without a model: length only". Both were
+        # written into the step objective, where the tutor read them out as the
+        # task, and both were concatenated into the query that chooses which
+        # sections the step teaches from, where their words scored against the
+        # corpus as if they described the topic.
+        #
+        # So it is used for neither unless it carries something. A why with real
+        # content -- a judge explaining what was thin about an answer -- is
+        # genuinely about the topic and helps both jobs, and is kept.
+        informative = len(terms(why)) >= 3 and not why.lower().startswith(
+            ("no answer", "graded without a model", "not graded"))
+        query = ("%s %s" % (title, why)) if informative else title
+        scored = score_sections(index, query, df=df) if index else []
         slices = relevant(scored)
         if not slices:
             deferred.append({"gap_id": gap["gap_id"], "label": title,
@@ -374,7 +414,14 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
         steps.append({
             "gap_id": gap["gap_id"],
             "title": title,
-            "objective": objective or "Be able to answer this in the room.",
+            # The specificity lives in the title, which is the thing the posting
+            # actually asks for. The objective says what DELIVERED means, which
+            # is the same sentence for every step and is the honest answer:
+            # explaining it back is the bar, and it is the bar for all of them.
+            "objective": ("Explain this in your own words and answer one"
+                          " follow-up on it."
+                          + ((" What is thin about it now: " + why)
+                             if informative else "")),
             "tier": tier_for(gap),
             "est_minutes": int(est_minutes),
             "slices": slices,
@@ -469,3 +516,39 @@ def slices_of(handle, step_id):
     return [dict(r) for r in handle.conn.execute(
         "SELECT doc_id, sec_id, ord FROM step_slice WHERE step_id=? ORDER BY ord",
         (step_id,)).fetchall()]
+
+
+def slices_by_step(handle):
+    """Every pinned slice in this track, grouped by step, in pin order.
+
+    One query, not one per step. The page asks for the whole plan in a single
+    GET, and forty steps through `slices_of` is forty round trips for something
+    SQLite groups in one scan.
+
+    The document title and the section heading come along because the page has
+    to name what a step teaches from, and the alternative is the page holding a
+    second copy of the corpus index to look them up. The join is LEFT on
+    `section` on purpose: a slice whose section row is missing is a defect worth
+    seeing as a blank heading rather than a step that silently loses a source.
+    """
+    grouped = {}
+    rows = handle.conn.execute(
+        "SELECT sl.step_id AS step_id, sl.doc_id AS doc_id, sl.sec_id AS sec_id,"
+        "       sl.ord AS ord, d.title AS doc_title, d.vetting AS vetting,"
+        "       d.trust AS trust, d.origin_url AS origin_url,"
+        "       d.publisher AS publisher, d.published_on AS published_on,"
+        "       sc.heading AS heading"
+        "  FROM step_slice sl"
+        "  JOIN doc d ON d.doc_id = sl.doc_id"
+        "  LEFT JOIN section sc"
+        "    ON sc.doc_id = sl.doc_id AND sc.sec_id = sl.sec_id"
+        " ORDER BY sl.step_id, sl.ord").fetchall()
+    for r in rows:
+        grouped.setdefault(r["step_id"], []).append({
+            "doc_id": r["doc_id"], "sec_id": r["sec_id"], "ord": r["ord"],
+            "doc_title": r["doc_title"], "heading": r["heading"] or "",
+            "vetting": r["vetting"], "trust": r["trust"],
+            "origin_url": r["origin_url"], "publisher": r["publisher"],
+            "published_on": r["published_on"],
+        })
+    return grouped

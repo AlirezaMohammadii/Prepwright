@@ -251,6 +251,92 @@ class ASliceIsChosenForTheStepThatTeachesFromIt(Base):
                          "one body word was enough to pin a section")
 
 
+class RarityIsCountedOverTheFieldsThatAreScored(Base):
+    """df must count doc_title, because score_sections weights doc_title.
+
+    It did not, so a term living in document titles and nowhere else was absent
+    from df entirely, `df.get(term, 1)` returned the sentinel meant for a term in
+    exactly ONE section, and the rarity weight handed the corpus maximum to the
+    word shared by the MOST documents. On a corpus of one multi-section standard
+    every section cleared the relative floor together and filled the pack,
+    evicting the sections that actually matched.
+    """
+
+    def test_a_term_in_every_document_title_is_not_treated_as_rare(self):
+        index = [{"doc_id": "D%02d" % (i // 4), "sec_id": "s%02d" % (i % 4),
+                  "heading": "APP 11 security of personal information",
+                  "concept": "", "body": "Reasonable steps to protect holdings.",
+                  "doc_title": "Australian Privacy Principles",
+                  "vetting": "primary", "trust": 5}
+                 for i in range(40)]
+        df = K.document_frequency(index)
+        self.assertGreaterEqual(
+            df.get("privacy", 0), 40,
+            "a term in forty document titles was counted fewer than forty times")
+        # The sentinel `df.get(term, 1)` returns for an unmeasured term is 1,
+        # which is also the count for a term in exactly one section. The whole
+        # defect was that those two states were indistinguishable here.
+        self.assertNotEqual(df.get("privacy", 1), 1,
+                            "the title term was left on the one-section sentinel")
+
+    def test_the_common_title_term_does_not_outrank_a_genuinely_rare_one(self):
+        index = [{"doc_id": "D%02d" % i, "sec_id": "s01",
+                  "heading": "APP 11 security of personal information",
+                  "concept": "", "body": "Reasonable steps to protect holdings.",
+                  "doc_title": "Australian Privacy Principles",
+                  "vetting": "primary", "trust": 5} for i in range(10)]
+        index.append({"doc_id": "D99", "sec_id": "s01",
+                      "heading": "Reidentification of de-identified data",
+                      "concept": "", "body": "Reidentification risk is assessed.",
+                      "doc_title": "Australian Privacy Principles",
+                      "vetting": "primary", "trust": 5})
+        chosen = K.choose_slices(index, "privacy reidentification", "")
+        self.assertTrue(chosen)
+        self.assertEqual(chosen[0]["doc_id"], "D99",
+                         "the genuine match did not win")
+        self.assertEqual(
+            len(chosen), 1,
+            "ten copies of the same section cleared the floor and filled the pack")
+
+
+class TheDiagnosticReasonIsNotTheLearningObjective(Base):
+    """`why` says why this is a gap. It is not what the step teaches.
+
+    Both jobs read it before this was separated: the tutor read it out as the
+    task, and its words were concatenated into the query that decides which
+    sections the step pins. For an ungraded probe that string is literally
+    "No answer given.", so every step's task was that sentence and every step's
+    retrieval query carried the words "no", "answer" and "given".
+    """
+
+    NOISE = [("g01", "Support compliance with ISO 42001 and SOC2",
+              "No answer given.", "none", None)]
+    REAL = [("g01", "Support compliance with ISO 42001 and SOC2",
+             "Named the standard but could not say what an AI management system"
+             " certification actually requires of an organisation.", "shaky", None)]
+
+    def test_an_uninformative_why_reaches_neither_the_task_nor_the_query(self):
+        handle = self._track(gaps=self.NOISE)
+        built = K.build(handle, D.gap_list(handle))
+        self.assertTrue(built["steps"], "nothing was planned at all")
+        step = built["steps"][0]
+        self.assertNotIn("No answer given", step["objective"])
+        self.assertIn("Explain this in your own words", step["objective"])
+        # The objective is the template alone. Nothing the diagnostic said about
+        # why this was a gap survives into it, so nothing it said reaches the
+        # tutor as the task or the scorer as query terms.
+        self.assertEqual(
+            step["objective"],
+            "Explain this in your own words and answer one follow-up on it.")
+
+    def test_an_informative_why_is_kept_because_it_is_about_the_topic(self):
+        handle = self._track(gaps=self.REAL)
+        built = K.build(handle, D.gap_list(handle))
+        step = built["steps"][0]
+        self.assertIn("What is thin about it now", step["objective"])
+        self.assertIn("AI management system", step["objective"])
+
+
 class OrderIsByDependencyAndIsDeterministic(Base):
     def test_a_prerequisite_is_taught_first(self):
         handle = self._track()

@@ -53,8 +53,12 @@ class Bridge(object):
         # A port derived from the pid, so two suites on one machine do not race
         # for the same one and neither sees the other's tracks.
         self.port = 8100 + (os.getpid() % 700)
+        # No test spends the candidate's money or waits on a network round
+        # trip. The routes that call a model all report honestly that they could
+        # not reach one, which is the behaviour under test here anyway.
         env = dict(os.environ, PREPWRIGHT_HOME=self.home,
-                   PREPWRIGHT_PORT=str(self.port))
+                   PREPWRIGHT_PORT=str(self.port),
+                   PREPWRIGHT_NO_MODEL="1")
         self.proc = subprocess.Popen(
             [sys.executable, "bridge.py"], cwd=ROOT, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -214,9 +218,36 @@ class DiagnoseOverHttp(Base):
         self.assertFalse(body["fitReport"])
 
     def test_grading_without_a_model_says_so(self):
+        """The judge runs by default. When it cannot, the reply admits it.
+
+        The fallback grades on answer length and never awards `solid`, so a plan
+        built from it is pessimistic: it will teach things the candidate already
+        knows. That is the safe direction to be wrong in, but only if the
+        candidate is told, which is what `gradedBy` is for.
+        """
         self._intake()
         _s, body = self.b.call("POST", "/api/diagnose", {"action": "propose"})
         self.assertIn("length only", body["gradedBy"])
+        self.assertIn("disabled", body["gradedBy"])
+
+    def test_verdicts_supplied_by_the_caller_are_used_as_given(self):
+        """A caller that graded the probes itself is not re-graded.
+
+        This is the seam the page uses when the candidate answers probes in one
+        session and proposes in another, and it is the only path that can award
+        `solid` without a model.
+        """
+        self._intake()
+        _s, plan = self.b.call("POST", "/api/diagnose", {"action": "plan"})
+        probes = plan["probes"]
+        self.assertTrue(probes)
+        verdicts = [{"probe_id": p["probe_id"], "level": "solid",
+                     "why": "answered with specifics"} for p in probes]
+        _s, body = self.b.call("POST", "/api/diagnose",
+                               {"action": "propose", "verdicts": verdicts})
+        self.assertIn("supplied by the caller", body["gradedBy"])
+        # Every probe graded solid is a probe that becomes no gap at all.
+        self.assertEqual(body["proposed"], 0)
 
     def test_proposing_twice_is_refused_rather_than_appending(self):
         """gap_id is a primary key. A second list would fail partway through

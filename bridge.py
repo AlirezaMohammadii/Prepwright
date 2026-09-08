@@ -226,6 +226,46 @@ MAX_RESEARCH_URLS = 12
 # way to tell a slow fetch from a hung one.
 RESEARCH_BUDGET_SECONDS = 100
 
+# Discovery is the slowest thing this bridge does: a search, then a fetch, per
+# candidate, per gap. These three bound it. `DISCOVER_MAX_DOCS` is the one that
+# matters for the plan rather than the wait: MAX_DOCS_PER_TRACK is 48, twenty
+# gaps at four sources each would be eighty, and a corpus that fills up on the
+# first eight gaps leaves the rest of the plan unteachable. Fewer, better sources
+# per gap is not a compromise here, it is the only shape that fits.
+DISCOVER_MAX_DOCS = 24
+DISCOVER_BUDGET_SECONDS = 900
+DISCOVER_PER_GAP = 3
+PROVIDER_DISCOVER_MODELS = {
+    "claude": "claude-sonnet-5",
+    "codex": "gpt-5.6-terra",
+}
+
+
+def _discovery_report(provider, model, out):
+    """The run's ledger entry, trimmed by entries until it fits its column.
+
+    `research_run.queries` is charged against MARK_MAX_BYTES. Trimming the
+    SERIALISED form to that many bytes produces text that is not JSON, and the
+    only reader parses it, so the whole discard list disappears silently. This
+    drops whole entries instead and records how many it dropped, because a
+    ledger that quietly shows nothing is worse than one that says it is partial.
+    """
+    kept = list(out["discarded"])
+    dropped = 0
+    while True:
+        body = {"kind": "discover", "provider": provider, "model": model,
+                "stored": out["stored"], "discarded": kept}
+        if dropped:
+            body["discarded_not_recorded"] = dropped
+        text = json.dumps(body)
+        if len(text.encode("utf-8")) <= PC.MARK_MAX_BYTES or not kept:
+            return text
+        # Halve, do not walk: a run can reject dozens and one-at-a-time would
+        # re-serialise the whole list every time.
+        cut = max(1, len(kept) // 2)
+        kept = kept[:-cut]
+        dropped += cut
+
 
 def flow_state(handle):
     """Which stage this track is in, and what the page needs to draw it.
@@ -290,8 +330,53 @@ def flow_state(handle):
                        "done": sum(1 for x in steps if x["status"] == "done"),
                        "tiers": {t: sum(1 for x in steps if x["tier"] == t)
                                  for t in PCURR.TIERS}},
+        # The plan itself, only once there is one to teach from. Same rule the
+        # gap list follows one key up: withholding it at the learn stage would
+        # make the screen that exists to render it fetch twice to draw once, and
+        # sending it before then would put a plan on the wire that does not
+        # exist yet.
+        #
+        # `key` IS `step_id`, which is what `curriculum.step_key` minted and what
+        # `/api/chat` validates against `pagestate.STEP_KEY_RE`. The page used to
+        # mint its own key from a stage number and a topic id; it now carries
+        # this one through untouched, so there is one source for the identity a
+        # turn is stored under instead of two that agree until they do not.
+        "stepList": _step_list(handle, steps) if stage == "learn" else [],
         "turns": turns,
     }
+
+
+def _step_list(handle, steps):
+    """The written plan, shaped for the page and safe to serialise.
+
+    Every value is a SQLite scalar or a list of them. Nothing here reads a
+    document body: the page shows what a step teaches FROM, and the bytes it
+    teaches WITH stay behind `/api/chat`, where the pack is built and the
+    citation check can see them.
+    """
+    grouped = PCURR.slices_by_step(handle)
+    out = []
+    for row in steps:
+        pinned = grouped.get(row["step_id"], [])
+        out.append({
+            "key": row["step_id"],
+            "ord": int(row["ord"]),
+            "title": row["title"],
+            "objective": row["objective"],
+            "gapId": row["gap_id"],
+            "status": row["status"],
+            "tier": row["tier"],
+            "evidenceState": row["evidence_state"],
+            "minutes": int(row["est_minutes"] or 0),
+            "slices": [{"docId": s["doc_id"], "secId": s["sec_id"],
+                        "docTitle": s["doc_title"], "heading": s["heading"],
+                        "vetting": s["vetting"], "trust": s["trust"],
+                        "originUrl": s["origin_url"],
+                        "publisher": s["publisher"],
+                        "publishedOn": s["published_on"]}
+                       for s in pinned],
+        })
+    return out
 
 
 def _switch_track(track_id):
@@ -418,6 +503,28 @@ CLI_BASE = [
     "--strict-mcp-config",       # no MCP tool schemas
     "--tools", "",               # no tool schemas; retrieval happens in this file
     "--max-turns", "1",          # exactly one API call per reply
+]
+
+# The ONE call that is allowed to search, and it is not a teaching call.
+#
+# Discovery asks "what are the authoritative pages that teach this?", and the
+# honest answer to that changes month to month, so answering it from a model's
+# memory is how a study plan ends up citing a standard that was superseded. The
+# search runs, the URLs it returns are FETCHED by research.py through the same
+# SSRF guard as a pasted link, and a page that does not answer or does not cover
+# the gap is discarded. Nothing a search returns becomes corpus without being
+# read first.
+#
+# It stays off everywhere else. A tutor allowed to search would spend agentic
+# round-trips doing retrieval worse than the pinned pack does it, and worse, a
+# grounded answer would stop meaning "from the corpus".
+CLI_SEARCH = [
+    "--safe-mode",
+    "--disable-slash-commands",
+    "--strict-mcp-config",
+    "--tools", "WebSearch",
+    "--allowedTools", "WebSearch",
+    "--max-turns", "6",          # enough hops to search, read results and answer
 ]
 
 # ---- reasoning effort ------------------------------------------------------
@@ -680,22 +787,23 @@ def _provider_prompt(system, prompt):
     ) % (str(system or ""), str(prompt or ""))
 
 
-def _build_claude_cmd(model, effort="", schema=None):
+def _build_claude_cmd(model, effort="", schema=None, search=False):
     cmd = [claude_bin(), "-p", "--model", model, "--output-format", "json"]
-    cmd += CLI_BASE + ["--no-session-persistence", "--no-chrome"]
+    cmd += (CLI_SEARCH if search else CLI_BASE)
+    cmd += ["--no-session-persistence", "--no-chrome"]
     cmd += _effort_flag(effort)
     if schema:
         cmd += ["--json-schema", schema]
     return cmd
 
 
-def _build_codex_cmd(model, effort, context_dir, schema_path=None):
+def _build_codex_cmd(model, effort, context_dir, schema_path=None, search=False):
     cmd = [
         codex_bin(), "-a", "never", "-s", "read-only", "exec",
         "--json", "--ephemeral", "--skip-git-repo-check",
         "--ignore-user-config", "--ignore-rules", "--strict-config",
         "--model", model, "-C", context_dir,
-        "-c", 'web_search="disabled"',
+        "-c", 'web_search="%s"' % ("enabled" if search else "disabled"),
         "-c", "agents.enabled=false",
         "-c", 'shell_environment_policy.inherit="none"',
     ]
@@ -766,8 +874,32 @@ def _cli_reason(proc, limit=220):
     return " — %s" % text if text else ""
 
 
-def run_cli(provider, model, system, prompt, effort="", schema=None, timeout=None):
-    """One tool-less provider call from an empty context-only directory."""
+# One switch that makes every provider call fail closed, checked in the single
+# function all of them go through.
+#
+# It exists because the test suite runs a REAL bridge subprocess against a real
+# port, so the moment a route started calling a model by default the suite began
+# spending the candidate's money and taking a minute to do it. A per-test opt-out
+# would have to be remembered by every test written afterwards, which is not a
+# guarantee, it is a hope. `-I` implies `-E`, and `-E` drops PYTHON* variables
+# only, so a PREPWRIGHT_ name still reaches the launcher's process.
+#
+# It fails LOUDLY: every caller reports the reason it could not reach a model, so
+# this cannot quietly degrade a real session into one that never asks anything.
+MODEL_DISABLED = bool(os.environ.get("PREPWRIGHT_NO_MODEL"))
+
+
+def run_cli(provider, model, system, prompt, effort="", schema=None, timeout=None,
+            search=False):
+    """One provider call from an empty context-only directory.
+
+    Tool-less unless `search=True`, which is reached only by source discovery.
+    Every other caller -- teaching, assessment, review, the diagnostic judge --
+    leaves it False and gets the same no-tools call it always got.
+    """
+    if MODEL_DISABLED:
+        raise RuntimeError(
+            "Model calls are disabled in this process by PREPWRIGHT_NO_MODEL.")
     provider, model = _validate_provider_model(provider, model)
     executable = _provider_bin(provider)
     if not executable:
@@ -781,9 +913,10 @@ def run_cli(provider, model, system, prompt, effort="", schema=None, timeout=Non
             fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 stream.write(schema)
-        cmd = (_build_claude_cmd(model, effort, schema)
+        cmd = (_build_claude_cmd(model, effort, schema, search=search)
                if provider == "claude"
-               else _build_codex_cmd(model, effort, context_dir, schema_path))
+               else _build_codex_cmd(model, effort, context_dir, schema_path,
+                                     search=search))
         # The builders call the same trusted resolver for testability; replace
         # argv[0] with the already-validated path to avoid a later PATH race.
         cmd[0] = executable
@@ -837,7 +970,16 @@ TUTOR_SYSTEM_BASE = (
     "name the source when you make one. Never invent a definition, a number, an API, a "
     "benchmark, or a citation. Use only those excerpts and the conversation text for "
     "this one step. Do not claim access to the internet, local files, other study "
-    "tracks, other sessions, or tools."
+    "tracks, other sessions, or tools.\n\n"
+    "Currency rule. Each excerpt is headed with its publisher and the date the "
+    "page states, or with \"date not stated\". Say which edition, version, year or "
+    "revision you are teaching from whenever it matters, and take it from that "
+    "heading only. Where the heading says the date is not stated, say the sources "
+    "do not give one rather than supplying a year from memory: standards, "
+    "regulations and framework versions change, a remembered version number is "
+    "the single most confident-sounding wrong thing you can tell a candidate, and "
+    "they will repeat it in the room. Never say a document is current, superseded, "
+    "the latest, or out of date unless an excerpt in front of you says so."
 )
 
 
@@ -1520,6 +1662,13 @@ class Handler(SimpleHTTPRequestHandler):
         # Name the provider and the fix. "Provider is unavailable" points the
         # candidate at the wrong place: "install codex" and "sign in to claude"
         # are different problems with different one-line remedies.
+        if MODEL_DISABLED:
+            # Checked here as well as in run_cli so a route reports the real
+            # reason instead of "the model did not answer", which would send
+            # someone looking for a network fault that is not there.
+            raise RuntimeError(
+                "Model calls are disabled in this process by"
+                " PREPWRIGHT_NO_MODEL, so no provider can answer.")
         if not _provider_bin(provider):
             raise RuntimeError(
                 "The %s CLI is not installed on this machine, so its models "
@@ -1600,6 +1749,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, flow_state(handle))
             except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
                 return self._failure(500, "Flow", exc)
+            finally:
+                handle.close()
+        if route == "/api/ledger":
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            try:
+                handle = open_state_track(take_lease=False)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Ledger", exc)
+            try:
+                return self._route_ledger(handle, {})
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Ledger", exc)
             finally:
                 handle.close()
         if route == "/api/tracks":
@@ -1781,6 +1943,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(409, {"error": str(exc)})
         except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
             return self._failure(500, route.split("/")[-1].title(), exc)
+        except RuntimeError as exc:
+            # LAST, and the position is load-bearing. `StoreError` subclasses
+            # RuntimeError, so this clause placed any earlier swallows
+            # TrackMoved, CapExceeded, IsolationError and CorruptStore and
+            # answers 400 to all of them -- which is how a stale-revision
+            # conflict stopped being a 409 the page can act on. Everything the
+            # store raises is handled above; what is left here is `_provider`
+            # refusing because a CLI is missing, logged out or disabled, and
+            # before this existed that escaped the handler with no reply written
+            # at all, leaving the browser on an open socket with nothing on
+            # screen and nothing in the log.
+            return self._json(400, {"error": str(exc)})
         finally:
             handle.close()
 
@@ -1893,11 +2067,21 @@ class Handler(SimpleHTTPRequestHandler):
             for key, value in list(raw.items())[:200]:
                 if isinstance(key, str) and isinstance(value, str):
                     answers[key[:16]] = value[:4000]
+        # Grading, in three tiers of preference.
+        #
+        # A caller may pass verdicts it graded itself, which is what the tests
+        # use. Otherwise the judge runs here, in the route, exactly as `assess`
+        # does: `diagnose` stays free of the provider so it can be tested without
+        # one, and the one place that knows how to reach a CLI keeps knowing it.
+        # If the judge cannot run -- no CLI, not logged in, a refusal -- the
+        # length-only fallback still produces a plan, and the reply SAYS which
+        # of the three graded it. A pessimistic grade quietly presented as a real
+        # one is how a candidate ends up studying twenty things they already
+        # know.
         verdicts = payload.get("verdicts")
-        graded_by = "model"
+        graded_by = "verdicts supplied by the caller"
         if not isinstance(verdicts, list):
-            verdicts = PDIAG.verdicts_without_a_model(plan, answers)
-            graded_by = "length only, so nothing was graded better than shaky"
+            verdicts, graded_by = self._judge(plan, answers, payload)
         rows = PDIAG.proposals_from(plan, verdicts)
         PDIAG.propose(handle, rows)
         return self._json(200, {
@@ -1906,6 +2090,55 @@ class Handler(SimpleHTTPRequestHandler):
             "summary": PDIAG.summary(handle),
             "flow": flow_state(handle),
         })
+
+    def _judge(self, plan, answers, payload):
+        """Grade the probes with a model, or say plainly why it could not.
+
+        Returns (verdicts, how_it_was_graded). Never raises: a diagnostic that
+        fails because a CLI is logged out should still produce a gap list, just a
+        pessimistic one that admits it.
+
+        Two details this had to get right, both of which would fail silently.
+        `run_cli` wants the schema as a JSON STRING while JUDGE_SCHEMA is a dict,
+        so it is dumped here. And `_pipeline`, which owns this route, does not
+        catch RuntimeError, which is exactly what `_provider` raises when the CLI
+        is missing or logged out -- so it is caught here rather than becoming a
+        500 on the one route that has a working fallback.
+        """
+        if not plan:
+            return [], "there were no probes to grade"
+        try:
+            provider, _model = self._provider(payload, require_model=False)
+        except (ValueError, RuntimeError) as exc:
+            return (PDIAG.verdicts_without_a_model(plan, answers),
+                    "length only (%s), so nothing was graded better than shaky"
+                    % str(exc)[:120])
+        model = PROVIDER_ASSESS_MODELS[provider]
+        if not MODEL_GATE.acquire(blocking=False):
+            return (PDIAG.verdicts_without_a_model(plan, answers),
+                    "length only (a model call was already running), so nothing"
+                    " was graded better than shaky")
+        try:
+            data = run_cli(provider, model, PDIAG.JUDGE_SYSTEM,
+                           PDIAG.judge_prompt(plan, answers), effort="low",
+                           schema=json.dumps(PDIAG.JUDGE_SCHEMA))
+            parsed = json.loads(data.get("result") or "{}")
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+            sys.stderr.write("diagnostic judge failed: %s\n" % str(exc)[:160])
+            return (PDIAG.verdicts_without_a_model(plan, answers),
+                    "length only (the judge did not answer), so nothing was"
+                    " graded better than shaky")
+        finally:
+            try:
+                MODEL_GATE.release()
+            except ValueError:
+                pass
+        got = parsed.get("verdicts")
+        if not isinstance(got, list) or not got:
+            return (PDIAG.verdicts_without_a_model(plan, answers),
+                    "length only (the judge returned nothing usable), so nothing"
+                    " was graded better than shaky")
+        return got, "%s %s" % (PROVIDER_LABELS[provider], model)
 
     def _fit_report_for(self, handle):
         """The imported fit report, read from this track's own intake directory.
@@ -1951,16 +2184,31 @@ class Handler(SimpleHTTPRequestHandler):
             "summary": PDIAG.summary(handle), "flow": flow_state(handle)})
 
     def _route_research(self, handle, payload):
-        """Fetch the URLs the candidate supplied and store what came back.
+        """Add sources to this track. Three actions, one gate.
 
-        The candidate supplies them. This route will not search, will not follow
-        a link out of a fetched page, and will not accept a URL the page did not
-        get from a person. That is the grounding claim: the model never chooses
-        the evidence.
+        `discover` lets the app go looking; `quarantine` distrusts something it
+        found; the default fetches URLs the candidate pasted. All three end at
+        the same place: bytes enter the corpus only after `research.fetch` has
+        read them through the SSRF guard, so a nominated URL and a pasted URL get
+        exactly the same treatment. Nothing here trusts a model's assertion about
+        a page, only the page.
+
+        Actions live here rather than on new POST paths on purpose. `/api/chat`
+        is the residual branch at the end of do_POST, so every new path is a
+        chance to have the tutor answer a pipeline request; an action on a route
+        that is already allowlisted and already dispatched cannot make that
+        mistake.
 
         One URL failing does not fail the batch. Each result carries its own
         outcome so the page can show which sources landed and which did not.
         """
+        action = str(payload.get("action") or "fetch").strip().lower()
+        if action == "discover":
+            return self._route_discover(handle, payload)
+        if action == "quarantine":
+            return self._route_quarantine(handle, payload)
+        if action not in ("fetch", ""):
+            raise ValueError("Unknown research action %r." % action)
         raw = payload.get("urls")
         if not isinstance(raw, list) or not raw:
             raise ValueError("Paste at least one https link to a source you trust.")
@@ -2012,6 +2260,192 @@ class Handler(SimpleHTTPRequestHandler):
             "results": results,
             "stored": sum(1 for r in results if r["ok"]),
             "flow": flow_state(handle)})
+
+    def _route_discover(self, handle, payload):
+        """Go and find sources for the approved gaps, then prove each one.
+
+        The one route in this bridge whose model call may search. What comes back
+        is a list of URLs and nothing else: `research.discover` fetches each one
+        through the same guard a pasted link goes through, checks that the page
+        actually shares vocabulary with the gap it was sought for, and only then
+        is anything written. A nomination that 404s, redirects into private
+        space, serves a login wall or answers about the wrong subject is
+        discarded with its reason recorded on the run.
+
+        The run row is the ledger. `doc.run_id` points every stored document back
+        at the pass that looked for it, and the discards live in the run's
+        `queries` column, so the question "what did it throw away, and why" has
+        an answer on disk rather than in a log line that scrolled past.
+        """
+        gaps = [g for g in PDIAG.gap_list(handle)
+                if g["status"] in PCURR.WORKABLE]
+        if not gaps:
+            raise ValueError(
+                "Nothing is approved yet, so there is nothing to research."
+                " Decide the gap list first.")
+
+        provider, _model = self._provider(payload, require_model=False)
+        model = PROVIDER_DISCOVER_MODELS[provider]
+        only = payload.get("gapIds")
+        if isinstance(only, list) and only:
+            wanted = {str(x) for x in only[:60]}
+            gaps = [g for g in gaps if g["gap_id"] in wanted]
+            if not gaps:
+                raise ValueError("None of those gap ids are approved on this track.")
+
+        # Skip the gaps this track can already teach. `plan` defers a gap whose
+        # corpus turns up nothing relevant, and that deferral list IS the
+        # research list -- the curriculum is the thing that knows what is
+        # missing. Scoring here with the same functions means a second run tops
+        # up what the first could not find instead of buying a second copy of
+        # what it did, and running discovery twice is idempotent rather than
+        # wasteful.
+        covered = set()
+        if not payload.get("all"):
+            index = PCURR.corpus_index(handle)
+            if index:
+                df = PCURR.document_frequency(index)
+                for g in gaps:
+                    query = "%s %s" % (g.get("label") or "", g.get("why") or "")
+                    if PCURR.relevant(PCURR.score_sections(index, query, df=df)):
+                        covered.add(g["gap_id"])
+        skipped = [g["gap_id"] for g in gaps if g["gap_id"] in covered]
+        gaps = [g for g in gaps if g["gap_id"] not in covered]
+        if not gaps:
+            return self._json(200, {
+                "runId": None, "stored": 0, "gaps": [], "discarded": [],
+                "asked": 0, "skipped": skipped,
+                "note": "Every approved gap already has a source in this track's"
+                        " corpus. Nothing needed fetching.",
+                "flow": flow_state(handle)})
+
+        already = handle.conn.execute(
+            "SELECT COUNT(*) c FROM doc WHERE status='ready'").fetchone()["c"]
+        room = max(0, min(DISCOVER_MAX_DOCS, PC.MAX_DOCS_PER_TRACK - already))
+        if room <= 0:
+            raise ValueError(
+                "This track already holds %d documents, which is its limit."
+                " Quarantine one before adding more." % already)
+
+        meta = {}
+        lib = PSTATE.open_library()
+        try:
+            row = lib.execute("SELECT employer, role_title FROM track WHERE track_id=?",
+                              (handle.track_id,)).fetchone()
+            meta = {k: row[k] for k in row.keys()} if row else {}
+        finally:
+            lib.close()
+
+        run_id = "r-" + secrets.token_hex(6)
+        handle.start_research_run(run_id, json.dumps(
+            {"kind": "discover", "provider": provider, "model": model,
+             "gaps": [g["gap_id"] for g in gaps], "room": room}))
+
+        calls = {"n": 0}
+
+        def nominate(system, prompt, schema):
+            calls["n"] += 1
+            data = run_cli(provider, model, system, prompt, effort="low",
+                           schema=schema, search=True)
+            return data.get("result") or "{}"
+
+        def ingest(found, gap):
+            return PCORPUS.ingest_text(
+                handle, found["text"], origin_url=found["url"],
+                title=None, vetting=found["vetting"], trust=found["trust"],
+                final_url=found["final_url"], publisher=found["publisher"],
+                published_on=found["published_on"], run_id=run_id)
+
+        # One at a time across the whole bridge, the same rule every other model
+        # call follows. Non-blocking: a candidate who clicks twice gets a plain
+        # 429 rather than two searches racing to fill the same corpus.
+        if not MODEL_GATE.acquire(blocking=False):
+            handle.finish_research_run(run_id, "aborted")
+            return self._json(429, {"error": "A model call is already running."})
+        try:
+            out = PRESEARCH.discover(
+                gaps, nominate, ingest,
+                role=meta.get("role_title") or "", employer=meta.get("employer") or "",
+                per_gap=DISCOVER_PER_GAP, budget_seconds=DISCOVER_BUDGET_SECONDS,
+                max_docs=room)
+        except RuntimeError as exc:
+            handle.finish_research_run(run_id, "failed")
+            return self._json(400, {"error": str(exc)})
+        except Exception as exc:
+            handle.finish_research_run(run_id, "failed")
+            return self._failure(502, "Discovery", exc)
+        finally:
+            try:
+                MODEL_GATE.release()
+            except ValueError:
+                pass
+
+        stored_bytes = sum(int(d.get("bytes") or 0)
+                           for rec in out["gaps"] for d in rec["stored"])
+        # Bounded by COUNT, then serialised, and never the other way round.
+        # Slicing the finished JSON to MARK_MAX_BYTES cut it mid-string inside a
+        # URL, and `discardsOf` in the page throws on that and returns [] -- so
+        # a run with many rejections displayed as a run with none, which is the
+        # exact opposite of what the ledger is for. The report is trimmed until
+        # it fits, and says how many it dropped.
+        report = _discovery_report(provider, model, out)
+        handle.finish_research_run(
+            run_id, "ok" if out["stored"] else "failed", queries=report,
+            tool_calls=calls["n"], bytes_fetched=stored_bytes)
+
+        return self._json(200, {
+            "runId": run_id,
+            "stored": out["stored"],
+            "gaps": out["gaps"],
+            "discarded": out["discarded"],
+            "asked": calls["n"],
+            "skipped": skipped,
+            "flow": flow_state(handle)})
+
+    def _route_ledger(self, handle, _payload):
+        """Every source in this track, with where it came from and what it cost.
+
+        The audit surface that replaces asking permission for each URL. Nothing
+        is fetched here; this reads what discovery already proved.
+        """
+        docs = [dict(r) for r in handle.conn.execute(
+            "SELECT d.doc_id, d.title, d.origin_url, d.final_url, d.publisher,"
+            "       d.published_on, d.vetting, d.trust, d.status, d.n_sections,"
+            "       d.origin_bytes, d.fetched_utc, d.run_id, d.cite_count"
+            "  FROM doc d ORDER BY d.doc_no").fetchall()]
+        serving = {}
+        for r in handle.conn.execute(
+                "SELECT DISTINCT sl.doc_id AS doc_id, s.gap_id AS gap_id,"
+                "       s.step_id AS step_id, s.title AS step_title"
+                "  FROM step_slice sl JOIN step s ON s.step_id = sl.step_id"
+                " ORDER BY s.ord").fetchall():
+            serving.setdefault(r["doc_id"], []).append(
+                {"gapId": r["gap_id"], "stepKey": r["step_id"],
+                 "stepTitle": r["step_title"]})
+        runs = handle.research_runs()
+        for doc in docs:
+            doc["serves"] = serving.get(doc["doc_id"], [])
+        return self._json(200, {"documents": docs, "runs": runs,
+                                "flow": flow_state(handle)})
+
+    def _route_quarantine(self, handle, payload):
+        """Distrust one document. Its sections stop reaching any future pack.
+
+        Not a delete. The row stays, its provenance stays, and the reason it was
+        distrusted stays with it, because a source removed without trace is a
+        source nobody can argue with later.
+        """
+        doc_id = str(payload.get("docId") or "").strip()[:16]
+        state = str(payload.get("status") or "quarantined").strip()
+        if state not in ("quarantined", "ready"):
+            raise ValueError("A document is either ready or quarantined.")
+        row = handle.conn.execute(
+            "SELECT status FROM doc WHERE doc_id=?", (doc_id,)).fetchone()
+        if row is None:
+            raise ValueError("No document %r in this track." % doc_id)
+        handle.set_doc_status(doc_id, state)
+        return self._json(200, {"docId": doc_id, "status": state,
+                                "flow": flow_state(handle)})
 
     def _route_curriculum(self, handle, payload):
         """Approved gaps plus this track's corpus into a written plan."""

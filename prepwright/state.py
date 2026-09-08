@@ -604,6 +604,25 @@ def track_dir(track_id):
     return full
 
 
+def _pack_block(sec):
+    """One section as the tutor sees it, provenance included.
+
+    Written in one place because build_pack renders it twice: once to measure
+    the block against PACK_MAX_BYTES and once to build the text. Two copies of a
+    format string is how a pack silently overruns the budget it was measured
+    against.
+
+    "date not stated" is deliberate and is not a gap to be filled. Many
+    authoritative pages carry no publication date at all, and a tutor that sees
+    an absence will supply one from memory unless it is told, in the prompt,
+    that the absence is the fact.
+    """
+    where = sec.get("publisher") or "source not recorded"
+    when = sec.get("published_on") or "date not stated"
+    return "===== %s :: %s\n----- %s, %s =====\n%s" % (
+        sec["cite"], sec["heading"], where, when, sec["body"])
+
+
 class TrackHandle(object):
     """One open track: one connection, one corpus root, one track id.
 
@@ -862,6 +881,68 @@ class TrackHandle(object):
                 " VALUES (?,?,?,?)", (step_id, doc_id, sec_id, int(ord_)))
             self._bump_writes()
 
+    # -- research runs ------------------------------------------------------
+    # The table and `doc.run_id` were in the schema from the start and nothing
+    # wrote them, so a document could say where it came FROM and never why it
+    # was looked for. These three close that: one run per discovery pass, the
+    # queries it asked and the candidates it threw away recorded on the run, and
+    # every document it stored pointing back at it. A source ledger that cannot
+    # show what was rejected is a list, not a ledger.
+    def start_research_run(self, run_id, queries):
+        self.assert_live()
+        with self.lock, _Txn(self.conn):
+            self.conn.execute(
+                "INSERT INTO research_run(run_id,started_utc,queries,status)"
+                " VALUES (?,?,?,'running')",
+                (str(run_id), utc_now(), str(queries)[:C.MARK_MAX_BYTES]))
+            self._bump_writes()
+        return run_id
+
+    def finish_research_run(self, run_id, status, queries=None, tool_calls=0,
+                            bytes_fetched=0):
+        self.assert_live()
+        if status not in ("running", "ok", "failed", "aborted"):
+            raise ValueError("unknown research run status %r" % (status,))
+        with self.lock, _Txn(self.conn):
+            if queries is None:
+                self.conn.execute(
+                    "UPDATE research_run SET finished_utc=?, status=?,"
+                    " tool_calls=?, bytes_fetched=? WHERE run_id=?",
+                    (utc_now(), status, int(tool_calls), int(bytes_fetched),
+                     str(run_id)))
+            else:
+                self.conn.execute(
+                    "UPDATE research_run SET finished_utc=?, status=?, queries=?,"
+                    " tool_calls=?, bytes_fetched=? WHERE run_id=?",
+                    (utc_now(), status, str(queries)[:C.MARK_MAX_BYTES],
+                     int(tool_calls), int(bytes_fetched), str(run_id)))
+            self._bump_writes()
+
+    def research_runs(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT run_id, started_utc, finished_utc, queries, tool_calls,"
+            "       bytes_fetched, status FROM research_run"
+            " ORDER BY started_utc DESC, run_id DESC").fetchall()]
+
+    def set_doc_status(self, doc_id, status):
+        """Quarantine a document, or return one to service.
+
+        Not a delete, and deliberately not one. `build_pack` selects on
+        status='ready', so quarantining is enough to stop a distrusted source
+        reaching any future prompt, while the row, its provenance and its
+        origin hash all stay on disk for the argument about whether it should
+        have been distrusted at all.
+        """
+        self.assert_live()
+        if status not in C.DOC_STATUSES:
+            raise ValueError("unknown document status %r" % (status,))
+        with self.lock, _Txn(self.conn):
+            cur = self.conn.execute(
+                "UPDATE doc SET status=? WHERE doc_id=?", (status, doc_id))
+            if cur.rowcount == 0:
+                raise ValueError("no document %r in this track" % (doc_id,))
+            self._bump_writes()
+
     # -- corpus -------------------------------------------------------------
     def corpus_path(self, name):
         """Absolute path for a corpus-relative name, or None if it escapes.
@@ -892,7 +973,7 @@ class TrackHandle(object):
 
     def write_doc(self, slug, title, sections, origin_url, origin_bytes,
                   origin_sha256, extract_sha256, vetting="primary", trust=5,
-                  run_id=None, final_url=None):
+                  run_id=None, final_url=None, publisher=None, published_on=None):
         """Two-phase, with both crash windows named.
 
         txn A registers the row as 'writing' and allocates doc_no, so a doc_no
@@ -942,11 +1023,13 @@ class TrackHandle(object):
             self.conn.execute(
                 "INSERT INTO doc(doc_id,doc_no,run_id,status,file_name,title,"
                 " origin_url,final_url,origin_sha256,origin_bytes,extract_sha256,"
-                " fetched_utc,vetting,trust) "
-                "VALUES (?,?,?, 'writing', ?,?,?,?,?,?,?,?,?,?)",
+                " fetched_utc,vetting,trust,publisher,published_on) "
+                "VALUES (?,?,?, 'writing', ?,?,?,?,?,?,?,?,?,?,?,?)",
                 (doc_id, doc_no, run_id, file_name, title, origin_url, final_url,
                  origin_sha256, int(origin_bytes), extract_sha256, utc_now(),
-                 vetting, int(trust)))
+                 vetting, int(trust),
+                 (str(publisher)[:200] if publisher else None),
+                 (str(published_on)[:40] if published_on else None)))
 
         header = {
             "v": 1, "track_id": self.track_id, "doc_id": doc_id, "title": title,
@@ -954,6 +1037,7 @@ class TrackHandle(object):
             "final_url": final_url or origin_url, "origin_sha256": origin_sha256,
             "origin_bytes": int(origin_bytes), "extract_sha256": extract_sha256,
             "fetched": utc_now(), "vetting": vetting, "trust": int(trust),
+            "publisher": publisher or "", "published_on": published_on or "",
         }
         body_text, offsets = _render_doc(header, sections)
         raw = body_text.encode("utf-8")
@@ -1126,7 +1210,18 @@ class TrackHandle(object):
             if sec is None:
                 continue
             sec["track_id"] = self.track_id
-            block = "===== %s :: %s =====\n%s" % (sec["cite"], sec["heading"], sec["body"])
+            prov = self.conn.execute(
+                "SELECT publisher, published_on, vetting FROM doc WHERE doc_id=?",
+                (r["doc_id"],)).fetchone()
+            # Publisher and date go INTO the block, next to the bytes they
+            # describe. A tutor asked "how current is this?" would otherwise
+            # answer from memory, which is exactly the class of claim this
+            # product refuses to make. "date not stated" is a real answer and is
+            # written as one, so the honest reply is available in the prompt
+            # rather than having to be inferred from an absence.
+            sec["publisher"] = prov["publisher"] if prov else None
+            sec["published_on"] = prov["published_on"] if prov else None
+            block = _pack_block(sec)
             # Bytes, not characters. PACK_MAX_BYTES comes from a token budget,
             # and every block already carries a multi-byte citation delimiter,
             # so counting code points overruns the prompt on any corpus that is
@@ -1140,9 +1235,7 @@ class TrackHandle(object):
         for sec in out:
             if sec["track_id"] != self.track_id:
                 raise IsolationError("a pack section left its track")
-        text = "\n\n".join(
-            "===== %s :: %s =====\n%s" % (s["cite"], s["heading"], s["body"])
-            for s in out)
+        text = "\n\n".join(_pack_block(s) for s in out)
         return {"track_id": self.track_id, "step_id": step_id, "sections": out,
                 "text": text, "pack_sha16": sha16(text),
                 "cites": [s["cite"] for s in out]}

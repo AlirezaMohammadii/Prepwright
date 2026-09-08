@@ -42,8 +42,15 @@ FILE_MODE = 0o600
 
 # A track directory name IS its id, and this pattern is the first gate every
 # path resolution passes, before anything reaches os.path.join.
-TRACK_ID_RE = r"^t-[0-9a-f]{12}$"
-DOC_NAME_RE = r"^D[0-9]{2}__[a-z0-9][a-z0-9-]{0,60}\.doc\.md$"
+#
+# \Z, not $. In Python `$` also matches immediately before a trailing
+# newline, so `^t-[0-9a-f]{12}$` accepts "t-93c97fdd6d77\n" as a valid
+# track id and `DOC_NAME_RE` accepts "D01__x.doc.md\n" as a valid file
+# name. Both then reach os.path.join carrying a newline. Verified on 3.9.6
+# and 3.14 before this was changed. Same defect this project already fixed
+# once in pagestate.STEP_KEY_RE.
+TRACK_ID_RE = r"^t-[0-9a-f]{12}\Z"
+DOC_NAME_RE = r"^D[0-9]{2}__[a-z0-9][a-z0-9-]{0,60}\.doc\.md\Z"
 
 # ---- schema ----------------------------------------------------------------
 LIBRARY_SCHEMA_VERSION = 1
