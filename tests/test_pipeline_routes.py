@@ -58,7 +58,12 @@ class Bridge(object):
         # not reach one, which is the behaviour under test here anyway.
         env = dict(os.environ, PREPWRIGHT_HOME=self.home,
                    PREPWRIGHT_PORT=str(self.port),
-                   PREPWRIGHT_NO_MODEL="1")
+                   PREPWRIGHT_NO_MODEL="1",
+                   # A file chooser is a modal window on a real screen. A
+                   # test that opened one would park the suite until a
+                   # human clicked it, which is the same failure as a test
+                   # that calls a model, and is guarded the same way.
+                   PREPWRIGHT_NO_DIALOG="1")
         self.proc = subprocess.Popen(
             [sys.executable, "bridge.py"], cwd=ROOT, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -160,6 +165,61 @@ class TheBoundaryStillHoldsForEveryNewRoute(Base):
             self.fail("a non-JSON body was accepted")
         except urllib.error.HTTPError as exc:
             self.assertEqual(exc.code, 400)
+
+
+class TheHealthPillTellsTheTruth(Base):
+    """/api/health is outside the session gate on purpose: the launcher reads it
+    over loopback to tell a remote-capable bridge from a local-only one. It
+    answered 200 to any caller, so a page left open across a bridge restart
+    showed a green live pill while every gated route returned 403: a healthy
+    looking app that did nothing."""
+
+    def test_health_answers_without_a_session(self):
+        status, body = self.b.call("GET", "/api/health", cookie="")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+
+    def test_health_says_the_session_is_not_valid(self):
+        status, body = self.b.call("GET", "/api/health", cookie="")
+        self.assertIs(body.get("session"), False,
+                      "health does not report that this caller has no session")
+
+    def test_health_says_the_session_is_valid(self):
+        status, body = self.b.call("GET", "/api/health")
+        self.assertIs(body.get("session"), True)
+
+
+class DecliningEverythingIsNotATrap(Base):
+    """Declining every gap satisfied `decided`, so the stage advanced to
+    research, where discovery refuses ("nothing is approved") and the curriculum
+    refuses ("there are no approved gaps"). Pasting sources did not help. The
+    candidate was left on a screen where every action said no."""
+
+    def test_the_stage_stays_on_approve_when_nothing_is_approved(self):
+        gaps = self._propose()
+        self.assertTrue(gaps)
+        for gap in gaps:
+            status, _ = self.b.call("POST", "/api/gap",
+                                    {"gapId": gap["gap_id"], "status": "declined"})
+            self.assertEqual(status, 200)
+        status, flow = self.b.call("GET", "/api/flow")
+        self.assertEqual(status, 200, flow)
+        self.assertEqual(flow["stage"], "approve",
+                         "declining everything advanced past the only screen "
+                         "that can undo it")
+
+    def test_approving_one_afterwards_moves_it_on(self):
+        gaps = self._propose()
+        for gap in gaps:
+            self.b.call("POST", "/api/gap",
+                        {"gapId": gap["gap_id"], "status": "declined"})
+        status, body = self.b.call("POST", "/api/gap",
+                                   {"gapId": gaps[0]["gap_id"],
+                                    "status": "approved"})
+        self.assertEqual(status, 200, body)
+        status, flow = self.b.call("GET", "/api/flow")
+        self.assertEqual(flow["stage"], "research",
+                         "a declined gap could not be approved after the fact")
 
 
 class IntakeOverHttp(Base):
@@ -410,6 +470,77 @@ class ASuppliedResourceIsReadWithoutAModel(Base):
         status, body = self.b.call("GET", "/api/ledger")
         self.assertEqual(status, 200, body)
         return body
+
+    def test_the_commit_reply_carries_the_flow(self):
+        """Every sibling mutating route returns `flow_state(handle)`; this one
+        did not, and the page's `flow = d.flow || flow` kept the stale object.
+        After a successful ingest the stage stayed "research" and the corpus
+        count stayed 0, so "Build the plan" was unreachable until some later
+        flow-returning action or a reload."""
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": self.book,
+            "goal": "agent orchestration tool calling memory"})
+        self.assertEqual(status, 200, body)
+        self.assertIn("flow", body, "the commit reply carries no flow")
+        self.assertGreater((body["flow"].get("corpus") or {}).get("documents", 0), 0,
+                           "the flow it returned still reports an empty corpus")
+
+    def test_a_goal_of_only_short_words_is_refused_by_name(self):
+        """`curriculum.terms` drops words of two characters or fewer, so
+        "AI and ML" reduced to nothing and `select` silently entered no-goal
+        mode: everything kept, nothing dropped, coverage reported as 1.0. The
+        candidate asked for a cut, got none, and was told it all matched."""
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "preview_file", "path": self.book, "goal": "AI and ML"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("two letters", body["error"])
+        self.assertIn("ML eval", body["error"],
+                      "the refusal does not show what to write instead")
+
+    def test_an_empty_goal_still_keeps_the_whole_resource(self):
+        """"Teach me this handbook" is a real request, not a degraded one. The
+        refusal above must fire only when a goal was typed and scored nothing."""
+        self._intake()
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "preview_file", "path": self.book, "goal": ""})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["report"]["ok"], body["report"].get("reason"))
+        self.assertGreater(body["report"]["kept"], 0)
+
+    def test_the_ledger_row_for_a_file_run_is_parseable_json(self):
+        """`_trim_report` shrank only the discard list, so a base body over the
+        per-mark cap was returned whole and the store applied a CHARACTER slice
+        to finished JSON. The only reader parses it, so a run that dropped
+        hundreds of sections displayed as one that dropped none."""
+        self._intake()
+        status, _body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": self.book,
+            "goal": "agent orchestration tool calling memory"})
+        self.assertEqual(status, 200)
+        ledger = self._docs()
+        runs = [r for r in ledger.get("runs", []) if r.get("queries")]
+        self.assertTrue(runs, "the ingest recorded no run")
+        for run in runs:
+            report = json.loads(run["queries"])     # raises if it was sliced
+            self.assertEqual(report.get("kind"), "file")
+            self.assertIsInstance(report.get("discarded"), list)
+
+    def test_the_chooser_never_opens_when_it_is_disabled(self):
+        """The guard itself. If this ever stops refusing, the suite starts
+        waiting on a human and the wall clock is the only thing that says so."""
+        status, body = self.b.call("POST", "/api/research",
+                                   {"action": "pick_file"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("PREPWRIGHT_NO_DIALOG", body["error"])
+
+    def test_the_chooser_action_is_on_the_allowlisted_route(self):
+        """Trap 20: /api/chat is the residual branch at the end of do_POST, so a
+        new POST path is answered by the tutor rather than 404. Actions on an
+        existing route are how every other new verb was added."""
+        status, body = self.b.call("POST", "/api/pick", {"action": "pick_file"})
+        self.assertEqual(status, 404, body)
 
     def test_a_preview_writes_nothing(self):
         self._intake()

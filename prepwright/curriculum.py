@@ -213,7 +213,7 @@ def score_sections(index, query, df=None):
     return scored
 
 
-def relevant(scored, limit=None):
+def relevant(scored, limit=None, byte_budget=None):
     """The scored sections a step should actually teach from.
 
     Everything below `RELATIVE_FLOOR` of the best score is dropped. `limit`
@@ -224,8 +224,26 @@ def relevant(scored, limit=None):
     if not scored:
         return []
     limit = C.PACK_MAX_SECTIONS if limit is None else max(1, int(limit))
+    budget = C.PACK_MAX_BYTES if byte_budget is None else max(1, int(byte_budget))
     best = scored[0][0]
-    return [sec for score, sec in scored[:limit] if score >= best * RELATIVE_FLOOR]
+    out, used = [], 0
+    for score, sec in scored[:limit]:
+        if score < best * RELATIVE_FLOOR:
+            break
+        # Bytes, because `build_pack` counts bytes. Ten sections of
+        # SECTION_MAX_CHARS fit PACK_MAX_BYTES in ASCII and do not in anything
+        # else, so on a source with curly quotes or an accented word the last
+        # pinned sections were invisible: `build_pack` walks `step_slice` by
+        # `ord` and stops at the cap, so they still LOOKED pinned. The first
+        # section is always kept, otherwise a single large one would pin nothing.
+        cost = (len((sec.get("heading") or "").encode("utf-8"))
+                + len((sec.get("body") or "").encode("utf-8"))
+                + C.PACK_BLOCK_OVERHEAD)
+        if out and used + cost > budget:
+            break
+        out.append(sec)
+        used += cost
+    return out
 
 
 def choose_slices(index, title, objective, limit=None):
@@ -382,7 +400,14 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
     if not gaps:
         raise CurriculumRefused(
             "there are no approved gaps, so there is nothing to plan")
-    max_steps = C.MAX_STEPS if max_steps is None else max(1, int(max_steps))
+    # The store enforces MAX_STEPS inside `add_step`, one step at a time, with
+    # no transaction across the batch. A caller asking for more than that used
+    # to commit the first forty steps and their slices, then raise, and `build`
+    # never returned the report naming what was cut: the gaps past the cap had
+    # neither a step nor a deferral, which is the one outcome the owner ruled
+    # out. So the ceiling is applied HERE, where the cut is reported.
+    requested = C.MAX_STEPS if max_steps is None else max(1, int(max_steps))
+    max_steps = min(requested, C.MAX_STEPS)
     ordered, edge_report = order_gaps(gaps, edges)
     df = _document_frequency(index) if index else {}
 
@@ -430,9 +455,12 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
     # The cut. Order is already dependency-correct, so cutting from the tail
     # cannot orphan a step whose prerequisite was kept.
     if len(steps) > max_steps:
+        reason = ("beyond the %d-step plan" % max_steps if requested <= max_steps
+                  else "beyond the %d steps one track can hold, and %d were asked"
+                       " for" % (C.MAX_STEPS, requested))
         for step in steps[max_steps:]:
             deferred.append({"gap_id": step["gap_id"], "label": step["title"],
-                             "reason": "beyond the %d-step plan" % max_steps})
+                             "reason": reason})
         steps = steps[:max_steps]
 
     for i, step in enumerate(steps, start=1):

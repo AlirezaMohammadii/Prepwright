@@ -37,6 +37,7 @@ import io
 import os
 import re
 import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -61,6 +62,13 @@ class IngestRefused(RuntimeError):
 FILE_MAX_BYTES = 67_108_864
 TEXT_MAX_CHARS = 2_000_000
 PDF_TIMEOUT_SECONDS = 120
+# One inflated PDF stream, and the whole extraction. `zlib.decompress` with no
+# max_length measured 1029:1 on repetitive bytes, and around a thousand such
+# streams fit inside FILE_MAX_BYTES, so one conforming file could demand tens of
+# gigabytes in a single allocation. `_zip_member` already refuses on
+# `info.file_size`; this is the same rule for the path that had none.
+PDF_STREAM_MAX = 8_388_608          # 8 MiB inflated, per stream
+PDF_OUTPUT_MAX_BYTES = 33_554_432   # 32 MiB of extracted text, per file
 SHEET_MAX_ROWS = 2_000
 SHEET_MAX_COLS = 40
 
@@ -76,6 +84,12 @@ TABLE_EXT = (".csv", ".tsv")
 EXTENSIONS = TEXT_EXT + HTML_EXT + TABLE_EXT + (".pdf", ".xlsx", ".docx")
 
 
+# Above this share of undecodable bytes a file is not UTF-8 at all and the
+# other codecs are worth trying. Below it, it is UTF-8 with damage, and the
+# replacement characters are visible to `replacement_ratio` in the gate.
+UTF8_SLIP_RATIO = 0.001
+
+
 def _decode(raw):
     """Decode bytes without ever raising, and without inventing characters.
 
@@ -89,7 +103,20 @@ def _decode(raw):
             return raw.decode("utf-16")
         except (UnicodeDecodeError, ValueError):
             pass
-    for encoding in ("utf-8", "cp1252"):
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # A file that is almost entirely valid UTF-8 IS UTF-8 carrying a few corrupt
+    # bytes, and re-reading the whole of it as cp1252 rewrites every multi-byte
+    # character: one stray 0x93 turned every curly quote and accented letter in
+    # a 100,000-character document into mojibake. The gate cannot catch that,
+    # because neither cp1252 nor latin-1 emits U+FFFD and `normalise` deletes
+    # the C1 bytes latin-1 produces. So measure the damage before choosing.
+    lenient = raw.decode("utf-8", errors="replace")
+    if lenient and lenient.count("\ufffd") / len(lenient) <= UTF8_SLIP_RATIO:
+        return lenient
+    for encoding in ("cp1252",):
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError:
@@ -100,11 +127,16 @@ def _decode(raw):
 # ---- prose quality ---------------------------------------------------------
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’-]{1,19}")
 _TOKEN = re.compile(r"\S+")
+_RUN_OF_SPACES = re.compile(r"[ \t]{2,}")
 # Ligatures a PDF font table emits as single code points. Expanding them before
 # the gate stops "efficient" being counted as two non-words, which would fail a
 # perfectly good extraction.
 _LIGATURES = ((u"ﬀ", "ff"), (u"ﬁ", "fi"), (u"ﬂ", "fl"),
               (u"ﬃ", "ffi"), (u"ﬄ", "ffl"), (u"ﬅ", "st"))
+
+
+TRUNCATION_MARK = ("\n\n## [TRUNCATED: this resource continues past %d "
+                   "characters and the rest was not read]\n")
 
 
 def normalise(text):
@@ -118,7 +150,15 @@ def normalise(text):
     # a mis-decoded font table lands.
     text = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]", "", text)
     text = re.sub(r"\n{4,}", "\n\n\n", text)
-    return text[:TEXT_MAX_CHARS]
+    if len(text) > TEXT_MAX_CHARS:
+        # Marked, not silent. An unmarked cut made `goal_coverage` report ideas
+        # as absent from a resource that covers them past the cut, so the
+        # warning named present material as missing and the candidate was told
+        # to find another source.
+        mark = TRUNCATION_MARK % TEXT_MAX_CHARS
+        keep = text[:TEXT_MAX_CHARS - len(mark)].rsplit("\n", 1)[0]
+        return keep + mark
+    return text
 
 
 def quality(text):
@@ -129,6 +169,7 @@ def quality(text):
         return {"chars": 0, "words": 0, "word_ratio": 0.0, "mean_word_len": 0.0,
                 "space_ratio": 0.0, "replacement_ratio": 0.0, "longest_run": 0,
                 "alpha_ratio": 0.0}
+    collapsed = _RUN_OF_SPACES.sub(" ", text) or text
     tokens = _TOKEN.findall(text)
     words = _WORD.findall(text)
     letters = sum(1 for ch in text if ch.isalpha())
@@ -140,10 +181,24 @@ def quality(text):
         # Decoded font tables score near zero here and nothing else does.
         "word_ratio": (len(words) / len(tokens)) if tokens else 0.0,
         "mean_word_len": (sum(len(w) for w in words) / len(words)) if words else 0.0,
-        "space_ratio": text.count(" ") / chars,
+        # Measured on a copy with runs of horizontal whitespace collapsed. The
+        # extraction keeps its layout: `pdftotext -layout` is what puts headings
+        # on their own lines, and `looks_like_heading` depends on that. But the
+        # padding it inserts is not the document's spacing, and measuring it as
+        # such refused 6 of 16 real PDFs sampled on this machine, every one of
+        # which sits at 0.13 without -layout. The refusal named "a spacing ratio
+        # of 0.44, outside the 0.08-0.32 band" for a clean extraction of a good
+        # document, with nothing the candidate could act on.
+        "space_ratio": collapsed.count(" ") / len(collapsed),
         "replacement_ratio": text.count("�") / chars,
         # A CID extraction with no space mapping produces one enormous token.
         "longest_run": max(runs),
+        # ...and that token is most of the document. A single long URL, DOI or
+        # base64 line is not, and `longest_run` being a maximum meant one of
+        # them refused an otherwise clean extraction. This says how much of the
+        # text is inside over-long runs, which is the property that separates
+        # the two.
+        "long_run_share": sum(n for n in runs if n > GATE["max_longest_run"]) / chars,
         "alpha_ratio": letters / chars,
     }
 
@@ -161,6 +216,9 @@ GATE = {
     "max_space_ratio": 0.32,
     "max_replacement_ratio": 0.002,
     "max_longest_run": 120,
+    # A CID blob is one token that is nearly the whole document. A long URL in
+    # an otherwise clean 50,000-character extraction is a fraction of a percent.
+    "max_long_run_share": 0.05,
     "min_alpha_ratio": 0.45,
 }
 
@@ -175,10 +233,12 @@ def gate(text, what="the file"):
     if m["replacement_ratio"] > GATE["max_replacement_ratio"]:
         return (False, "%s decoded with %.1f%% unreadable characters, so the "
                 "encoding is wrong." % (what, 100 * m["replacement_ratio"]), m)
-    if m["longest_run"] > GATE["max_longest_run"]:
-        return (False, "%s contains a %d-character run with no space in it, "
-                "which means word boundaries were lost during extraction."
-                % (what, m["longest_run"]), m)
+    if (m["longest_run"] > GATE["max_longest_run"]
+            and m["long_run_share"] > GATE["max_long_run_share"]):
+        return (False, "%s contains a %d-character run with no space in it, and "
+                "%.0f%% of the text sits in runs that long, which means word "
+                "boundaries were lost during extraction."
+                % (what, m["longest_run"], 100 * m["long_run_share"]), m)
     if m["word_ratio"] < GATE["min_word_ratio"]:
         return (False, "only %.0f%% of %s reads as words. Below %.0f%% the text "
                 "is font tables or symbols, not prose."
@@ -210,11 +270,65 @@ def gate(text, what="the file"):
 PDFTOTEXT_FALLBACKS = ("/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext",
                        "/opt/local/bin/pdftotext")
 
-_PDF_STREAM = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.S)
+def _pdf_streams(raw):
+    """Yield each stream body, bounded, with two linear finds.
+
+    `re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.S)` rescans to end of
+    file for every `stream` token that has no `endstream` after it, which is
+    quadratic in file size on exactly the malformed input most likely to be
+    hostile, on the one extraction path with no time bound.
+    """
+    pos, found = 0, 0
+    while found < PDF_MAX_STREAMS:
+        start = raw.find(b"stream", pos)
+        if start < 0:
+            return
+        head = start + 6
+        if raw[start - 3:start] == b"end":        # the tail of "endstream"
+            pos = head
+            continue
+        if raw[head:head + 2] == b"\r\n":
+            head += 2
+        elif raw[head:head + 1] == b"\n":
+            head += 1
+        else:
+            pos = head
+            continue
+        end = raw.find(b"endstream", head, head + PDF_STREAM_MAX + 32)
+        if end < 0:
+            pos = head
+            continue
+        found += 1
+        yield raw[head:end].rstrip(b"\r\n")
+        pos = end + 9
+
+
+PDF_MAX_STREAMS = 20_000
 _PDF_TEXT_OP = re.compile(rb"\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]+>")
 _PDF_SHOW = re.compile(rb"(?:Tj|TJ|'|\")")
-_PDF_ESCAPES = ((rb"\\n", b"\n"), (rb"\\r", b"\n"), (rb"\\t", b"\t"),
-                (rb"\\\(", b"("), (rb"\\\)", b")"), (rb"\\\\", b"\\"))
+# One left-to-right pass, not six sequential substitutions. The old form was
+# wrong twice over. Its last rule was `re.sub(rb"\\\\", b"\\", piece)`, and a lone
+# backslash is an incomplete re.sub REPLACEMENT template, which re.sub parses
+# before it looks for a match: every call raised re.error, so `_pdf_via_stdlib`
+# crashed on every text-bearing PDF and the poppler-free path advertised as the
+# floor had never once run. And sequential rules decode their own output: in
+# `\\n` the escaped backslash comes first, but the newline rule matched the
+# second backslash and produced a newline where PDF means backslash-then-n.
+_PDF_ESCAPE = re.compile(rb"\\(?:([0-7]{1,3})|(.))", re.S)
+_PDF_ESCAPE_MAP = {b"n": b"\n", b"r": b"\n", b"t": b"\t", b"b": b"\b",
+                   b"f": b"\f", b"(": b"(", b")": b")", b"\\": b"\\"}
+
+
+def _pdf_unescape(piece):
+    """Decode the escapes inside one PDF literal string."""
+    def one(match):
+        octal, char = match.group(1), match.group(2)
+        if octal is not None:
+            return bytes(bytearray([int(octal, 8) & 0xFF]))
+        if char in (b"\n", b"\r"):
+            return b""            # a backslash before a newline continues the line
+        return _PDF_ESCAPE_MAP.get(char, char)
+    return _PDF_ESCAPE.sub(one, piece)
 
 
 def pdftotext_bin():
@@ -224,17 +338,34 @@ def pdftotext_bin():
 
 def _pdf_via_poppler(path, binary):
     """Extract with poppler. -layout keeps headings on their own lines."""
-    try:
-        done = subprocess.run(
-            [binary, "-layout", "-nopgbrk", "-enc", "UTF-8", path, "-"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=PDF_TIMEOUT_SECONDS, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise IngestRefused("pdftotext could not run: %s" % (exc,))
-    if done.returncode != 0 and not done.stdout:
-        detail = _decode(done.stderr or b"").strip()[:200] or "no output"
-        raise IngestRefused("pdftotext failed on this file: %s" % detail)
-    return _decode(done.stdout or b"")
+    # stdout goes to a temporary FILE, not a pipe. `stdout=PIPE` reads the
+    # child to EOF into memory, and PDF text output is not proportional to file
+    # size, so a pathological document could exhaust memory before
+    # TEXT_MAX_CHARS -- which is applied as the last statement of `normalise` --
+    # ever ran. A file also cannot deadlock against a chatty stderr.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            done = subprocess.run(
+                [binary, "-layout", "-nopgbrk", "-enc", "UTF-8", path, "-"],
+                stdout=out, stderr=err, timeout=PDF_TIMEOUT_SECONDS, check=False)
+        except subprocess.TimeoutExpired:
+            raise IngestRefused(
+                "pdftotext did not finish within %d seconds on this file."
+                % PDF_TIMEOUT_SECONDS)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise IngestRefused("pdftotext could not run: %s" % (exc,))
+        size = out.tell()
+        if size > PDF_OUTPUT_MAX_BYTES:
+            raise IngestRefused(
+                "pdftotext produced %.0f MB of text from this file, past the "
+                "%.0f MB ceiling." % (size / 1e6, PDF_OUTPUT_MAX_BYTES / 1e6))
+        out.seek(0)
+        body = out.read(PDF_OUTPUT_MAX_BYTES)
+        if done.returncode != 0 and not body:
+            err.seek(0)
+            detail = _decode(err.read(4096)).strip()[:200] or "no output"
+            raise IngestRefused("pdftotext failed on this file: %s" % detail)
+    return _decode(body)
 
 
 def _pdf_via_stdlib(raw):
@@ -245,14 +376,23 @@ def _pdf_via_stdlib(raw):
     fails the gate rather than text that is quietly wrong. That is the intended
     outcome: the refusal tells the candidate to install poppler.
     """
-    out = []
-    for blob in _PDF_STREAM.findall(raw):
+    out, produced = [], 0
+    for blob in _pdf_streams(raw):
         try:
-            body = zlib.decompress(blob)
+            # Bounded inflate. `unconsumed_tail` is non-empty exactly when the
+            # stream had more to give than the ceiling allows, so an oversized
+            # stream is skipped rather than allocated.
+            engine = zlib.decompressobj()
+            body = engine.decompress(blob, PDF_STREAM_MAX)
+            if engine.unconsumed_tail:
+                continue
         except zlib.error:
             body = blob if b"Tj" in blob or b"TJ" in blob else b""
         if not body or not _PDF_SHOW.search(body):
             continue
+        produced += len(body)
+        if produced > PDF_OUTPUT_MAX_BYTES:
+            break
         for chunk in _PDF_TEXT_OP.findall(body):
             if chunk.startswith(b"<"):
                 digits = re.sub(rb"[^0-9A-Fa-f]", b"", chunk)
@@ -267,9 +407,7 @@ def _pdf_via_stdlib(raw):
                 out.append(piece.decode("utf-16-be", errors="replace")
                            if len(piece) % 2 == 0 else piece.decode("latin-1"))
                 continue
-            piece = chunk[1:-1]
-            for pattern, replacement in _PDF_ESCAPES:
-                piece = re.sub(pattern, replacement, piece)
+            piece = _pdf_unescape(chunk[1:-1])
             out.append(piece.decode("latin-1"))
         out.append("\n")
     return "".join(out)
@@ -293,6 +431,16 @@ def read_pdf(path, raw):
 # ---- Office ----------------------------------------------------------------
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 X_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+R_ID_ATTR = ("{http://schemas.openxmlformats.org/officeDocument/2006/"
+             "relationships}id")
+_SHEET_PART = re.compile(r"xl/worksheets/sheet(\d+)\.xml$")
+
+
+def _sheet_number(member):
+    """The digits in a worksheet part name, for a numeric sort."""
+    found = _SHEET_PART.search(str(member))
+    return int(found.group(1)) if found else 0
 ZIP_MEMBER_MAX = 33_554_432
 
 
@@ -378,20 +526,55 @@ def read_xlsx(raw):
                     shared.append("".join(t.text or "" for t in item.iter(X_NS + "t")))
             except ET.ParseError:
                 shared = []
-        names = {}
+        # A sheet's name and its worksheet part are joined through the
+        # relationship id, never by position. Two orderings used to be assumed
+        # equal: `names` was keyed by position in workbook.xml while the parts
+        # were matched by position in a LEXICOGRAPHIC sort of the member list.
+        # "sheet10" sorts before "sheet2", so from the tenth sheet on every name
+        # landed on the wrong worksheet. A heading is what a citation names and
+        # what `score_sections` weights at 3.0, so the tutor taught one sheet's
+        # rows under another sheet's title, confidently.
+        targets = {}
+        rels = _zip_member(archive, "xl/_rels/workbook.xml.rels")
+        if rels:
+            try:
+                for rel in ET.fromstring(rels).iter(REL_NS + "Relationship"):
+                    part = (rel.get("Target") or "").lstrip("/")
+                    if part:
+                        targets[rel.get("Id")] = (
+                            part if part.startswith("xl/") else "xl/" + part)
+            except ET.ParseError:
+                targets = {}
+        present = set(archive.namelist())
+        # NUMERICALLY sorted, so sheet10 does not sort before sheet2. This is
+        # the fallback ordering and it is also what the old code got wrong.
+        parts = sorted((n for n in present if _SHEET_PART.match(n)),
+                       key=_sheet_number)
+        declared = []
         book = _zip_member(archive, "xl/workbook.xml")
         if book:
             try:
-                for i, sheet in enumerate(ET.fromstring(book).iter(X_NS + "sheet"), 1):
-                    names[i] = sheet.get("name") or ("Sheet %d" % i)
+                declared = [(sheet.get(R_ID_ATTR), sheet.get("name") or "")
+                            for sheet in ET.fromstring(book).iter(X_NS + "sheet")]
             except ET.ParseError:
-                names = {}
-        members = sorted(n for n in archive.namelist()
-                         if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
-        if not members:
+                declared = []
+        sheets = [(targets[rid], name or "Sheet %d" % (i + 1))
+                  for i, (rid, name) in enumerate(declared)
+                  if rid and targets.get(rid) in present]
+        if not sheets and declared:
+            # A workbook.xml with no r:id, or no relationships part. Some
+            # generators emit that. Pair by position against the numerically
+            # sorted parts, which keeps the author's names and still avoids the
+            # lexicographic mispairing this whole block exists to fix.
+            sheets = [(part, name or "Sheet %d" % (i + 1))
+                      for i, (part, (_rid, name))
+                      in enumerate(zip(parts, declared))]
+        if not sheets:
+            sheets = [(m, "Sheet %d" % _sheet_number(m)) for m in parts]
+        if not sheets:
             raise IngestRefused("This .xlsx contains no worksheets.")
         out = []
-        for number, member in enumerate(members, 1):
+        for member, sheet_name in sheets:
             body = _zip_member(archive, member)
             if not body:
                 continue
@@ -399,15 +582,25 @@ def read_xlsx(raw):
                 root = ET.fromstring(body)
             except ET.ParseError:
                 continue
-            out.append("## " + (names.get(number) or ("Sheet %d" % number)))
+            out.append("## " + sheet_name)
             for row_count, row in enumerate(root.iter(X_NS + "row")):
                 if row_count >= SHEET_MAX_ROWS:
                     out.append("[TRUNCATED: sheet continues past %d rows]"
                                % SHEET_MAX_ROWS)
                     break
-                cells = []
+                # Keyed by declared column, not by arrival order. Excel omits
+                # a <c> element for a cell that was never given a value, so
+                # appending in document order shifted every later cell left: a
+                # row of (A="Access review", C="Open") stored as
+                # "Access review | Open", which says the OWNER of the access
+                # review is "Open". Every quotation from that table is then
+                # wrong and nothing downstream can tell.
+                cells, next_column = {}, 0
                 for cell in row.iter(X_NS + "c"):
-                    if _col_of(cell.get("r")) >= SHEET_MAX_COLS:
+                    ref = cell.get("r")
+                    column = _col_of(ref) if ref else next_column
+                    next_column = column + 1
+                    if column >= SHEET_MAX_COLS:
                         continue
                     value = cell.find(X_NS + "v")
                     raw_value = (value.text or "") if value is not None else ""
@@ -419,9 +612,10 @@ def read_xlsx(raw):
                     elif cell.get("t") == "inlineStr":
                         raw_value = "".join(
                             t.text or "" for t in cell.iter(X_NS + "t"))
-                    cells.append(" ".join(str(raw_value).split()))
-                if any(cells):
-                    out.append(" | ".join(cells))
+                    cells[column] = " ".join(str(raw_value).split())
+                if any(cells.values()):
+                    out.append(" | ".join(cells.get(i, "")
+                                          for i in range(max(cells) + 1)))
         return "\n".join(out)
 
 
@@ -429,13 +623,22 @@ def read_table(raw, delimiter):
     """CSV and TSV as pipe-separated rows, header first."""
     text = _decode(raw)
     rows = []
-    for count, row in enumerate(csv.reader(io.StringIO(text), delimiter=delimiter)):
-        if count >= SHEET_MAX_ROWS:
-            rows.append("[TRUNCATED: file continues past %d rows]" % SHEET_MAX_ROWS)
-            break
-        cells = [" ".join(str(c).split()) for c in row[:SHEET_MAX_COLS]]
-        if any(cells):
-            rows.append(" | ".join(cells))
+    try:
+        for count, row in enumerate(
+                csv.reader(io.StringIO(text), delimiter=delimiter)):
+            if count >= SHEET_MAX_ROWS:
+                rows.append("[TRUNCATED: file continues past %d rows]"
+                            % SHEET_MAX_ROWS)
+                break
+            cells = [" ".join(str(c).split()) for c in row[:SHEET_MAX_COLS]]
+            if any(cells):
+                rows.append(" | ".join(cells))
+    except csv.Error as exc:
+        # `_csv.Error` is not an OSError and not a ValueError, so it escaped the
+        # whole handler chain and the request died with no reply written. Every
+        # other refusal in this module names what failed; so does this one.
+        raise IngestRefused(
+            "This file could not be read as a table: %s" % (str(exc)[:160],))
     return "\n".join(rows)
 
 
@@ -469,6 +672,18 @@ def looks_like_heading(line):
     md = _MD_HEAD.match(stripped)
     if md:
         return (len(md.group(1)), md.group(2).strip())
+    # A table row is not a heading. `read_xlsx` and `read_table` join cells with
+    # " | ", and a two-column Title Case sheet ("Access Enforcement | Partially
+    # Implemented") matched the Title Case rule on EVERY row, so `outline` gave
+    # every line an empty body, the trailing `if bd` filter dropped all of them,
+    # and `sections_from` returned nothing. The refusal then said the file had
+    # "no headings, and nothing that reads as one", which is the opposite of
+    # what happened, and a Control/Status matrix or a Term/Definition glossary
+    # -- the artefacts a candidate actually brings -- was destroyed silently.
+    # The explicit markdown check above still runs first, which is how each
+    # sheet keeps its own "## " heading.
+    if " | " in stripped:
+        return None
     match = _APPENDIX.match(stripped)
     if match:
         label = " ".join((match.group(1) + " " + (match.group(2) or "")).split())
@@ -566,6 +781,15 @@ def _split_body(heading, body):
         if not para:
             continue
         while len(para) > limit:
+            # Flush what is already buffered BEFORE emitting this paragraph's
+            # chunks. Appending chunks straight to `out` while earlier
+            # paragraphs sat in `current` put the middle of a long paragraph
+            # first and demoted the opening paragraph, usually the definition,
+            # to a "(cont. N)" section. The heading is assigned to out[0], so
+            # the citation named the chapter and pointed at its middle.
+            if current:
+                out.append(("", current))
+                current = ""
             cut = para.rfind(" ", 0, limit)
             out.append(("", para[:cut if cut > limit // 2 else limit].strip()))
             para = para[cut if cut > limit // 2 else limit:].strip()
@@ -593,9 +817,20 @@ def sections_from(text):
 # ---- the cut ---------------------------------------------------------------
 def _as_index(sections, resource_title, vetting, trust):
     """Shape candidate sections like a corpus index so one scorer ranks both."""
+    # `doc_title` is deliberately blank. Inside ONE resource the title is the
+    # same string on every candidate section, so it carries no signal about
+    # which section answers the goal -- but `score_sections` weights a title hit
+    # at 2.0 AND sets `labelled`, which bypasses the MIN_TERMS floor. Every
+    # section of a "Kubernetes Security Handbook" therefore entered the ranking
+    # for the goal "kubernetes security", and `_by_density` turned that constant
+    # bonus into a very high density for the shortest bodies: front matter
+    # (Contents, Preface, Index, Colophon) outranked every chapter, and
+    # "Network policy in depth" was dropped for scoring 17% of the best match.
+    # The title still earns its 2.0 where it discriminates, which is ranking
+    # ACROSS the documents of a corpus in `curriculum.corpus_index`.
     return [{"doc_id": "C%04d" % i, "sec_id": "s01",
              "cite": "C%04d" % i, "heading": heading, "concept": "",
-             "doc_title": resource_title, "trust": int(trust),
+             "doc_title": "", "trust": int(trust),
              "vetting": vetting, "body": body}
             for i, (heading, body) in enumerate(sections)]
 
@@ -665,7 +900,10 @@ def _by_density(scored):
     """
     out = []
     for score, sec in scored:
-        length = max(1, len(CURR.terms(sec["body"])))
+        # Heading terms count toward the length too. They are scored at 3.0, so
+        # measuring density against the body alone let a long heading over a
+        # one-line body read as very dense.
+        length = max(1, len(CURR.terms(sec["heading"])) + len(CURR.terms(sec["body"])))
         out.append((score / (length ** 0.5), sec))
     out.sort(key=lambda pair: (-pair[0], pair[1]["doc_id"], pair[1]["sec_id"]))
     return out
@@ -718,7 +956,21 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
     if not sections:
         return ([], [])
     index = _as_index(sections, resource_title, vetting, trust)
-    if not CURR.terms(goal):
+    goal_terms = CURR.terms(goal)
+    if not goal_terms and str(goal or "").strip():
+        # A goal was typed and it scores nothing. `curriculum.terms` drops words
+        # of two characters or fewer, so "AI and ML" reduces to nothing at all,
+        # and the no-goal branch below would then keep the first 240 sections
+        # with an empty `dropped` list and a coverage ratio of 1.0. The
+        # candidate asked for a cut, got none, and was told everything matched.
+        raise IngestRefused(
+            "\"%s\" gives nothing to match on. Every word in it is either two "
+            "letters or fewer, or too common to carry meaning, and both kinds "
+            "are skipped when scoring. Write it out in full words, for example "
+            "\"machine learning evaluation\" rather than \"ML eval\". Leave the "
+            "goal empty to keep the whole resource."
+            % str(goal).strip()[:80])
+    if not goal_terms:
         keep = list(range(min(len(sections), limit)))
         dropped = [(sections[i][0], "past the %d-section cap for one resource"
                     % limit) for i in range(len(keep), len(sections))]
@@ -733,11 +985,27 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
     kept_set = set(keep)
     dropped = []
     scores = {i: score for score, i in ranked}
-    for i, (heading, _body) in enumerate(sections):
+    wanted = set(goal_terms)
+    for i, (heading, body) in enumerate(sections):
         if i in kept_set:
             continue
         if i not in scores:
-            dropped.append((heading, "shares no vocabulary with the goal"))
+            # `score_sections` omits a section failing "matched < MIN_TERMS and
+            # not labelled", so absence from `scores` is not the same as sharing
+            # no vocabulary. A section using "idempotency" six times, with a
+            # heading that shares nothing, was reported as sharing none of the
+            # goal's words -- and with a one-word goal that verdict is
+            # unreachable by any section, so a whole file could be refused for
+            # the candidate's wording when the wording was fine.
+            hits = sorted(wanted & set(CURR.terms(heading + " " + body)))
+            if not hits:
+                dropped.append((heading, "shares no vocabulary with the goal"))
+            else:
+                dropped.append((heading,
+                                "mentions %s but nothing else from the goal, and"
+                                " a section needs two of its words, or one in its"
+                                " heading, to count as being about it"
+                                % ", ".join(hits[:3])))
         elif scores[i] < best * floor:
             dropped.append((heading, "scored %.0f%% of the best match, under the "
                             "%.0f%% floor" % (100 * scores[i] / best, 100 * floor)))
@@ -751,8 +1019,17 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
 DOC_BODY_BUDGET = 8_500      # under DOC_MAX_BYTES with room for the stored header
 
 
-def group(sections, resource_title):
-    """Pack selected sections into documents inside the per-document caps."""
+def group(sections, resource_title, max_docs=None):
+    """Pack selected sections into documents inside the per-document caps.
+
+    Returns (documents, overflow_sections). `select` caps the SECTION count at
+    RESOURCE_MAX_DOCS * MAX_SECTIONS_PER_DOC, but grouping also splits on
+    DOC_BODY_BUDGET, so long sections produced more documents than that section
+    cap implies and one resource could claim most of MAX_DOCS_PER_TRACK. The
+    overflow is returned rather than dropped, so the report can say how much of
+    the resource did not fit.
+    """
+    max_docs = RESOURCE_MAX_DOCS if max_docs is None else max(1, int(max_docs))
     docs, current, used = [], [], 0
     for heading, body in sections:
         size = len(heading.encode("utf-8")) + len(body.encode("utf-8")) + 16
@@ -764,12 +1041,14 @@ def group(sections, resource_title):
         used += size
     if current:
         docs.append(current)
+    overflow = [pair for extra in docs[max_docs:] for pair in extra]
+    docs = docs[:max_docs]
     titled = []
     for i, pairs in enumerate(docs, 1):
         title = resource_title if len(docs) == 1 else "%s (part %d of %d)" % (
             resource_title, i, len(docs))
         titled.append((title[:200], pairs))
-    return titled
+    return (titled, overflow)
 
 
 # ---- reading a file --------------------------------------------------------
@@ -782,6 +1061,45 @@ def sniff(path):
         "Prepwright reads %s. It cannot read %s. Save it as one of those, or "
         "paste the part you want to study in as text."
         % (", ".join(EXTENSIONS), ext or "a file with no extension"))
+
+
+def inside_storage(real):
+    """True when `real` is config.HOME or anything under it, however it is spelt.
+
+    A string prefix test was not enough and the difference was reachable by
+    typing. `os.path.realpath` resolves symlinks but does NOT canonicalise case,
+    and the default macOS APFS volume is case-insensitive, so
+    `~/.Prepwright/tracks/.../corpus/x.md` opens the same bytes as
+    `~/.prepwright/...` and fails `startswith`. One track's corpus could then
+    re-enter another as a "supplied resource" wearing fresh provenance, which is
+    the single thing this refusal exists to stop.
+
+    Three tests, cheapest first. The exact prefix, then a casefolded prefix
+    (which is what a case-insensitive volume actually means), then an ancestor
+    walk comparing `(st_dev, st_ino)`, which is what "the same directory" means
+    on any filesystem and also catches an alias no string test can see.
+    """
+    home = os.path.realpath(C.HOME)
+    if real == home or real.startswith(home + os.sep):
+        return True
+    folded, home_folded = real.casefold(), home.casefold()
+    if folded == home_folded or folded.startswith(home_folded + os.sep):
+        return True
+    try:
+        home_stat = os.stat(home)
+    except OSError:
+        return False              # no storage root yet, so nothing is inside it
+    node = real
+    while True:
+        try:
+            if os.path.samestat(os.stat(node), home_stat):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(node)
+        if parent == node:
+            return False
+        node = parent
 
 
 def resolve(path):
@@ -797,7 +1115,7 @@ def resolve(path):
     if not raw:
         raise IngestRefused("No file was named.")
     real = os.path.realpath(raw)
-    if real == C.HOME or real.startswith(C.HOME + os.sep):
+    if inside_storage(real):
         raise IngestRefused(
             "That file is inside Prepwright's own storage. A track's corpus "
             "cannot be re-ingested as a supplied resource.")
@@ -866,7 +1184,8 @@ def preview(path, goal="", vetting="community", trust=3, depth="focused"):
                                      len(kept), len(sections)),
         "sections": len(sections),
         "kept": len(kept),
-        "documents": len(group(kept, title)),
+        "documents": len(group(kept, title)[0]),
+        "overflow": len(group(kept, title)[1]),
         "dropped": [{"heading": h, "why": w} for h, w in dropped[:40]],
         "dropped_total": len(dropped),
         "published_on": RESEARCH.published_on_from(text),
@@ -932,7 +1251,8 @@ def ingest_file(handle, path, goal="", title=None, vetting="community",
         for block in iter(lambda: fh.read(1 << 20), b""):
             digest.update(block)
     stored, failed = [], []
-    for index, (doc_title, pairs) in enumerate(group(kept, resource_title), 1):
+    documents, overflow = group(kept, resource_title)
+    for index, (doc_title, pairs) in enumerate(documents, 1):
         body = "# %s\n\n" % doc_title + "\n\n".join(
             "## %s\n%s" % (heading or "continued", section_body)
             for heading, section_body in pairs)
@@ -942,7 +1262,12 @@ def ingest_file(handle, path, goal="", title=None, vetting="community",
                 slug=CORPUS.slug_for("%s-%02d" % (resource_title, index)),
                 title=doc_title, vetting=vetting, trust=int(trust),
                 final_url=origin, publisher=os.path.basename(real),
-                published_on=published_on, run_id=run_id)
+                published_on=published_on, run_id=run_id,
+                # The hash of the FILE, alongside the hash of the markdown the
+                # extractor built from it. Without it, re-verifying this
+                # document needs the same extractor version, so a poppler
+                # upgrade would make every supplied document look tampered with.
+                source_sha256=digest.hexdigest())
         except Exception as exc:                              # noqa: BLE001
             # A cap refusal partway through is a real outcome on a big resource:
             # the documents already written stay, and the report says how many
@@ -968,6 +1293,9 @@ def ingest_file(handle, path, goal="", title=None, vetting="community",
         "bytes": os.path.getsize(real), "chars": len(text),
         "sections": len(sections), "kept": len(kept), "stored": stored,
         "documents": len(stored), "failed": failed,
+        # Sections the cut chose that grouping could not fit inside one
+        # resource's share of the track. Reported, never silently dropped.
+        "overflow": len(overflow),
         "published_on": published_on, "metrics": metrics,
         "dropped": [{"heading": h, "why": w} for h, w in dropped[:40]],
         "dropped_total": len(dropped),

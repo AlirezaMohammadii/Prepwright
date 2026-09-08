@@ -39,6 +39,16 @@ REDACTED_LINE = "[REDACTED: line withheld - matches a credential pattern]"
 REDACTED_BLOCK = "[REDACTED: credential block withheld]"
 
 
+def _sha16(text):
+    """The same 16-hex digest `state.sha16` produces, without importing it.
+
+    `state` imports nothing from here and this module imports nothing from
+    `state`, which is what keeps the store and the corpus rules independent.
+    One four-line function is cheaper than reversing that.
+    """
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:16]
+
+
 def redact(text):
     """Redact credential-shaped lines and complete multi-line PEM blocks.
 
@@ -125,7 +135,8 @@ def fit_sections(pairs):
 
 def ingest_text(handle, text, origin_url, slug=None, title=None,
                 vetting="community", trust=2, final_url=None,
-                publisher=None, published_on=None, run_id=None):
+                publisher=None, published_on=None, run_id=None,
+                source_sha256=None):
     """Write one loose markdown document into this track's corpus.
 
     Returns the new doc_id, or None when the text carries no citable section.
@@ -153,6 +164,7 @@ def ingest_text(handle, text, origin_url, slug=None, title=None,
     extract = "\n\n".join(s["body"] for s in sections).encode("utf-8")
     # write_doc returns (doc_id, file_name); callers here want the citable id.
     doc_id, _file_name = handle.write_doc(
+        source_sha256=source_sha256,
         slug=slug or slug_for(title),
         title=title,
         sections=sections,
@@ -288,7 +300,27 @@ def build_pack(handle, step_id):
         pack["text"] = EMPTY_CORPUS if not n_docs else NO_SLICE
         pack["grounded"] = False
         return pack
+    # Redaction happens BEFORE the hash, and reaches the section bodies too.
+    #
+    # `TrackHandle.build_pack` composes the text from raw section bodies and
+    # hashes it, and this function then redacted the text afterwards. So
+    # `pack_sha16` was the hash of bytes that were never sent, while the whole
+    # point of the field is that a stored turn can prove which evidence it saw.
+    # `sections[].body` also stayed raw, so any caller reading the sections
+    # rather than the text got back the credential-shaped line the text had
+    # already removed.
+    #
+    # The text is redacted as one string, not block by block, because that is
+    # the string that goes to the model and `redact` carries state across lines
+    # for an unterminated PEM block. Each body is redacted on its own as well,
+    # which for that case is the safe direction: an unterminated block swallows
+    # the rest of its own section rather than leaking a key.
+    for section in pack.get("sections") or ():
+        section["body"] = redact(section.get("body") or "")
+        if section.get("heading"):
+            section["heading"] = redact(section["heading"])
     pack["text"] = redact(pack["text"])
+    pack["pack_sha16"] = _sha16(pack["text"])
     pack["grounded"] = True
     return pack
 

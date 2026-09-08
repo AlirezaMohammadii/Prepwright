@@ -1136,6 +1136,8 @@ function setEffortFor(model,level){
 function effortLabel(v){ const e=EFFORTS.find(x=>x.id===(v||"")); return e?e.short:(v||"default"); }
 let bridgeOnline=false;              // selected provider availability, set by pingBridge()
 let bridgeUp=false;                  // the bridge process itself answered /api/health
+let bridgeSession=true;              // ...and it still accepts THIS page's cookie
+let staleSessionWarned=false;
 let bridgeProviders={};              // provider id -> boolean or {available:boolean}
 let pending={};                     // step key -> awaiting a reply
 function providerAvailable(provider){
@@ -2764,6 +2766,11 @@ function approveCard(){
       shorter and only covers what you actually need before this interview.</p>
       <div class="row"><button class="btn btn-primary" id="btnProbe">Start the conversation</button></div>
     </div>`:""}
+    ${(gaps.length && !gaps.some(function(x){return x.status==="approved";}))
+      ? `<div class="card pad warnbox"><b>Nothing is approved yet.</b>
+         <p class="small">Every gap here is either undecided or declined, so there
+         is nothing to find sources for and nothing to plan. Approve at least one,
+         or change a decision below, to go on.</p></div>` : ""}
     <ul class="gaplist">${gaps.map(function(x){
       const decided=x.status!=="proposed";
       return `<li class="gap ${esc(x.status)}">
@@ -2773,7 +2780,10 @@ function approveCard(){
         <div class="gwhy">${esc(x.why||"")}</div>
         <div class="grow">
           ${decided
-            ? `<span class="gdone ${esc(x.status)}">${x.status==="approved"?"Will study":"Declined"}</span>`
+            ? `<span class="gdone ${esc(x.status)}">${x.status==="approved"?"Will study":"Declined"}</span>
+               <button class="btn btn-sm btn-ghost" data-gap="${esc(x.gap_id)}" data-rev="${esc(String(x.rev))}"
+                 data-act="${x.status==="approved"?"declined":"approved"}"
+                 >${x.status==="approved"?"Actually, I can explain it":"Actually, study this"}</button>`
             : `<button class="btn btn-sm btn-primary" data-gap="${esc(x.gap_id)}" data-rev="${esc(String(x.rev))}" data-act="approved">Study this</button>
                <button class="btn btn-sm" data-gap="${esc(x.gap_id)}" data-rev="${esc(String(x.rev))}" data-act="declined">I can explain it</button>`}
         </div></li>`;}).join("")}</ul>
@@ -2829,7 +2839,7 @@ function researchCard(stage){
       <div class="row"><button class="btn btn-primary" id="btnDiscover">Find sources for my gaps</button></div>
     </div>
     ${fileBox()}
-    <div id="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
+    <div class="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
     <details class="fold" ${(flow&&flow.corpus&&flow.corpus.documents)?"":"open"}>
       <summary>Or paste links you already trust</summary>${form}</details>
     ${list}
@@ -3001,8 +3011,19 @@ document.addEventListener("click", async function(ev){
     });
     return;
   }
-  if(t.id==="btnFilePreview"){ await fileAction(false); return; }
-  if(t.id==="btnFileIngest"){ await fileAction(true); return; }
+  /* The panel is mounted twice, in the research stage card and in the Sources
+   * view, and `$` is an unscoped document.querySelector. While both are in the
+   * DOM the first one wins, and #view-start precedes #view-sources, so every
+   * read from the Sources panel returned the hidden stage copy: the user pasted
+   * a path, was told to paste a path, and nothing was ingested. Worse, with a
+   * stale path in the hidden box it ingested THAT file instead. Nothing in the
+   * panel carries an id now, and the action reads the box its button lives in. */
+  if(t.hasAttribute&&t.hasAttribute("data-file")){
+    const box=t.closest(".filebox"), what=t.getAttribute("data-file");
+    if(what==="pick"){ await filePick(box); return; }
+    await fileAction(what==="ingest", box);
+    return;
+  }
   if(t.id==="btnLedgerRetry"){ ledger=null; ledgerErr=""; renderSources($("#view-sources")); return; }
   if(t.hasAttribute&&t.hasAttribute("data-quarantine")){
     const docId=t.getAttribute("data-quarantine"), to=t.getAttribute("data-to");
@@ -3052,8 +3073,17 @@ async function pingBridge(){
       claude:!!(d&&d.claude),codex:!!(d&&d.codex)
     };
     bridgeUp=!!(r.ok&&d&&d.ok);
-    bridgeOnline=!!(bridgeUp&&providerAvailable(activeProvider()));
-  }catch(e){ bridgeProviders={}; bridgeOnline=false; bridgeUp=false; }
+    /* A restarted bridge mints a new session token, so a page left open from
+     * before the restart holds a cookie nothing will accept. /api/health is
+     * outside the session gate and answered 200 regardless, so the pill stayed
+     * green while every gated route returned 403. It now says which it is. */
+    bridgeSession=(d&&typeof d.session==="boolean")?d.session:true;
+    bridgeOnline=!!(bridgeUp&&bridgeSession&&providerAvailable(activeProvider()));
+    if(bridgeUp&&!bridgeSession&&!staleSessionWarned){
+      staleSessionWarned=true;
+      toast("This page was open before the Tutor restarted. Reload it to carry on.");
+    }
+  }catch(e){ bridgeProviders={}; bridgeOnline=false; bridgeUp=false; bridgeSession=true; }
   if($("#view-continue").classList.contains("active")) renderContinue($("#view-continue"));
 }
 
@@ -3964,13 +3994,25 @@ async function loadLedger(){
   }catch(e){ ledger=null; ledgerErr=String(e.message||e); }
 }
 
+function reportOf(run){
+  /* One parse, two readers. The run's report shape differs by `kind`: a
+   * discovery discard is {gap_id, url, stage, why} and a file-ingest discard is
+   * {heading, why}. One template read `stage` and `url` for both, so a file
+   * run's rows rendered with a blank stage, a blank URL and a reason like
+   * "scored 17% of the best match" attached to nothing the reader could
+   * identify. */
+  try{ return JSON.parse(run.queries||"{}")||{}; }
+  catch(_){ return {}; }
+}
+function isFileRun(run){ return reportOf(run).kind==="file"; }
+
 function discardsOf(run){
   /* The run stores its report as JSON in one column, because the alternative is
    * a table for something only this screen reads. A run written by an older
    * build, or one that failed before it could write a report, parses to nothing
    * and says so rather than throwing. */
-  try{ const q=JSON.parse(run.queries||"{}"); return Array.isArray(q.discarded)?q.discarded:[]; }
-  catch(_){ return []; }
+  const q=reportOf(run);
+  return Array.isArray(q.discarded)?q.discarded:[];
 }
 
 /* ---- studying from a resource the candidate already has --------------------
@@ -3996,23 +4038,26 @@ function fileBox(){
     and left out. Reading the file costs nothing: no part of it is sent anywhere,
     and only the sections a step actually teaches from ever reach a model.</p>
     <label class="fl">Path to the file
-      <input id="fPath" type="text" spellcheck="false" placeholder="/Users/you/Documents/handbook.pdf"
+      <input class="fl-path" type="text" spellcheck="false" placeholder="/Users/you/Documents/handbook.pdf"
              value="${esc(f.path||"")}"></label>
-    <p class="muted tiny">In Finder, select the file and press
-      <b>\u2325\u2318C</b> to copy its full path, then paste it here.</p>
+    <div class="row">
+      <button class="btn btn-sm btn-ghost" data-file="pick">Choose a file\u2026</button>
+      <span class="muted tiny">or, in Finder, select the file and press
+      <b>\u2325\u2318C</b> to copy its path and paste it above.</span>
+    </div>
     <label class="fl">What do you want to learn from it
-      <input id="fGoal" type="text" spellcheck="false"
+      <input class="fl-goal" type="text" spellcheck="false"
              placeholder="agent orchestration, tool calling, memory across turns"
              value="${esc(fileGoal)}"></label>
     <label class="fl">How much of it to keep
-      <select id="fDepth">
+      <select class="fl-depth">
         <option value="focused"${fileDepth==="focused"?" selected":""}>Focused \u2014 only what is squarely on the goal</option>
         <option value="balanced"${fileDepth==="balanced"?" selected":""}>Balanced</option>
         <option value="broad"${fileDepth==="broad"?" selected":""}>Broad \u2014 anything that touches it</option>
       </select></label>
     <div class="row">
-      <button class="btn btn-ghost" id="btnFilePreview">Check it first</button>
-      <button class="btn btn-primary" id="btnFileIngest">Add it to this track</button>
+      <button class="btn btn-ghost" data-file="preview">Check it first</button>
+      <button class="btn btn-primary" data-file="ingest">Add it to this track</button>
     </div>
   </div>`;
 }
@@ -4033,6 +4078,14 @@ function fileReportHtml(r){
       <span>${cov.goal_terms?("<b>"+Math.round((cov.ratio||0)*100)+"%</b> of your goal is covered"):"whole resource"}</span>
     </div>
     ${r.warning?`<p class="warn small">${esc(r.warning)}</p>`:""}
+    ${(r.failed||[]).length?`<div class="warnbox pad"><b>Only part of it was stored.</b>
+      <p class="small">${esc(String((r.failed||[]).length))} document(s) were refused
+      by the store, and everything after the first refusal was not attempted.</p>
+      <ul class="tight">${(r.failed||[]).map(f=>`<li>${esc(f.title||"")} \u2014
+        <span class="muted">${esc(f.why||"")}</span></li>`).join("")}</ul></div>`:""}
+    ${r.overflow?`<p class="warn small">${esc(String(r.overflow))} section(s) matched
+      your goal but did not fit the share of this track one resource may take.
+      Narrow the goal, or raise the depth to Focused, to choose which parts to keep.</p>`:""}
     ${(r.headings||[]).length?`<details class="fold" open><summary>What it will teach from</summary>
       <ul class="tight">${(r.headings||[]).slice(0,20).map(h=>`<li>${esc(h)}</li>`).join("")}</ul></details>`:""}
     ${drops.length?`<details class="fold"><summary>Left out (${esc(String(r.dropped_total||drops.length))})</summary>
@@ -4040,11 +4093,40 @@ function fileReportHtml(r){
   </div>`;
 }
 
-async function fileAction(commit){
-  const path=($("#fPath")&&$("#fPath").value||"").trim();
+async function filePick(box){
+  /* The dialog is opened by the BRIDGE, not by the page. A browser file input
+   * hands JavaScript the basename and never the path, in every browser and by
+   * design, so a picker on the page could not fill the box this panel reads.
+   * Uploading the bytes instead would put a large body on a route that writes
+   * to disk. The bridge is a local process on this machine, so it asks the
+   * operating system and returns a path, which then goes through the same
+   * resolve() and gate() a typed path does. */
+  if(!box) return;
+  let picked="";
+  await withBusy("Waiting for you to choose a file\u2026", async function(){
+    let d;
+    try{ d=await apiPost("/api/research",{action:"pick_file"}); }
+    catch(err){ toast((err&&err.message)||String(err)); return; }
+    if(d&&d.ok&&d.path){
+      picked=d.path;
+      filePreview=Object.assign({}, filePreview||{}, {path:d.path});
+    }else if(d&&d.reason){ toast(d.reason); }
+  });
+  /* withBusy repaints, so the input this started from is gone. Fill whichever
+   * copies of the panel are on screen now. */
+  if(picked){
+    Array.prototype.forEach.call(document.querySelectorAll(".filebox .fl-path"),
+      function(el){ el.value=picked; });
+  }
+}
+
+async function fileAction(commit, box){
+  if(!box) return;
+  const pick=sel=>box.querySelector(sel);
+  const path=((pick(".fl-path")||{}).value||"").trim();
   if(!path){ toast("Paste the path to the file first"); return; }
-  fileGoal=($("#fGoal")&&$("#fGoal").value||"").trim();
-  fileDepth=($("#fDepth")&&$("#fDepth").value||"focused");
+  fileGoal=((pick(".fl-goal")||{}).value||"").trim();
+  fileDepth=((pick(".fl-depth")||{}).value||"focused");
   await withBusy(commit?"Reading the file and storing what matches\u2026"
                       :"Reading the file\u2026", async function(){
     let d;
@@ -4084,14 +4166,21 @@ function renderSources(el){
     String(a.doc_id).localeCompare(String(b.doc_id)));
   const runs=ledger.runs||[];
   const live=docs.filter(d=>d.status==="ready").length;
-  const drops=runs.reduce((a,r)=>a+discardsOf(r).length,0);
+  /* Counted apart, because they are different things. A nomination is a page
+   * the app found and threw away; a file drop is a section of the candidate's
+   * own document that did not match their goal. Summing them and calling the
+   * total "nominations rejected" told the candidate the app had rejected
+   * hundreds of web sources it never saw. */
+  const drops=runs.filter(r=>!isFileRun(r)).reduce((a,r)=>a+discardsOf(r).length,0);
+  const cuts=runs.filter(isFileRun).reduce((a,r)=>a+discardsOf(r).length,0);
 
   el.innerHTML=`<div class="vhead"><h1>Sources</h1>
       <p class="sub">${esc(String(live))} in use of ${esc(String(docs.length))} held${
-        drops?(" · "+esc(String(drops))+" nominations rejected"):""}.
+        drops?(" · "+esc(String(drops))+" nominations rejected"):""}${
+        cuts?(" · "+esc(String(cuts))+" section(s) left out of supplied files"):""}.
       The tutor may quote only these.</p></div>
     ${fileBox()}
-    <div id="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
+    <div class="fileReport">${filePreview?fileReportHtml(filePreview):""}</div>
     ${docs.length?`<div class="srclist">${docs.map(d=>{
       const serves=d.serves||[];
       const quarantined=d.status!=="ready";
@@ -4132,10 +4221,13 @@ function renderSources(el){
           <span class="trust">${esc((r.started_utc||"").replace("T"," ").slice(0,16))}</span>
           <span class="trust">${esc(String(r.tool_calls))} model call${r.tool_calls===1?"":"s"}</span></div>
         ${dd.length?`<div class="drops">${dd.map(x=>`
-          <div class="drop"><span class="dstage">${esc(x.stage||"")}</span>
-            <span class="durl">${esc((x.url||"").slice(0,110))}</span>
+          <div class="drop">${x.heading!==undefined
+            ? `<span class="dstage">section</span>
+               <span class="durl">${esc(String(x.heading||"(untitled)").slice(0,110))}</span>`
+            : `<span class="dstage">${esc(x.stage||"")}</span>
+               <span class="durl">${esc((x.url||"").slice(0,110))}</span>`}
             <div class="dwhy">${esc(x.why||"")}</div></div>`).join("")}</div>`
-          : `<p class="muted small">Nothing was rejected on this run.</p>`}
+          : `<p class="muted small">Nothing was ${isFileRun(r)?"left out of":"rejected on"} this run.</p>`}
       </div>`;}).join("")}`:""}`;
 }
 

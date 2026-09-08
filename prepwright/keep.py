@@ -130,6 +130,20 @@ def recount(lib, track_id):
         (fields["bytes_db"], fields["bytes_wal"], fields["bytes_corpus"],
          fields["bytes_index"], fields["bytes_backup"], fields["bytes_spool"],
          fields["bytes_total"], n_turns, n_docs, n_cards, S.utc_now(), track_id))
+    # TRACK_DB_CAP is the ARITHMETIC ceiling of the four content caps that are
+    # enforced per write, plus spare. Nothing enforced it directly and nothing
+    # needs to: a write past any component cap is already refused. What is not
+    # covered is SQLite's own overhead -- page slack, free pages after a
+    # compaction, an index -- which can carry the file past a budget every
+    # content write respected. That is not a reason to refuse a write, so it is
+    # recorded rather than raised, and `housekeep`'s WAL checkpoint and index
+    # drop are the rungs that answer it.
+    if fields["bytes_db"] > C.TRACK_DB_CAP:
+        S.library_event(
+            lib, "track_db_over_cap",
+            "%s: track.db is %d bytes, past the %d-byte budget"
+            % (track_id, fields["bytes_db"], C.TRACK_DB_CAP),
+            track_id=track_id)
     return fields
 
 
@@ -336,8 +350,17 @@ def open_track_or_recover(track_id, lib=None, client_label="laptop"):
     try:
         return S.open_track(track_id, lib=lib, client_label=client_label)
     except S.CorruptStore:
-        recover_track(track_id, lib=lib)
-        return S.open_track(track_id, lib=lib, client_label=client_label)
+        pass
+    except sqlite3.DatabaseError:
+        # A file damaged badly enough that `connect` cannot even run its
+        # PRAGMAs raises here instead, before anything gets as far as
+        # `quick_check` and the CorruptStore it raises. That is the MORE broken
+        # case, and it was the one this function did not handle: the candidate
+        # got "database disk image is malformed" and no recovery at all, while a
+        # milder corruption of the same file recovered cleanly.
+        pass
+    recover_track(track_id, lib=lib)
+    return S.open_track(track_id, lib=lib, client_label=client_label)
 
 
 # ---- the ladder ------------------------------------------------------------

@@ -270,8 +270,6 @@ CREATE TABLE IF NOT EXISTS track (
                    ('open','interviewing','offer','rejected','withdrawn')),
   pinned         INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)),
   no_auto_compact INTEGER NOT NULL DEFAULT 0 CHECK (no_auto_compact IN (0,1)),
-  phase          TEXT NOT NULL CHECK (phase IN
-                   ('intake','diagnostic','gaps','research','curriculum','teaching','review')),
   generation     INTEGER NOT NULL DEFAULT 1,
   created_utc    TEXT NOT NULL,
   opened_utc     TEXT NOT NULL,
@@ -395,6 +393,14 @@ CREATE TABLE IF NOT EXISTS doc (
   origin_url    TEXT NOT NULL,
   final_url     TEXT,
   origin_sha256 TEXT NOT NULL, origin_bytes INTEGER NOT NULL,
+  -- The hash of the CONTAINER the text came out of, when there was one: the
+  -- PDF, the .docx, the .xlsx. `origin_sha256` is the hash of the extracted
+  -- markdown, which is what `rescan_doc` compares against and therefore has to
+  -- stay. But re-verifying a supplied document a year from now against the
+  -- extracted text alone needs the same extractor version, and a poppler
+  -- upgrade would make every supplied document look tampered with. NULL for a
+  -- fetched page, whose origin IS its bytes.
+  source_sha256 TEXT,
   extract_sha256 TEXT NOT NULL,
   fetched_utc   TEXT NOT NULL, verified_utc TEXT,
   publisher TEXT, published_on TEXT,
@@ -561,12 +567,41 @@ def open_library(create=True):
     _no_symlink(C.LIBRARY_DB)
     conn = connect(C.LIBRARY_DB)
     conn.executescript(LIBRARY_DDL)
+    _drop_dead_phase_column(conn)
     conn.execute(
         "INSERT OR IGNORE INTO meta(k,v) VALUES ('schema_version',?)",
         (str(C.LIBRARY_SCHEMA_VERSION),))
     conn.execute(
         "INSERT OR IGNORE INTO meta(k,v) VALUES ('created_at',?)", (utc_now(),))
     return conn
+
+
+def _drop_dead_phase_column(conn):
+    """Remove `track.phase` from a library written before it was dropped.
+
+    It was written once at creation and never read or updated, so every track
+    ever created said 'intake' forever, including ones with twenty taught steps.
+    `flow_state` computes the real stage from the data on disk, which is why
+    nothing ever broke. That is what made it worth removing rather than fixing:
+    an unused column is dead weight, but an authoritative-looking one that is
+    always wrong, carrying a CHECK constraint that makes it look maintained, is
+    a trap for the next reader.
+
+    DROP COLUMN needs SQLite 3.35. Older builds keep the column, which is
+    harmless: nothing writes it any more and nothing ever read it.
+    """
+    if sqlite3.sqlite_version_info < (3, 35, 0):
+        return
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(track)")}
+    except sqlite3.DatabaseError:
+        return
+    if "phase" not in cols:
+        return
+    try:
+        conn.execute("ALTER TABLE track DROP COLUMN phase")
+    except sqlite3.DatabaseError:
+        pass                    # an index or a table-level CHECK still names it
 
 
 def library_event(conn, kind, detail, track_id=None, bytes_freed=0):
@@ -936,12 +971,28 @@ class TrackHandle(object):
         self.assert_live()
         if status not in C.DOC_STATUSES:
             raise ValueError("unknown document status %r" % (status,))
+        if status == "ready":
+            # A row can be quarantined two ways and only one of them leaves the
+            # file where it was. The candidate distrusting a source sets the
+            # status and nothing else; `_quarantine_doc` MOVES the file into
+            # `quarantine/` because its bytes stopped matching their hashes.
+            # Flipping the row back in the second case produced a document that
+            # counted as ready and served zero sections for the rest of the
+            # track's life, with nothing anywhere saying why.
+            self._restore_doc_file(doc_id)
         with self.lock, _Txn(self.conn):
             cur = self.conn.execute(
                 "UPDATE doc SET status=? WHERE doc_id=?", (status, doc_id))
             if cur.rowcount == 0:
                 raise ValueError("no document %r in this track" % (doc_id,))
             self._bump_writes()
+        if status == "ready" and not self.rescan_doc(doc_id):
+            # `rescan_doc` re-quarantines on its own when the bytes still do not
+            # match, so the row is already back where it belongs. Saying so is
+            # the point: a silent failure here is the defect this replaced.
+            raise StoreError(
+                "%s was restored but its text still does not match the hashes it"
+                " was stored with, so it stays quarantined." % doc_id)
 
     # -- corpus -------------------------------------------------------------
     def corpus_path(self, name):
@@ -973,7 +1024,8 @@ class TrackHandle(object):
 
     def write_doc(self, slug, title, sections, origin_url, origin_bytes,
                   origin_sha256, extract_sha256, vetting="primary", trust=5,
-                  run_id=None, final_url=None, publisher=None, published_on=None):
+                  run_id=None, final_url=None, publisher=None, published_on=None,
+                  source_sha256=None):
         """Two-phase, with both crash windows named.
 
         txn A registers the row as 'writing' and allocates doc_no, so a doc_no
@@ -1023,10 +1075,11 @@ class TrackHandle(object):
             self.conn.execute(
                 "INSERT INTO doc(doc_id,doc_no,run_id,status,file_name,title,"
                 " origin_url,final_url,origin_sha256,origin_bytes,extract_sha256,"
-                " fetched_utc,vetting,trust,publisher,published_on) "
-                "VALUES (?,?,?, 'writing', ?,?,?,?,?,?,?,?,?,?,?,?)",
+                " source_sha256,fetched_utc,vetting,trust,publisher,published_on) "
+                "VALUES (?,?,?, 'writing', ?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (doc_id, doc_no, run_id, file_name, title, origin_url, final_url,
-                 origin_sha256, int(origin_bytes), extract_sha256, utc_now(),
+                 origin_sha256, int(origin_bytes), extract_sha256,
+                 (str(source_sha256)[:64] if source_sha256 else None), utc_now(),
                  vetting, int(trust),
                  (str(publisher)[:200] if publisher else None),
                  (str(published_on)[:40] if published_on else None)))
@@ -1036,6 +1089,7 @@ class TrackHandle(object):
             "n_sections": len(sections), "origin_url": origin_url,
             "final_url": final_url or origin_url, "origin_sha256": origin_sha256,
             "origin_bytes": int(origin_bytes), "extract_sha256": extract_sha256,
+            "source_sha256": source_sha256,
             "fetched": utc_now(), "vetting": vetting, "trust": int(trust),
             "publisher": publisher or "", "published_on": published_on or "",
         }
@@ -1118,6 +1172,35 @@ class TrackHandle(object):
                 " WHERE doc_id=?",
                 (len(raw), st.st_mtime_ns, sha256_hex(raw), doc_id))
         return True
+
+    def _restore_doc_file(self, doc_id):
+        """Put a quarantined file back in the corpus, or refuse by name."""
+        row = self.conn.execute(
+            "SELECT file_name FROM doc WHERE doc_id=?", (doc_id,)).fetchone()
+        if row is None:
+            raise ValueError("no document %r in this track" % (doc_id,))
+        # `corpus_path` answers None for a file that is not on disk, which is
+        # precisely the case being repaired here, so the destination is built
+        # under the same name rule and the same containment rather than asked
+        # for.
+        name = str(row["file_name"] or "")
+        if "\x00" in name or not _DOC_NAME.match(name):
+            raise StoreError("%s has an unusable file name" % doc_id)
+        root = self.corpus_root
+        dest = os.path.join(root, name)
+        if os.path.dirname(os.path.abspath(dest)) != root:
+            raise StoreError("%s names a file outside its own corpus" % doc_id)
+        if os.path.exists(dest):
+            return                          # never moved; the row is the whole
+                                            # quarantine, which is the ordinary
+                                            # "the candidate distrusted it" case
+        aside = os.path.join(self.dir, "quarantine", name + ".badhash")
+        if os.path.islink(aside) or not os.path.isfile(aside):
+            raise StoreError(
+                "%s cannot be returned to service: its file is neither in the "
+                "corpus nor in quarantine." % doc_id)
+        ensure_dir(root)
+        os.replace(aside, dest)
 
     def _quarantine_doc(self, doc_id, why):
         """Move the file aside and mark the row, so the steps that cite it are
@@ -1740,6 +1823,11 @@ def open_track(track_id, lib=None, client_label="laptop", take_lease=True,
     turn_cols = {r["name"] for r in conn.execute("PRAGMA table_info(turn)")}
     if turn_cols and "client_meta" not in turn_cols:
         conn.execute("ALTER TABLE turn ADD COLUMN client_meta TEXT")
+    doc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(doc)")}
+    if doc_cols and "source_sha256" not in doc_cols:
+        # A track written before supplied files carried the container's own
+        # hash. Nullable, so nothing existing has to be recomputed.
+        conn.execute("ALTER TABLE doc ADD COLUMN source_sha256 TEXT")
     row = conn.execute("SELECT track_id FROM track_meta").fetchone()
     if row is None or row["track_id"] != track_id:
         conn.close()

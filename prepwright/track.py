@@ -88,10 +88,14 @@ def create_track(title, kind="job", source_kind="pasted", employer=None,
 
         now = S.utc_now()
         library.execute(
+            # No `phase`. It was written here once and never read or
+            # updated, so it said 'intake' for the life of every track. The
+            # stage comes from `bridge.flow_state`, which derives it from the
+            # data, and one source of truth is the whole point.
             "INSERT INTO track(track_id,short_code,title,employer,role_title,kind,"
-            " source_kind,source_path,source_sha256,lifecycle,phase,created_utc,"
+            " source_kind,source_path,source_sha256,lifecycle,created_utc,"
             " opened_utc,touched_utc,accounted_utc)"
-            " VALUES (?,?,?,?,?,?,?,?,?,'active','intake',?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?,?)",
             (track_id, _short_code(library), title, employer, role_title, kind,
              source_kind, source_path, source_sha256, now, now, now, now))
         S.library_history(library, track_id, "created", title)

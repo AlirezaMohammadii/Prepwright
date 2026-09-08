@@ -71,7 +71,7 @@ without weakening any of that.
 | Deadline | None scheduled. Build in dependency order. |
 | Persistence | Done. `/api/state` runs on the store. |
 | Evidence | Per track, through one `TrackHandle`. ADR 0004. |
-| Integrity | `MANIFEST.sha256` over 19 runtime files. |
+| Integrity | `MANIFEST.sha256` over 20 runtime files. |
 | Agentic orchestration | **No.** `/langgraph-architect` ran 2026-09-08. The dossier is committed at `langgraph-design/dossier.json`, machine-validated, verdict `plain_code` with zero triggering needs. Deterministic code owns all control flow, and a model call is always one bounded, schema-shaped request. A graph runtime would break stdlib-only and no-API-key. |
 | Research sources | **Changed this session, on the owner's instruction.** The app finds them. The fetch decides. Model memory only nominates a URL. `research.discover` fetches every nomination through the same SSRF guard a pasted link goes through, checks the page shares vocabulary with the gap, and records every discard with its reason. The candidate can still paste URLs, and can distrust anything the app found. |
 | The goal the design serves | **Corrected by the owner on 2026-09-08. Read this before planning anything.** The 20/80 cut applies to the MATERIAL INSIDE a source, not to WHICH gaps get studied. The owner's words: "I might need to learn all of those identified gaps and the app must be accommodating of that." So the app must be able to carry every approved gap to a taught, assessed step, and the economy comes from teaching each gap from the smallest sufficient evidence, never from dropping gaps. Declining a gap stays the candidate's choice and is never the app's optimisation. Any cap, tier, or budget that silently drops an approved gap is a defect, not a feature. |
@@ -83,208 +83,213 @@ protocol, 0004 is per-track evidence and the manifest.
 
 ## 4. Current state, and how much of it is verified
 
-**Verified by running it.** The command backing each claim is named.
+**Verified by running it, this session.** The command backing each claim is named.
 
 | Claim | Command |
 |---|---|
-| 235 tests pass, Homebrew 3.14 | `python3 -m unittest discover -s tests` |
-| 235 tests pass, system 3.9.6 | `/usr/bin/python3 -m unittest discover -s tests` |
-| 235 tests pass, launcher mode | `/usr/bin/python3 -I -S -m unittest discover -s tests` |
-| The suite makes no network or CLI calls | the same command, wall clock under 10 s |
+| 357 tests pass, Homebrew 3.14 | `python3 -m unittest discover -s tests` |
+| 357 tests pass, system 3.9.6 | `/usr/bin/python3 -m unittest discover -s tests` |
+| 357 tests pass, launcher mode | `/usr/bin/python3 -I -S -m unittest discover -s tests` |
+| The suite makes no network, model or dialog call | the same command, wall clock under 13 s |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` |
-| The manifest verifies | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
-| The page's JavaScript parses | extract every `<script>` body, `node --check` |
-| The app runs clean from the launcher | `./prep-launcher.sh`: page loads, `/favicon.ico` 204, `/api/flow` 200, zero console errors |
-| Every one of the 11 views renders on a real adopted curriculum | click each `[data-view]` in turn, then `playwright-cli console` |
+| The manifest verifies over 20 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
+| The page's JavaScript parses | extract the `<script>` body, `node --check` |
+| The app runs clean from the launcher | `./prep-launcher.sh`, then `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8010/` |
+| Every one of the 11 views renders, zero console errors | click each `[data-view]`, then `playwright-cli console` |
+| The Sources file panel drives its own ingest | walked in a browser: two panels mounted, a decoy path in the hidden one, the visible one read `handbook.md` and kept 4 of 7 sections |
+| A commit advances the stage without a reload | the stage card went to "Build your plan, 1 document(s) stored, 3 gap(s) approved" straight after the ingest |
+| A file run's ledger rows name their section | `section | Contents | shares no vocabulary with the goal`, and the summary says "3 section(s) left out of supplied files" |
+| A decided gap can be undone from the page | the approved gap renders "Actually, I can explain it" |
+| Poppler is still trusted after the ownership fix | `ingest.pdftotext_bin()` returns the Cellar path |
+| 16 of 16 real PDFs on this machine now pass the gate | was 10 of 16, measured with `pdftotext -layout` against `ingest.gate` |
 
-**Verified this session, on a supplied 1.9 MB PDF (NIST AI 100-1).**
+**Not verified. Say so rather than assuming.**
 
-| Claim | Evidence |
-|---|---|
-| A PDF becomes teachable corpus | 1.9 MB PDF, `pdftotext`, 122,041 characters, 172 sections, 0.1 s, **zero model tokens**. The text is 15.9x smaller than the container it came out of, and the pack cap means only ~3 KB of it reaches a model per turn however large the resource is. |
-| The cut is the product | `focused` keeps 20 of 172 sections on a real goal, `balanced` 81, `broad` 109. `focused` is the default because a twelfth of a document is the fraction one candidate needs before one interview. |
-| Garbage is refused, not stored | `gate()` refuses six named failure modes and every refusal quotes the measurement that failed. Removing `max_longest_run` makes its own test fail. |
-| A resource that does not answer is said so | Goal "agent orchestration tool calling planning memory LLM evaluation" against the AI RMF: 0 of 172 sections kept, and the warning names the ideas the book does not contain. |
-| One track's corpus cannot re-enter another as a supplied file | `resolve()` refuses any path under `config.HOME`. Removing the check makes its own test fail. |
-| A teaching turn is grounded in the supplied PDF | Scratch track `t-3216946fb811`, step `3:topic:S03`, `grounded=True`, cites `['D04§s04','D04§s06','D05§s01','D04§s10','D01§s04','D01§s09']`, `citations.invented=[]`, pack `d73f29bb4fc386bd`. |
-| The tutor still refuses to remember a version | Asked which edition it was teaching: "every excerpt I have is headed 'nist.pdf, date not stated' ... I won't supply one from memory - a remembered version number is exactly the thing you'd repeat confidently in the room and be wrong about." |
-| The whole panel works in a browser | Path + goal + depth, Check it first, Add it to this track. Report renders, ledger updates, **zero console errors**. |
+- **The file chooser dialog has never been opened.** The plumbing is proven
+  (`osascript -e 'POSIX path of (path to home folder)'` returns a path, and
+  `/usr/bin/osascript` is root-owned and passes `trusted_executable`), and the
+  route refuses cleanly under `PREPWRIGHT_NO_DIALOG=1`, which the test harness
+  sets. But no one has clicked "Choose a file…" and picked something. **That is
+  one click and it is yours.**
+- **19 of the hunt's 49 raw findings were never verified.** The workflow capped
+  refutation at 30. The 30 that ran produced 25 survivors and 23 confirmed
+  findings, all now fixed. The other 19 are in the journal at
+  `subagents/workflows/wf_4fa46a86-880/journal.jsonl` and have been neither
+  confirmed nor dismissed.
+- The Codex provider path has never run (no `codex` binary here). The iPhone
+  (`prep iphone`) path has never run. `prep` is still not on `PATH`, so run
+  `./prep-launcher.sh` from the repo.
 
-**Verified in a browser, on the real Wingtip track (`t-93c97fdd6d77`), an earlier session.**
+## 5. What this session did
 
-| Claim | Evidence |
-|---|---|
-| The app finds its own sources | 9 documents, publishers `oaic.gov.au`, `nist.gov`, `airc.nist.gov`, `isc2.org` and two secondary hosts. 12 nominations rejected with reasons. A second run on another track stored 6 more and rejected 2, driven from the page button. |
-| A nomination cannot inflate its own rank | `vetting_for` refuses `primary` to any non-institutional host, so `evil.gov.attacker.com` claiming primary resolves to `secondary`. |
-| A date is read off the page, never remembered | OAIC docs carry `2022-07-25` and `2026-05-13`. The NIST pages carry none, and the ledger says "no date on the page". A copyright year is not read as a publication date. |
-| Teaching views render the real curriculum | Stage 1 · The core, Topic g08 · Core, real title, NIST as citation. |
-| A turn is grounded against a curriculum-written step | step `8:topic:S08`, `grounded=True`, `cites=['D03§s02','D07§s06','D07§s10']`, `packSha16=72d60102f70b6172`, stored in `turn.client_meta`. |
-| The tutor refuses rather than inventing | "the excerpts I have do not contain a risk-tiering scheme or the RMF's core functions, so I can't teach you a severity-based ladder from this corpus". |
-| The tutor will not supply a version from memory | asked which edition of the AI RMF: quoted "Released on January 26, 2023" from the excerpt, then "It does not give a version or edition number, so I won't supply one", and warned against saying "current" or "latest" in the room. |
-| The probes are asked, and answering one drops it | 20 probes, 2 answered, "Graded by Claude claude-haiku-4-5 · 19 to learn". The solid answer produced no gap row at all, and the shaky one carries a real reason. |
-| Quarantine removes a source from future packs | `D03§s02` present in `build_pack('8:topic:S08')` before, absent after, present again when restored. The row and its provenance never moved. |
-| Switching tracks does not contaminate either one | turns and marks counted in both tracks either side of a real switch from the page: unchanged. |
+Two things, and the second is most of it: the capacity test the owner's ruling
+required, and the adversarial hunt over the code that had never been hunted.
 
-**Assumed, not verified.** The Codex provider path has never run (no `codex`
-binary here), so `discover` has only run against `claude`. The iPhone
-(`prep iphone`) path has never run. `prep` is still not on `PATH`, so run
-`./prep-launcher.sh` from the repo.
+### 5a. Capacity: every approved gap survives, or is named
 
-## 5. What was built this session
+`tests/test_capacity.py` is new. Its acceptance property is one line and
+everything else supports it:
 
-- **`prepwright/ingest.py` is new**, 900 lines, the owner-supplied resource path.
-  Format readers for PDF (poppler when present and ownership-checked, a modest
-  stdlib inflate-and-scan reader otherwise), Word (real heading styles, which is
-  a better outline than any heuristic recovers from flat text), Excel, CSV/TSV,
-  HTML and text. Then `gate()`, then `outline()`/`strip_running()`, then
-  `select()`, then `group()`. **It imports no provider and opens no socket, and
-  a test asserts that by reading its own source.**
-- **`prepwright/security.py` stopped being a stub.** `trusted_executable` moved
-  out of `bridge.py` into it, because the PDF extractor needs the same ownership
-  check the provider CLIs need and two copies of that check is one too many.
-  This is a real slice of Task C: it has no dependency on `PORT`, which is what
-  blocks the rest.
-- **`bridge.py`** gained `_route_file` (`preview_file` and `ingest_file` as
-  ACTIONS on `/api/research`, per trap 20) and `_trim_report`, which is
-  `_discovery_report`'s trimming loop lifted out so a supplied file and a
-  discovery run cannot diverge on the bug trap 24 records.
-- **`index.html`** gained `fileBox()`, `fileReportHtml()`, `fileAction()` in the
-  Sources view, and made the probe conversation reachable from the gap-approval
-  stage.
-- **`tests/test_ingest.py`** is new: 32 tests. **`tests/test_pipeline_routes.py`**
-  gained 7 more over real HTTP.
+    the approved gaps == the gaps that got a step + the gaps named as deferred
 
-### The token argument, since it is the reason to build this at all
+Set equality, both directions, no gap in both halves, every deferral carrying a
+reason and a label. It runs at 25 approved gaps against a multi-document
+supplied resource, at 45 gaps against the store's own `MAX_STEPS`, with no
+corpus at all, and against a resource large enough to hit the per-track document
+cap. It found one real defect immediately, which is item 4 below.
 
-Ingestion is where a naive design burns tokens: hand a 300-page PDF to a model
-and ask it to summarise. This does none of that.
+It also found a fixture trap worth keeping: `MIN_TERMS` is 2, but one hit in a
+HEADING sets `labelled` and one word is then enough (`curriculum.py:144`, a
+deliberate rule with a stated reason). The first version of the fixture headed
+every section "<subject> in practice", so "practice" made every section a
+labelled match for every gap and a gap about kombucha was pinned to twenty-five
+sections about agents. The fixture was wrong, not the scorer. But one generic
+heading word defeats `MIN_TERMS` on any corpus, and nothing records that.
 
-| Stage | Cost |
-|---|---|
-| Read the file | 0 tokens. `pdftotext`, `zipfile`, `csv`, `zlib`. |
-| Find its structure | 0 tokens. Heading heuristics, or real Word styles. |
-| Decide what answers the goal | 0 tokens. `curriculum.score_sections`, the same scorer the pack uses. |
-| Teach from it | `PACK_MAX_BYTES` = 12,000 bytes, about 3k tokens, **per turn, whatever the resource's size**. |
+### 5b. The hunt: 6 lenses, 49 raw findings, 23 confirmed, 23 fixed
 
-Markdown is not cheaper than plain text for the same words. It is very slightly
-more, because `#` and `*` are characters too. The 15.9x saving measured above is
-extraction, not format: it is the PDF container, its fonts and its binary
-streams not being sent. What markdown buys is structure, and structure is what
-lets the cut happen locally instead of in a model.
+37 agents, 6.37M tokens, 2,213 s, zero failures. Six lenses (PDF and Office
+readers, selection, the file route, the page contract, concurrency, error
+paths), then one skeptic per finding defaulting to REFUTED, then a consolidator
+that verified all 25 survivors against live text and **reproduced 21 of them by
+executing the real functions**. It rejected nothing outright and instead struck
+sub-claims inside otherwise sound findings, which is a better outcome than round
+1's quarter-to-half rejection rate and suggests the refutation pass ahead of it
+did the coarse filtering.
 
-## 5b. What the previous session built
+Every one of the 23 is fixed, and every fix is proven by reverting it and
+confirming its own test fails. Ranked by what it did to the candidate:
 
-- **`research.py`** gained the whole discovery half. The module docstring used to
-  say "The model never finds the sources". The owner changed that promise, so the
-  docstring was rewritten rather than left contradicting the code under it.
-  `NOMINATE_SYSTEM` steers to HTML with headings and away from PDFs.
-  `vetting_for` / `trust_for` cap what a nomination may claim. `published_on_from`
-  reads only clearly labelled dates. `verify` fetches and gates. `discover` bounds
-  every loop and defaults to one source per gap.
-- **`bridge.py`** gained `CLI_SEARCH` (the only call allowed to search, and it is
-  not a teaching call), `MODEL_DISABLED`, `_step_list`, `_discovery_report`,
-  `_judge`, `_route_discover`, `_route_ledger`, `_route_quarantine`, and a
-  currency rule in `TUTOR_SYSTEM_BASE`. Discovery and quarantine are ACTIONS on
-  `/api/research` rather than new POST paths, because `/api/chat` is the residual
-  branch at the end of `do_POST`. The ledger is a GET, which ends in a 404.
-- **`state.py`** gained `start_research_run` / `finish_research_run` /
-  `research_runs`, `set_doc_status`, `publisher` and `published_on` on
-  `write_doc`, and `_pack_block`, which puts the publisher and the date INTO the
-  block the tutor reads.
-- **`curriculum.py`** gained `slices_by_step` and `document_frequency`,
-  `plan()` stopped using the diagnostic's `why` as the learning objective, and
-  `_document_frequency` now counts the same fields `score_sections` scores.
-- **`index.html`** gained `adoptCurriculum`, `STEP_INDEX`, the probe
-  conversation, the source ledger, the track switcher and the discover button.
-- **`config.py`**: `TRACK_ID_RE` and `DOC_NAME_RE` re-anchored `$` → `\Z`.
-- **`tests/test_discovery.py`** is new: 20 tests, no network, covering the rank
-  ceiling, the date rule, the coverage floor and every loop bound under a hostile
-  provider.
+| # | What it did | Where |
+|---|---|---|
+| 1 | A two-column Title Case sheet lost 100% of its content, and both reports said the opposite of what happened | `ingest.looks_like_heading` |
+| 2 | A spreadsheet row with an omitted cell stored with its columns shifted left: "Access review \| Open" says the OWNER is "Open" | `ingest.read_xlsx` |
+| 3 | Excel sheet names attached to the wrong worksheets from ten sheets up, because names came from workbook order and parts from a LEXICOGRAPHIC sort | `ingest.read_xlsx` |
+| 4 | The resource TITLE, not its content, decided what was stored: front matter outranked every chapter | `ingest._as_index` |
+| 5 | An over-long paragraph's chunks were emitted before the paragraphs already buffered, so a chapter's opening definition was demoted to "(cont. 4)" | `ingest._split_body` |
+| 6 | `-layout` padding was measured as the document's own spacing: **6 of 16 real PDFs on this machine were refused**, every one at 0.13 without it | `ingest.quality` |
+| 7 | One non-UTF-8 byte re-read the whole file as cp1252 and rewrote every accented letter, and the gate is structurally unable to see it | `ingest._decode` |
+| 8 | A goal of only short words ("AI and ML") silently disabled the cut and reported full coverage | `ingest.select` |
+| 9 | A partial ingest rendered as a complete one, because `failed` was never read | `index.html`, `bridge._file_report` |
+| 10 | **The stdlib PDF reader crashed on every ordinary PDF** and the request got no reply at all. `re.sub` parses its replacement template whether or not the pattern matches, and the last one ended in a bare backslash. The documented fallback for machines without poppler had never once run | `ingest._PDF_ESCAPES` |
+| 11 | **The Sources file box was dead.** `fileBox()` is mounted twice and `$` is an unscoped `querySelector`, so every read returned the hidden copy in `#view-start` | `index.html` |
+| 12 | `longest_run` is a maximum, so one long URL refused a whole clean document | `ingest.gate` |
+| 13 | Truncation past 2,000,000 characters was unmarked, so the coverage warning named present material as missing | `ingest.normalise` |
+| 14 | The commit reply carried no `flow`, so the stage and the document count never updated and "Build the plan" stayed unreachable | `bridge._route_file` |
+| 15 | `_trim_report` shrank only the discard list, so an over-cap base body was sliced mid-JSON and a run that dropped hundreds of sections displayed as one that dropped none | `bridge._trim_report` |
+| 16 | `resolve()` compared the HOME prefix case-sensitively. APFS is case-insensitive and `realpath` does not canonicalise case, so **one capital letter crossed the isolation boundary**. HANDOFF §4 had listed that refusal as verified, and it was verified on the exact spelling only | `ingest.resolve` |
+| 17 | `trusted_executable` walked the resolved path's ancestors, so the directory holding a SYMLINK to the binary was never checked. Verified live: `/opt/homebrew/bin` is `drwxrwxr-x` and is not on the Cellar path's chain | `security.py` |
+| 18 | `zlib.decompress` with no `max_length`, measured 1029:1, and `pdftotext` stdout read to EOF into memory | `ingest._pdf_via_stdlib`, `_pdf_via_poppler` |
+| 19 | The ledger rendered file-run discards with discovery's keys, and counted the candidate's own dropped sections as "nominations rejected" | `index.html` |
+| 20 | `stream(.*?)endstream` rescanned to EOF for every unterminated stream: quadratic, on the one path with no time bound | `ingest._pdf_streams` |
+| 21 | `_csv.Error` is neither OSError nor ValueError, so a malformed CSV dropped the connection with no reply | `ingest.read_table` |
+| 22 | `group()` had no document cap, so one resource could claim 40 of the track's 48 slots | `ingest.group` |
+| 23 | "shares no vocabulary with the goal" was false for any section the scorer skipped on the term count | `ingest.select` |
+
+**The ownership check needed a judgment call, and it is recorded here.** Fixing
+17 strictly disabled poppler on this machine, because `/opt/homebrew/bin` is
+group-writable and `chmod g-w` there breaks `brew`. The rule is now the threat
+as stated rather than a proxy for it. World-writable always fails.
+Group-writable fails only when the group has a member who is a real login
+account other than root and this user. It fails closed when group membership
+cannot be read. On this machine `admin` holds root, `ali` and `_mbsetupuser`
+(uid 248, no login), and no other real account exists.
+
+### 5c. The seven defects HANDOFF §10 left open: all closed
+
+| # | Was | Now |
+|---|---|---|
+| 1 | `set_doc_status(id,'ready')` flipped the row while `_quarantine_doc` had MOVED the file, so the document counted as ready and served zero sections forever | The file is restored from `quarantine/`, then re-verified. A document whose bytes are still wrong is refused by name and stays quarantined |
+| 2 | `relevant()` enforced `PACK_MAX_SECTIONS` and nothing enforced `PACK_MAX_BYTES`, and ten sections of `SECTION_MAX_CHARS` fit the byte cap in ASCII and nothing else | `relevant()` takes a byte budget. Note the relationship that made this subtle: `DOC_MAX_BYTES` sits 288 bytes above `PACK_MAX_BYTES`, so ONE document can never overrun a pack and the overrun only appears once a step draws on several |
+| 3 | `build_pack` hashed the raw text and redacted afterwards, and left `sections[].body` raw | Redaction happens first, the hash is taken over what is actually sent, and the bodies are redacted too. **Scope stated honestly: `fit_sections` redacts on the way in, so this was latent, not exploitable.** It was correct by accident, resting on an invariant two modules away with nothing asserting the link. The test writes through `write_doc` directly to test the property rather than the coincidence |
+| 4 | `max_steps` had no ceiling against `MAX_STEPS`, so `build(max_steps=50)` committed 40 steps and raised, and the gaps past the cap had neither a step nor a deferral | The ceiling is applied in `plan()`, where the cut is reported and the reason names the cap |
+| 5 | `/api/health` bypassed the session gate, so a page open across a restart showed a green pill and a dead app | It stays outside the gate, because the launcher reads it over loopback, and now reports `session`. The page distinguishes "bridge down" from "my cookie died" and says so |
+| 6 | Declining every gap satisfied `decided` and advanced to research, where every action refused | The stage stays on approve while nothing is approved, the screen says why, and a decided gap now carries "Actually, study this" |
+| 7 | `track.phase` was written once and never updated: nine tracks, all saying `intake`, one of them with 20 taught steps | Dropped, with a guarded migration on library open. `flow_state` was always the real answer |
+
+### 5d. What else landed
+
+- **The file chooser is opened by the BRIDGE, not the page.** A browser file
+  input hands JavaScript the basename and never the path, in every browser and
+  by design, so a picker on the page could not fill the box the panel reads.
+  Uploading the bytes instead would put a 64 MB body on a route that writes to
+  the filesystem. The bridge is a local process, so it asks the operating system
+  through `osascript` and returns a path, which goes through the same `resolve()`
+  and `gate()` a typed path does. Single-flight, 240 s timeout, cancel is not an
+  error, and `PREPWRIGHT_NO_DIALOG=1` makes it refuse in tests.
+- **`doc.source_sha256` carries the container's own hash** alongside
+  `origin_sha256`, which is the hash of the extracted markdown. Without it,
+  re-verifying a supplied document needs the same extractor version, so a
+  poppler upgrade would make every supplied document look tampered with.
+- **Task C is partly done.** `PORT` and `HOST` moved into `config.py`, which was
+  the stated blocker, and the whole request boundary moved into `security.py`:
+  the origin and host allowlists, the tailnet identity check, the two payload
+  sanitisers and the static-route allowlist, 184 lines. `bridge.py` keeps short
+  aliases, because renaming 200 call sites for a file move is churn.
+  **`bridge.py` is 2,694 lines, down only 56 from 2,750**, because this session
+  also added the pick route and a good deal of comment. `provider.py`, `teach.py`,
+  `assess.py` and `serve.py` are still unmoved.
+- **`TRACK_DB_CAP` is enforced by arithmetic, on purpose.** It is the sum of four
+  caps that ARE enforced inside the write transaction that causes them, plus
+  headroom. A test asserts the sum still fits, which is the real failure mode:
+  raising one component silently breaks the budget. `recount` now records a
+  library event when the real file exceeds it, since SQLite's own overhead is
+  not content and is not a reason to refuse a write.
+- **`open_track_or_recover` now recovers from a connect-time failure.** It caught
+  `CorruptStore` only, so a file damaged badly enough that `connect` could not
+  run its PRAGMAs got "database disk image is malformed" and no recovery, while
+  a milder corruption of the same file recovered cleanly. Found because trap 6
+  bit the existing test: a 4 KiB scribble at the midpoint is not reliable
+  corruption, and adding one column to the `doc` schema shifted the page layout
+  enough that it corrupted nothing.
+- **Four scratch tracks archived** through `track.archive_track`, plus three this
+  session created for the browser walk. Three live tracks remain:
+  `t-454d410f0522` (your 17 probes), `t-93c97fdd6d77` (Wingtip), `t-6c3a05d5f79f`.
+  `t-0a69f756e38f` and `t-18598f2b65f8` were NOT orphans: they are
+  `lifecycle='trashed'` with complete `.pwk` archives in `~/.prepwright/trash/`,
+  which is the designed retention state.
 
 ## 6. The work, in dependency order
 
-### Task P. PDF sources are refused. **DONE this session. Kept for the reasoning.**
+### Task E. The 17 probes. **Still yours, still blocking.**
 
-The strongest finding of the session, with evidence. Four of the ten discards on
-the second discovery run were NIST PDFs: `NIST.AI.100-1` (the AI RMF itself),
-`NIST.AI.600-1` (the generative AI profile) and `NIST.AI.100-2e2025` (the
-adversarial ML taxonomy). Those are *the* primary sources for this role and the
-pipeline cannot read one. `ALLOWED_CONTENT` in `research.py` excludes
-`application/pdf`, and `corpus.parse_loose` splits on `## ` headings an extracted
-PDF would not have.
+Track `t-454d410f0522`, "Agentic AI Consultant at Proseware", 17 gaps, **16 still to
+decide, 1 approved**. Every undecided one carries "No answer given" because the
+diagnostic was driven through `/api/diagnose {action: propose}` rather than
+through the conversation. Only the owner can answer them, and inventing answers
+corrupts the plan at its root.
 
-**Built.** The caution was right and is now a mechanism rather than a reason to
-refuse: `ingest.gate()` measures seven properties of an extraction and refuses
-anything that does not read as prose, quoting the measurement that failed.
-`pdftotext` is preferred when present and ownership-checked; the stdlib reader is
-the floor, and when the floor produces something unconvincing the refusal names
-the fix rather than storing it. A refusal is honest. Garbage is not, and now
-neither can happen silently.
-
-### Task E. The probes are now reachable, and are waiting for the owner. **NEXT.**
-
-**Track `t-454d410f0522`, "Agentic AI Consultant at Proseware"**, is at the gap
-stage with **17 gaps proposed and none decided**. Every one carries "No answer
-given", because the diagnostic was driven through `/api/diagnose {action:
-propose}` directly rather than through the conversation.
-
-The blocker the last handoff described is gone. It said the remedy was to start
-a second track from the same posting, and the reason was a real defect: the
-probe conversation rendered only in the diagnostic stage, so a track that
-reached gap approval with the questions unanswered had no way back to them.
-`approveCard()` now offers the conversation, and `probePlan` short-circuits to
-`probeCard()` from there. Verified in a browser: the button loads 17 questions,
-P01 asking "Build the agent system the posting names
-- explain how you would do this, and name the closest thing you have actually
-done."
-
-**Only the owner can answer them.** Inventing answers corrupts the plan at its
-root, which is why this is a handoff and not a task.
+The point is grading, not shortening. A graded gap list is what lets each gap be
+taught from the right depth. **A plan that stays long is a correct outcome**, and
+after this session the chain is proven to carry it: `tests/test_capacity.py`
+shows 25 approved gaps reaching 25 steps, and 45 gaps producing 40 steps and 5
+named deferrals with the cap in the reason.
 
 ### Task E1. The old Wingtip track is still 8 hours.
 
+Unchanged. `t-93c97fdd6d77` was diagnosed before the judge existed, so all 20
+gaps carry `why = "graded without a model: length only"` and `tier_for` produced
+9 core and 11 depth with no real cut. The fix is not code: run intake on a fresh
+track from the same posting and answer the probes.
 
+### Task C. Extract `bridge.py`. Partly done, see 5d.
 
-The real Wingtip track was diagnosed before the judge existed, so all 20 of its gaps
-carry `why = "graded without a model: length only"`, every gap graded `none`, and
-`tier_for` produced 9 core and 11 depth with no real cut. 500 minutes.
-
-The fix is not code. Run intake on a fresh track from the same posting, answer
-the probes, and the judge drops what the owner can already explain. The mechanism
-is proven (§4) but only the owner can supply the answers, and inventing them
-would corrupt the plan at its root. A smaller code task sits behind it:
-`plan(max_steps=None)` still defaults to `MAX_STEPS` (40), so the cut never fires
-on 20 gaps. The honest input for a time-budget cut is a graded gap list, which
-now exists.
-
-### Task C. Extract `bridge.py`. PARTLY DONE.
-
-2,657 lines, and it grew again this session. Seams unchanged:
+Remaining seams, unchanged:
 
 | Module | What moves |
 |---|---|
-| `security.py` | `LOCAL_ORIGINS`, `TS_*`, `_is_remote_request`, `_origins_for`, `_allowed_host`, `_remote_identity_ok`, `_safe_messages`, `_safe_assess_items` |
-| `provider.py` | `_trusted_executable`, `claude_bin`, `codex_bin`, `_cli_env`, `_provider_ready`, `run_cli`, `CLI_BASE`, `CLI_SEARCH`, `MODEL_DISABLED`, `_parse_codex_jsonl`, `trim_history`, `_usage`, `_resolved_model` |
+| `provider.py` | `claude_bin`, `codex_bin`, `_cli_env`, `_provider_ready`, `run_cli`, `CLI_BASE`, `CLI_SEARCH`, `MODEL_DISABLED`, `_parse_codex_jsonl`, `trim_history`, `_usage`, `_resolved_model` |
 | `teach.py` | `NO_ERRANDS`, `TUTOR_SYSTEM_BASE`, `_step_instructions`, `chat_via_cli` |
 | `assess.py` | `assess_via_cli`, `review_via_cli` and their schemas |
 | `serve.py` | `Handler`, `main` |
 
-Blocker unchanged: `security.py`'s constants are computed at import from `PORT`,
-so move `PORT` into `config.py` first. **Run `tools/orphan_scan.py` after every
-deletion**. It caught exactly this class of error this session when
-`_route_discover` used an unimported `uuid`.
+**Run `tools/orphan_scan.py` after every deletion.** It caught eight orphans on
+this session's move, including `_static_route_allowed`, which the cut boundary
+took with it while `bridge.py` still called it. And run the launcher afterwards:
+`py_compile` and the orphan scan both passed a module-scope read that ran
+before its own import, and only starting the process found it.
 
-### Task D. Small, known, cheap. PARTLY DONE.
-
-- ~~`TRACK_ID_RE` / `DOC_NAME_RE` anchored with `$`~~ is fixed, with a test that
-  fails when the `\Z` is reverted.
-- ~~A track switcher exists in the API and has no UI~~ is built, and its first
-  version corrupted the incoming track. See §10.
-- `TRACK_DB_CAP` is defined in `config.py` and enforced by nothing.
-- **Four tracks now exist**, two of them scratch tracks this session created to
-  test the probe flow (`t-d1145d35a47a`, `t-2f89726a8ce3`). They were left alone
-  rather than deleted, because deleting is the owner's call. The switcher makes
-  them harmless. Archiving them is a one-line decision.
+### Task D. Done, see 5d.
 
 ## 7. What the store guarantees
 
@@ -418,69 +423,39 @@ Round 1 ran this session over the new code: dead guard, impossible number, silen
 no-op, and contract drift between the page flow and the pipeline routes. 4.1M
 tokens, 24 agents, zero failures, 20 raw findings, 14 confirmed.
 
-**Lenses not yet run on the current tree:** concurrency (two tabs, two requests,
-the `MODEL_GATE` and the lease), and error-path coverage (what the page does with
-every non-200 the new routes can return).
-## 10. What the hunt found
+**Round 2 ran all six lenses**, including the two that were outstanding:
+concurrency (two tabs, the `MODEL_GATE`, the lease) and error-path coverage.
+It added a refutation pass between the lenses and the consolidator, one skeptic
+per finding defaulting to REFUTED, which did the coarse filtering the
+consolidator used to do alone. 37 agents, 6.37M tokens, 49 raw findings, 25
+survivors, 23 confirmed. **The cap was 30 of 49, so 19 were never verified.**
 
-Round 1 ran this session over the new code: four lenses, 20 raw findings, **14
-confirmed and 6 rejected** by the consolidator. 4.1M tokens, 24 agents, zero
-failures. Eight of the fourteen were introduced the same day they were found,
-which is the argument for running the hunt before the commit rather than after.
+## 10. What is left
 
-**Fixed this session, with a test that fails when the fix is reverted:**
+**Nothing from the hunt and nothing from the old §10 is open.** All 23 confirmed
+findings and all 7 pre-existing defects are fixed, each with a test that fails
+when the fix is reverted. What remains:
 
-| Was | Now |
-|---|---|
-| `_document_frequency` counted heading + concept + body while `score_sections` weighted `doc_title` at 2.0, so a term living only in document titles never entered df, hit the `df.get(term, 1)` sentinel meant for "in exactly one section", and drew the corpus-maximum rarity. On one multi-section standard every section cleared `RELATIVE_FLOOR` together, filled `PACK_MAX_SECTIONS`, and **evicted the sections that actually matched**. | df counts the same four fields that are scored. `tests/test_curriculum.py::RarityIsCountedOverTheFieldsThatAreScored`. |
-| The track switcher called `reconcileWithDisk()` after switching, which merged the OUTGOING track's in-memory document into the incoming one and pushed track A's turns and marks into track B's append-only store. The bridge's cross-track guard could not fire because the page had already adopted B's id. | Flush to A, switch, then `location.reload()`. Verified by counting turns and marks in both tracks either side of a real switch: unchanged. |
-| `_provider`'s RuntimeError escaped `_pipeline` with no reply written, and the browser held an open socket. | Caught. **The clause is LAST on purpose**: `StoreError` subclasses `RuntimeError`, and placing it earlier turned every 409/507 into a 400. A test caught that on the first attempt. |
-| The run report was `json.dumps(...)[:MARK_MAX_BYTES]`, cutting mid-string, so `discardsOf` threw and a run with many rejections displayed as a run with none. | `_discovery_report` drops whole entries until it fits and records how many it dropped. |
-| `_clean_candidates` marked every nomination `seen` before the per-gap cap discarded most of them unfetched, blacklisting good sources for the rest of the run. | Marked seen only after the cut. `tests/test_discovery.py::AnUntriedUrlIsNotABlacklistedUrl`. |
-| The discover button sent no provider, so a Codex-only machine got an unhandled Claude refusal. | Sends `activeProvider()` / `activeModel()`. |
-| The Sources ledger cached and was never invalidated after a pasted fetch or a plan build. | `ledger=null` on both. |
-| Switching to a track with no curriculum left the previous track's steps on screen and would have sent its step keys to `/api/chat`. | Fixed by the same reload. |
-
-**Confirmed, NOT fixed. These are the next session's list, in severity order.**
-
-1. **`set_doc_status(doc_id, 'ready')` un-quarantines the row but not the file.**
-   A document quarantined by `rescan_doc` after its bytes changed counts as
-   ready again and serves zero sections forever. `state.py`. The restore path
-   has to re-verify the file, or refuse.
-2. **`relevant()` enforces `PACK_MAX_SECTIONS` but nothing enforces
-   `PACK_MAX_BYTES` at pin time**, and the arithmetic that makes ten sections fit
-   is ASCII-only. Any non-ASCII source (curly quotes are enough) silently loses
-   the last pinned sections at `build_pack`. `curriculum.py:212`.
-3. **`corpus.build_pack` redacts after `pack_sha16` was computed** over the
-   unredacted text, and leaves `sections[].body` unredacted. The hash a citation
-   is checked against is not the hash of the bytes that were sent.
-   `corpus.py:291`.
-4. **`max_steps` has a floor but no ceiling** while the store enforces
-   `MAX_STEPS=40` mid-write with no transaction across the batch. `build(...,
-   max_steps=50)` on 50 covered gaps commits 40 steps and their slices, then
-   raises, and `built['written']` never returns. `curriculum.py:371`.
-5. **`/api/health` bypasses the session gate**, so the live pill stays green
-   while every gated route returns 403. Restarting the bridge under an open page
-   produces a green pill and a dead app. `bridge.py:1676`.
-6. **`track.phase` is written once at creation and never read or updated.** Every
-   track in the library says `intake` forever, including ones that have taught
-   turns. Nothing depends on it, because `flow_state` computes the real stage
-   from the data, which is why this has never broken anything. It is worse than
-   an unused column: it is an authoritative-looking one that is always wrong, and
-   the CHECK constraint on it makes it look maintained. Either drive it from
-   `flow_state` or drop it.
-7. **Declining every gap is a terminal state** with no way out from the page.
-   The stage advances to research, discovery refuses ("nothing is approved"), and
-   pasting sources does not help because the curriculum has nothing to plan.
-   `bridge.py:300`.
-
-**Rejected, and worth knowing they were looked at.** A malformed nomination
-reply being reported as "nothing new was nominated" (that is the published
-design). `step_key` sharing stage 99 past ordinal 99 (unreachable: `MAX_STEPS`
-is 40). `order_gaps` counting rows rather than distinct ids. `finish_research_run`
-not checking rowcount. `build_pack`'s isolation assertion being a tautology (it
-is, but the property is enforced by the composite foreign key). `fit_sections`
-redacting bodies but not headings.
+1. **The 19 unverified findings.** The workflow capped refutation at 30 of 49.
+   Read them from `journal.jsonl` in the run directory named in §4 and put them
+   through a refutation pass. They are neither confirmed nor dismissed.
+2. **Click "Choose a file…" once.** The chooser has never opened. Everything
+   around it is proven. The dialog itself is not.
+3. **Answer the 17 probes** (Task E). Everything downstream of them is now built
+   and tested.
+4. **Task C's remaining four modules.**
+5. **One generic heading word defeats MIN_TERMS**, because a hit in a heading
+   sets `labelled` and one word is then enough. That is a deliberate rule with a
+   stated reason (`curriculum.py:144`) and it was not changed. On a corpus whose
+   headings share a common word ("Overview", "Scope", "Policy"), a gap with no
+   real coverage can still be pinned to a near-miss. It cost an hour of fixture
+   debugging this session. Decide whether the rule should require the heading
+   hit to be a rare term.
+6. **The relative floor still collapses against a single dominant match.**
+   Trap 28 named it and it is still true: at the `focused` floor, one short
+   dense section can drop two genuinely on-topic chapters. A test in
+   `test_hunt_round2.py` documents the current behaviour rather than asserting
+   it is right.
 
 ## 11. Working discipline
 
@@ -490,57 +465,43 @@ test against real data, a keep-or-revert decision, and one line recording it.
 "Works", "fixed" and "verified" are `[Certain]` only when you can name the
 command whose output backs the word.
 
-**Walk it in a browser before you believe it.** This session's two worst defects
-were invisible in the source and obvious in thirty seconds of clicking: a
-`TypeError` in `stepMeta` from an id that did not exist, and a judge that never
-ran because the bridge process was stale. A third, the cross-track write, was
-invisible in the browser too and needed the hunt.
+**Prove every fix by reverting it and confirming its own test fails.** Done for
+all 30 fixes this session. It caught six tests that passed for the wrong reason:
+a flate bomb with no text operator that returned empty either way. A
+`space_ratio` fixture not padded enough to cross the ceiling. An xlsx fixture
+whose sheet order matched its part numbering, so positional pairing happened to
+be right. A pack-hash fixture whose corpus had nothing to redact. A wide-corpus
+fixture that fit inside one document's cap. And a timing test too small to
+expose quadratic C-speed scanning.
 
-## 11b. What this session found and fixed, in its own code
+**Walk it in a browser before you believe it.** The two defects with the widest
+blast radius this session were invisible in the source: the Sources file box
+reading the hidden panel's empty input, and the stage never advancing after a
+successful ingest.
 
-Five defects, all written the same day, all caught before the commit. Four by a
-test, one only by clicking.
+Surgery: exact-text `replace` in Python on delimited blocks, and **assert the
+match count before writing**. One replacement in this session's page patch
+silently matched zero because the file held a real `·` where the anchor had the
+JS escape `·`, and only the assertion caught it.
 
-| Was | Now |
-|---|---|
-| `strip_running` counted every repeated short line and deleted the body of its own test fixture along with the page header. | Only lines that would otherwise be READ AS HEADINGS are removed, which is the actual harm. A checklist repeating "not applicable" keeps it. |
-| `_APPENDIX` matched "Part 2 comprises the Core of the Framework. It describes four specific funct" and produced a citation heading cut off mid-word. | A line over 45 characters carrying a sentence boundary is prose, whatever it starts with. |
-| `ingest_file`'s report omitted `ok`, so a successful ingest rendered as "Not stored. That file could not be read." while three documents sat in the corpus. **Invisible in the source and obvious in ten seconds of clicking.** | `ok` is returned, and a test compares the key sets of both reports. |
-| `_route_file` called `_discovery_report` with one argument instead of three. | `_trim_report` extracted; `_discovery_report` and `_file_report` both call it, so trap 24's fix has one home. |
-| Selection ranked long sections over precise ones, and one dominant match dropped everything else under the relative floor. | `_by_density` divides by the square root of the body's term count. Coverage of the goal is now reported and warned about separately from the cut. |
+After any server-side edit, **kill and restart the bridge**. After any change to
+`bridge.py`, `index.html` or `prepwright/*.py`: read what
+`shasum -c MANIFEST.sha256` names as changed *before* regenerating, then
+`./tools/make_manifest.sh`.
+
+Never let a test call a model, and now never let one open a dialog.
+`PREPWRIGHT_NO_MODEL=1` and `PREPWRIGHT_NO_DIALOG=1` are both set by the harness.
 
 ## 12. Definition of done for the next session
 
-- **The adversarial hunt has not been run on this session's code.** 900 new lines
-  in `ingest.py`, a new route, and a new panel, and the hunt is the gate that
-  caught 14 defects last round with 8 of them same-day. It was not run because
-  the owner did not ask for multi-agent orchestration this session and the tool
-  requires that in the owner's own words. **Ask, then run it**: four lenses over
-  `ingest.py` + `_route_file`, plus the two lenses still unrun from round 1
-  (concurrency, error-path coverage).
-- **Capacity for a full-length plan.** Following the owner's correction in §3,
-  the assumption is now that every proposed gap may be approved. Prove the whole
-  chain carries 17 to 25 approved gaps without silently losing one: `MAX_STEPS`
-  is 40, `MAX_DOCS_PER_TRACK` is 48 and one supplied resource may claim 24 of
-  them, `CORPUS_BYTES_CAP` is 640 KiB, and `curriculum.build` writes steps and
-  slices with no transaction across the batch. Write the test that approves 25
-  gaps, ingests a large resource, builds, and asserts every approved gap has a
-  step and every step has evidence. A gap that no source covers must be NAMED
-  and carried, never dropped.
-- Task E: the owner answers the 17 probes on `t-454d410f0522`. The point is
-  grading, not shortening: a graded gap list is what lets each gap be taught
-  from the right depth. A plan that stays long is a correct outcome.
-- Uploading rather than typing a path. The file never crosses the HTTP boundary
-  today, which is the safer design and the reason no body cap had to move, but
-  it costs the owner a Finder shortcut. If it is built, it belongs behind the
-  same `resolve()` and the same `gate()`.
-- `origin_sha256` on a supplied file is the hash of the markdown the extractor
-  built, not of the PDF. The file's own hash is in the report and the ledger, so
-  re-verification is possible but needs the same extractor. Decide whether that
-  is good enough or whether `write_doc` should carry both.
-- The `max_steps` / time-budget cut fires on a graded gap list.
-- The six unfixed hunt findings in §10 closed, or each one refused in writing.
-- Task C: `PORT` moved to `config.py`, then `security.py` and `provider.py` split
-  out, with `orphan_scan` after every deletion.
-- The two remaining hunt lenses in §9 run on the current tree.
+- The 19 unverified hunt findings triaged: each confirmed and fixed, or
+  dismissed in writing with a reason.
+- The file chooser walked once in a browser.
+- Task E: the owner answers the 17 probes, the plan is built from a graded gap
+  list, and the result is walked end to end.
+- Task C: `provider.py` extracted, with `orphan_scan` after every deletion and
+  the launcher started afterwards.
+- The two open scoring questions in §10 decided.
+- 3-interpreter suite green, manifest clean, orphan scan clean, walked in a
+  browser with zero console errors.
 - This file rewritten for the session after that one.

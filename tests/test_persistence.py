@@ -218,9 +218,17 @@ class CorruptDatabaseFile(Base):
 
         db = os.path.join(C.TRACKS_ROOT, track_id, "track.db")
         size = os.path.getsize(db)
-        with open(db, "r+b") as fh:                 # scribble over the b-tree
-            fh.seek(size // 2)
-            fh.write(b"\xff" * 4096)
+        # Overwrite EVERYTHING after the first page, rather than 4 KiB at the
+        # midpoint. Trap 6: a fixed-offset scribble is not reliable corruption.
+        # Whether it lands on a b-tree page or in free space depends on the page
+        # layout, so adding one column to the schema was enough to make this
+        # test pass while corrupting nothing. Page 1 is left intact so the file
+        # still opens and the failure is a read failure, which is the case the
+        # recovery path is for.
+        page = 4096
+        with open(db, "r+b") as fh:
+            fh.seek(page)
+            fh.write(b"\xff" * max(page, size - page))
         conn = sqlite3.connect(db)
         self.addCleanup(conn.close)      # or it still holds the file we quarantine
         with self.assertRaises(sqlite3.DatabaseError):

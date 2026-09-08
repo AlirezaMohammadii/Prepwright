@@ -228,8 +228,9 @@ class StructureIsRecoveredWithoutInventingIt(unittest.TestCase):
     def test_grouping_respects_the_per_document_caps(self):
         pairs = [("Heading %02d" % i, "body sentence here. " * 20)
                  for i in range(40)]
-        docs = I.group(pairs, "A Resource")
+        docs, overflow = I.group(pairs, "A Resource")
         self.assertGreater(len(docs), 1)
+        self.assertEqual(overflow, [], "nothing should overflow at 40 sections")
         for _title, sections in docs:
             self.assertLessEqual(len(sections), C.MAX_SECTIONS_PER_DOC)
             size = sum(len(h.encode()) + len(b.encode()) for h, b in sections)

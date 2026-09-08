@@ -112,6 +112,14 @@ QUARANTINE_AGE_DAYS = 90
 # ---- prompt budget ---------------------------------------------------------
 PACK_MAX_BYTES = 12_000
 PACK_MAX_SECTIONS = 10
+# What one pack block costs beyond its heading and body: the citation token, the
+# two delimiter lines, the publisher and the date, and the blank line joining it
+# to the next. Measured against `state._pack_block` at 128 bytes with a short
+# publisher; 192 leaves room for a long one. It exists so `curriculum.relevant`
+# can stop pinning at the same budget `build_pack` stops reading at, instead of
+# pinning ten sections on the assumption that ten times SECTION_MAX_CHARS fits
+# -- which is true for ASCII and false for any source with curly quotes.
+PACK_BLOCK_OVERHEAD = 192
 HISTORY_MAX_BYTES = 12_000
 
 # ---- ages that drive the ladder --------------------------------------------
@@ -135,10 +143,16 @@ HOUSEKEEP_EVERY_WRITES = 200
 # monotonic clock says minutes passed, suspends every age-driven behaviour.
 CLOCK_JUMP_SUSPECT_DAYS = 7
 
+# ---- where the bridge listens ---------------------------------------------
+# Here rather than in bridge.py because `prepwright/security.py` computes its
+# origin and host allowlists from the port at import time, and a module in the
+# package cannot import them back out of the script that starts it. This was
+# the stated blocker on splitting the request boundary out of bridge.py.
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("PREPWRIGHT_PORT", "8010"))
+
 LIFECYCLES = ("active", "archiving", "archived", "restoring", "trashed", "lost")
 OUTCOMES = ("open", "interviewing", "offer", "rejected", "withdrawn")
-PHASES = ("intake", "diagnostic", "gaps", "research", "curriculum",
-          "teaching", "review")
 SOURCE_KINDS = ("pasted", "imported", "freeform")
 TRACK_KINDS = ("job", "topic")
 TURN_ROLES = ("user", "tutor", "system")
