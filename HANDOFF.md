@@ -74,7 +74,7 @@ without weakening any of that.
 | Integrity | `MANIFEST.sha256` over 19 runtime files. |
 | Agentic orchestration | **No.** `/langgraph-architect` ran 2026-09-08. The dossier is committed at `langgraph-design/dossier.json`, machine-validated, verdict `plain_code` with zero triggering needs. Deterministic code owns all control flow, and a model call is always one bounded, schema-shaped request. A graph runtime would break stdlib-only and no-API-key. |
 | Research sources | **Changed this session, on the owner's instruction.** The app finds them. The fetch decides. Model memory only nominates a URL. `research.discover` fetches every nomination through the same SSRF guard a pasted link goes through, checks the page shares vocabulary with the gap, and records every discard with its reason. The candidate can still paste URLs, and can distrust anything the app found. |
-| The goal the design serves | The owner's words: roughly 20% of the material covering roughly 80% of the gaps, shortest path to interview-ready. Keep what serves that, drop what does not. Stages group by tier for this reason, and discovery takes one source per gap for the same one. |
+| The goal the design serves | **Corrected by the owner on 2026-09-08. Read this before planning anything.** The 20/80 cut applies to the MATERIAL INSIDE a source, not to WHICH gaps get studied. The owner's words: "I might need to learn all of those identified gaps and the app must be accommodating of that." So the app must be able to carry every approved gap to a taught, assessed step, and the economy comes from teaching each gap from the smallest sufficient evidence, never from dropping gaps. Declining a gap stays the candidate's choice and is never the app's optimisation. Any cap, tier, or budget that silently drops an approved gap is a defect, not a feature. |
 | Supplied resources | **New this session.** The candidate points at a file and says what to learn from it. `prepwright/ingest.py` reads PDF, Word, Excel, CSV, HTML, Markdown and text, proves the extraction is prose, and keeps only the part that answers the goal. No model is called and no socket is opened: a 300-page book and an empty file cost the same number of tokens to ingest, which is zero. |
 | Where the page lands | `#start`, which renders whichever stage the track is in. |
 
@@ -518,8 +518,18 @@ test, one only by clicking.
   requires that in the owner's own words. **Ask, then run it**: four lenses over
   `ingest.py` + `_route_file`, plus the two lenses still unrun from round 1
   (concurrency, error-path coverage).
-- Task E: the owner answers the 17 probes on `t-454d410f0522`, and the plan that
-  comes out is shorter than the Wingtip track's 500 minutes.
+- **Capacity for a full-length plan.** Following the owner's correction in §3,
+  the assumption is now that every proposed gap may be approved. Prove the whole
+  chain carries 17 to 25 approved gaps without silently losing one: `MAX_STEPS`
+  is 40, `MAX_DOCS_PER_TRACK` is 48 and one supplied resource may claim 24 of
+  them, `CORPUS_BYTES_CAP` is 640 KiB, and `curriculum.build` writes steps and
+  slices with no transaction across the batch. Write the test that approves 25
+  gaps, ingests a large resource, builds, and asserts every approved gap has a
+  step and every step has evidence. A gap that no source covers must be NAMED
+  and carried, never dropped.
+- Task E: the owner answers the 17 probes on `t-454d410f0522`. The point is
+  grading, not shortening: a graded gap list is what lets each gap be taught
+  from the right depth. A plan that stays long is a correct outcome.
 - Uploading rather than typing a path. The file never crosses the HTTP boundary
   today, which is the safer design and the reason no body cap had to move, but
   it costs the owner a Finder shortcut. If it is built, it belongs behind the
