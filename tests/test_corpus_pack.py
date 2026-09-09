@@ -218,7 +218,7 @@ class SeedingPinsToAStepTheTrackDoesNotHaveYet(Base):
     """The path every fresh track takes, and the one no fixture took.
 
     `Base.a_track` creates step "st1" by hand, so every other test in this file
-    pins to a step that already exists. `bridge.evidence_pack` does not: it
+    pins to a step that already exists. `teach.evidence_pack` does not: it
     seeds on the first teaching turn, naming the step key from the request,
     before anything has created that step row.
 

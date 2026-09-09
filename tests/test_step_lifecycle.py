@@ -318,7 +318,7 @@ class TheLadderHasAnEnd(Base):
         against a rule the app had stopped applying, which is the exact failure
         the revert discipline exists to catch.
         """
-        return self.bridge.flow_state(self.h)["stage"]
+        return TEACH.flow_state(self.h)["stage"]
 
 
 if __name__ == "__main__":

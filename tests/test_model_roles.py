@@ -45,6 +45,7 @@ sys.path.insert(0, ROOT)
 
 import bridge  # noqa: E402
 from prepwright import assess as ASSESS  # noqa: E402
+from prepwright import state as S  # noqa: E402
 # Aliased PROV, not `provider`: several helpers here take a
 # parameter called `provider`, which would shadow the module.
 from prepwright import provider as PROV  # noqa: E402
@@ -498,7 +499,7 @@ class AGradeSaysWhatProducedIt(unittest.TestCase):
         """By the time this runs the model call is billed. A 502 here would
         throw away something the candidate has bought."""
         def boom(*a, **k):
-            raise bridge.PSTATE.StoreError("disk is gone")
+            raise S.StoreError("disk is gone")
 
         self.assertEqual(
             ASSESS._persist_assessment([{"key": "1:topic:S01", "mastery": 0.5}],
