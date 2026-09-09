@@ -100,9 +100,18 @@ FIELDS = {
 }
 # Three names in the page document that this table deliberately leaves out.
 #   assessList  the rows of the last re-check run, kept only to redraw one
-#               panel and derivable from `assess`. Its size grows with the
-#               curriculum, so persisting it would put an unbounded value
-#               behind a 4 KiB per-mark cap and freeze saves when it crossed.
+#               panel. The old note here said its size grows with the
+#               curriculum. It does not: MAX_ASSESS_STEPS is 18 and is enforced
+#               on both sides, so one run returns at most 18 rows whatever the
+#               plan looks like, and 18 typical rows measure 1,693 bytes against
+#               the 4 KiB per-mark cap. The real objection is the tail. Rows
+#               carrying 200-character reasons reach 4,753 bytes, a mark that
+#               size is refused, and validate_ops rejects the WHOLE delta, so
+#               one verbose grading run would wedge every later save until the
+#               tab was reloaded. Excluded until that tail is bounded rather
+#               than because it is unbounded. The visible cost: after a reload
+#               the "Last checked" hint survives, built from the two `pref`
+#               scalars below, while the graded rows under it do not.
 #   _seq        a per-page id counter. makeId() already mixes in Date.now(),
 #               so ids do not collide across reloads without it.
 #   savedAt     derived here from the newest row, never sent by the page.

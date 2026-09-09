@@ -413,8 +413,6 @@ ul.tight li{margin:2px 0;font-size:12.5px}
 .qa-item .ts{font-family:var(--ff-mono);font-size:.74rem;color:var(--text-faint)}
 .qa-item .qq{font-weight:600;margin-bottom:6px}
 .qa-item .aa{color:var(--text-muted);font-size:.93rem;white-space:pre-wrap}
-.qa-item .del{margin-left:auto;background:transparent;border:0;color:var(--text-faint);cursor:pointer;font-size:.8rem}
-.qa-item .del:hover{color:var(--alert)}
 
 /* recap drill */
 .flash{max-width:640px;margin:0 auto}
@@ -3204,9 +3202,17 @@ function recheckPanel(){
       :(when?("Last checked "+esc(when)+(cost?" · "+esc(cost):"")):"Grades how much of each step's own task you delivered. Side questions do not count. One efficient provider call.")}</div>
     ${rows.length?`<div class="sidehead">Delivered against each task</div>${rows.map(r=>{
       const s=stepFromKey(r.key);
-      /* A row can outlive the step it grades: assessList is persisted and the
-       * curriculum is re-cut. stepMeta would then dereference a missing DATA
-       * entry and take the whole Continue view down with a TypeError. */
+      /* A row can outlive the step it grades, because the curriculum can be
+       * re-cut between a grade and a render. stepMeta would then dereference a
+       * missing DATA entry and take the whole Continue view down with a
+       * TypeError, so the guard stays.
+       *
+       * The old wording here said assessList is persisted. It is not, and
+       * pagestate.FIELDS says why beside the table: the list grows with the
+       * curriculum and would sit behind a 4 KiB per-mark cap. What survives a
+       * reload is state.assess (the clamped map that drives the percentages)
+       * plus assessAt and assessCost, which is why the "Last checked" hint
+       * outlives the rows it introduces. */
       const known=(s.type==="topic")?DATA.topics[s.id]
                  :(s.type==="practice")?DATA.practice[s.id]:DATA.checks[s.id];
       if(!known) return "";
@@ -3466,7 +3472,6 @@ function renderSessions(el){
         ${block("Watch out for",s.redFlags)}
         ${(s.recap&&s.recap.length)?`<div class="block"><b>Recap questions added to the bank</b>
           ${s.recap.map(r=>`<div class="recapq">${esc(r.q)}<div class="a">${esc(r.a)}</div></div>`).join("")}</div>`:""}
-        <button class="btn btn-ghost btn-sm delSession" data-id="${esc(s.id)}" style="margin-top:8px">Delete</button>
       </div>`).join(""):emptyState("No sessions logged yet","Close a session from a step, or log one by hand.")}
   `;
 }
@@ -3500,7 +3505,6 @@ function renderQA(el){
             <span class="ts">${esc(fmt(item.ts))}</span>
             ${item.stage?`<span class="chip">Stage ${esc(item.stage)}</span>`:""}
             ${item.tag?`<span class="chip tag">${esc(item.tag)}</span>`:""}
-            <button class="del" data-del="${esc(item.id)}">Delete</button>
           </div>
           <div class="qq">${esc(item.q)}</div>
           <div class="aa">${esc(item.a)}</div>
@@ -3517,9 +3521,9 @@ function renderRecap(el){
   const cur=recapQueue[recapIdx];
   el.innerHTML=`
     <div class="vhead">
-      <div class="kicker">Recap drill · spaced repetition</div>
+      <div class="kicker">Recap drill · shuffled bank</div>
       <h1>Make it survive to the interview.</h1>
-      <p class="sub">The recap bank. Flip to reveal, then mark whether you got it. Miss a question twice and it lands on the weak list until you answer it cold.</p>
+      <p class="sub">The recap bank. Flip to reveal, then mark whether you got it. The deck reshuffles every lap, so each card comes round again whether or not you got it last time. A card missed twice or more is listed below as a standing weak spot; the count records what happened and does not clear.</p>
     </div>
     ${bank.length?`
     <div class="flash">
@@ -3729,8 +3733,6 @@ document.addEventListener("click",e=>{
 
   // qa
   if(t.id==="qaAdd"){ addQA(); return; }
-  const del=t.closest("[data-del]");
-  if(del){ state.qa=state.qa.filter(x=>x.id!==del.dataset.del); save(); renderQA($("#view-qa")); return; }
 
   // recap
   if(t.id==="rcFlip"){ recapFlipped=true; renderRecap($("#view-recap")); return; }
@@ -3739,8 +3741,6 @@ document.addEventListener("click",e=>{
 
   // sessions
   if(t.id==="addSession"){ openSessionModal(); return; }
-  const ds=t.closest(".delSession");
-  if(ds){ state.sessions=state.sessions.filter(x=>x.id!==ds.dataset.id); save(); renderSessions($("#view-sessions")); return; }
 
   // theme + rail
   if(t.closest("#themeBtn")||t.closest("#themeBtnM")){ toggleTheme(); return; }

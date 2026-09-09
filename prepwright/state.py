@@ -524,6 +524,23 @@ CREATE TRIGGER IF NOT EXISTS assessment_no_update BEFORE UPDATE ON assessment
 CREATE TRIGGER IF NOT EXISTS assessment_no_delete BEFORE DELETE ON assessment
   BEGIN SELECT RAISE(ABORT,'append-only'); END;
 
+-- UNREACHABLE FROM THE RUNNING APP. Read this before wiring anything to it.
+--
+-- These two tables are a complete SM-2 scheduler: interval, ease, repetitions,
+-- lapses, a due date and an append-only grade ledger. Nothing in the product
+-- can write one. `review_card` has no caller anywhere in the repository and
+-- `add_card` has one, inside a single test method. The recap drill the page
+-- actually runs stores its bank as `mark` rows of kind 'card' through
+-- pagestate.FIELDS, which is a different mechanism that happens to share the
+-- word. Measured 2026-09-09 across all three live tracks: card 0 rows,
+-- card_review 0 rows.
+--
+-- They are retained rather than dropped because the removal is larger than it
+-- looks and carries five open questions. ADR 0005 records them, along with the
+-- one fact that decides the migration: card_review.card_id references
+-- card(card_id) and PRAGMA foreign_keys is ON, so card_review must be dropped
+-- FIRST, and the wrong order succeeds on an empty database and fails only for
+-- someone who has graded a card.
 CREATE TABLE IF NOT EXISTS card (
   card_id TEXT PRIMARY KEY, step_id TEXT REFERENCES step(step_id),
   front TEXT NOT NULL, back TEXT NOT NULL,

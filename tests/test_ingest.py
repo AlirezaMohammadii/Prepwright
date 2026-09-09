@@ -279,6 +279,91 @@ def _docx(paragraphs):
     return buf.getvalue()
 
 
+def _docx_table(rows, paragraphs=()):
+    """A minimal but real .docx whose body carries a table, as Word writes one.
+
+    Word models every cell as its own w:p, which is why a table needs a fixture
+    of its own: _docx above can only produce loose paragraphs, and loose
+    paragraphs are exactly the shape the reader used to collapse a table into.
+    """
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = []
+    for style, text in paragraphs:
+        style_xml = ("<w:pPr><w:pStyle w:val=\"%s\"/></w:pPr>" % style) if style else ""
+        body.append("<w:p>%s<w:r><w:t>%s</w:t></w:r></w:p>" % (style_xml, text))
+    trs = []
+    for row in rows:
+        tcs = "".join(
+            "<w:tc><w:p><w:r><w:t>%s</w:t></w:r></w:p></w:tc>" % cell
+            for cell in row)
+        trs.append("<w:tr>%s</w:tr>" % tcs)
+    body.append("<w:tbl>%s</w:tbl>" % "".join(trs))
+    doc = ("<w:document xmlns:w=\"%s\"><w:body>%s</w:body></w:document>"
+           % (ns, "".join(body)))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", doc)
+    return buf.getvalue()
+
+
+class AWordTableSurvivesAsRowsNotAsLooseLines(unittest.TestCase):
+    """Round 2 finding 37, verified 2026-09-09 and fixed at the root.
+
+    The reported symptom was strip_running deleting a repeated capitalised
+    status cell. The cause was one layer down: read_docx emitted every cell as
+    its own line, so a status column looked like five copies of a heading-shaped
+    line, which is the definition of page furniture. read_xlsx and read_table
+    have always joined cells with " | ", and looks_like_heading refuses any line
+    containing " | " for exactly this reason. Only .docx never produced one.
+    """
+
+    STATUSES = ["Not Applicable", "Not Applicable", "Not Applicable",
+                "Not Applicable", "Not Applicable", "Not Applicable"]
+
+    def _sheet(self):
+        rows = [["Control", "Owner", "Status"]]
+        for i, status in enumerate(self.STATUSES):
+            rows.append(["Access review %d" % i, "Security", status])
+        return _docx_table(rows, paragraphs=[("Heading1", "Control Register")])
+
+    def test_a_table_row_is_one_joined_line(self):
+        text = I.read_docx(self._sheet())
+        self.assertIn("Control | Owner | Status", text)
+        self.assertIn("Access review 0 | Security | Not Applicable", text)
+
+    def test_a_repeated_status_is_not_mistaken_for_page_furniture(self):
+        """Six identical statuses is past RUNNING_MIN_REPEATS. Before the fix
+        every one of them was deleted and the document still passed the gate as
+        clean prose, so the loss was invisible at every later stage."""
+        text = I.strip_running(I.read_docx(self._sheet()))
+        self.assertEqual(text.count("Not Applicable"), len(self.STATUSES))
+
+    def test_the_row_is_never_read_as_a_heading(self):
+        headings = [h for _lv, h, _b in I.outline(I.read_docx(self._sheet()))]
+        for h in headings:
+            self.assertNotIn("Not Applicable", h)
+        self.assertIn("Control Register", headings)
+
+    def test_an_interior_blank_cell_does_not_shift_the_columns(self):
+        """The same defect read_xlsx already carries a fix for. A dropped
+        interior blank puts every later cell under the wrong header."""
+        text = I.read_docx(_docx_table([["Access review", "", "Open"]]))
+        self.assertIn("Access review |  | Open", text)
+
+    def test_a_trailing_pad_cell_is_dropped(self):
+        """Word pads rows to the table width, so a trailing empty is layout."""
+        text = I.read_docx(_docx_table([["Access review", "Open", ""]]))
+        self.assertIn("Access review | Open", text)
+        self.assertFalse(text.rstrip().endswith("|"))
+
+    def test_paragraphs_outside_the_table_still_carry_their_styles(self):
+        text = I.read_docx(_docx_table([["a", "b"]],
+                                       paragraphs=[("Heading1", "Register"),
+                                                   ("", "Plain body line.")]))
+        self.assertIn("# Register", text)
+        self.assertIn("Plain body line.", text)
+
+
 class OfficeFormatsAreReadWithoutADependency(unittest.TestCase):
 
     def test_a_spreadsheet_becomes_rows_under_a_sheet_heading(self):

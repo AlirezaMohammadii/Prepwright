@@ -475,9 +475,40 @@ def read_docx(raw):
             root = ET.fromstring(body)
         except ET.ParseError as exc:
             raise IngestRefused("The Word file's XML is malformed: %s" % (exc,))
+    # A table row is emitted as one " | " joined line, the same shape read_xlsx
+    # and read_table produce. Word models every cell as its own w:p, so walking
+    # paragraphs alone turned a two-column sheet into a column of short lines.
+    # That matters twice over. looks_like_heading refuses any line containing
+    # " | " on purpose, and the comment there names the artefacts it protects:
+    # a Control/Status matrix, a Term/Definition glossary. Without the join a
+    # .docx never produced one, so a repeated status cell like "Not Applicable"
+    # was heading-shaped, and five of them made it page furniture that
+    # strip_running deleted from every row. The answer column vanished and the
+    # document still read as clean prose, which the gate cannot detect.
+    intable = set()
+    for table in root.iter(W_NS + "tbl"):
+        for para in table.iter(W_NS + "p"):
+            intable.add(id(para))
     lines = []
-    for para in root.iter(W_NS + "p"):
-        text = "".join(node.text or "" for node in para.iter(W_NS + "t")).strip()
+    for node in root.iter():
+        if node.tag == W_NS + "tr":
+            cells = []
+            for cell in node.iter(W_NS + "tc"):
+                joined = "".join(t.text or "" for t in cell.iter(W_NS + "t"))
+                cells.append(" ".join(joined.split()))
+            # Word pads rows to the table width, so trailing empties are layout
+            # rather than data. Interior blanks stay: dropping one shifts every
+            # later cell under the wrong header, which is the defect already
+            # fixed once in read_xlsx.
+            while cells and not cells[-1]:
+                cells.pop()
+            if any(cells):
+                lines.append(" | ".join(cells))
+            continue
+        if node.tag != W_NS + "p" or id(node) in intable:
+            continue
+        para = node
+        text = "".join(t.text or "" for t in para.iter(W_NS + "t")).strip()
         if not text:
             continue
         style = ""

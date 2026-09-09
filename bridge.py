@@ -587,6 +587,20 @@ CLI_BASE = [
     "--max-turns", "1",          # exactly one API call per reply
 ]
 
+# A schema-constrained reply costs one turn more than a free-text one: the model
+# answers, then emits the structured output. CLI_BASE's cap of 1 cuts it off
+# between the two, and the CLI exits 1 having printed a complete envelope whose
+# subtype is "error_max_turns" and whose result is null. That reaches the route
+# as an empty grade and the browser as "the grader returned nothing", which is
+# not retryable: every attempt fails the same way.
+#
+# 2 is measured, not guessed. On claude 2.1.251 every schema call reports
+# num_turns 2, and raising the cap to 3 does not change it. A schema-validation
+# retry inside the CLI would need a third; assess_via_cli and review_via_cli
+# already retry the whole batch once, so that case is covered a level up.
+# CLI_SEARCH is untouched: 6 already clears this.
+CLI_SCHEMA_MAX_TURNS = "2"
+
 # The ONE call that is allowed to search, and it is not a teaching call.
 #
 # Discovery asks "what are the authoritative pages that teach this?", and the
@@ -842,6 +856,8 @@ def _provider_prompt(system, prompt):
 def _build_claude_cmd(model, effort="", schema=None, search=False):
     cmd = [claude_bin(), "-p", "--model", model, "--output-format", "json"]
     cmd += (CLI_SEARCH if search else CLI_BASE)
+    if schema and not search:
+        cmd[cmd.index("--max-turns") + 1] = CLI_SCHEMA_MAX_TURNS
     cmd += ["--no-session-persistence", "--no-chrome"]
     cmd += _effort_flag(effort)
     if schema:
@@ -916,10 +932,21 @@ def _cli_reason(proc, limit=220):
     text = ""
     try:
         payload = json.loads(proc.stdout or "")
-        if isinstance(payload, dict) and isinstance(payload.get("result"), str):
-            text = payload["result"]
     except ValueError:
-        text = ""
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("result"), str):
+        text = payload["result"]
+    if not text and isinstance(payload, dict):
+        # A CLI that fails BEFORE it produces prose still says why, just not in
+        # `result` -- that field is null and the reason is a machine token in
+        # `subtype`. Reading only `result` is why a one-flag bug surfaced as
+        # "Claude tutor CLI failed (exit 1)" with nothing to act on, and why
+        # three model-backed features sat broken without a diagnosable message.
+        code = next((str(payload[k]) for k in
+                     ("subtype", "terminal_reason", "api_error_status")
+                     if payload.get(k)), "")
+        if code and code not in ("success", "completed"):
+            text = "CLI reported %s" % code
     if not text:
         text = (proc.stderr or "").strip()
     text = " ".join(_redact(text).split())[:limit]
@@ -1144,7 +1171,7 @@ ASSESS_SCHEMA = json.dumps({
                 "type": "object",
                 "properties": {
                     "key": {"type": "string"},
-                    "mastery": {"type": "number"},
+                    "mastery": {"type": "number", "minimum": 0, "maximum": 1},
                     "reason": {"type": "string"},
                 },
                 "required": ["key", "mastery", "reason"],
@@ -1199,6 +1226,47 @@ def _digest(it):
     )
 
 
+def _clean_rows(rows):
+    """Grader rows, bounded to what a grade can actually mean.
+
+    ASSESS_SCHEMA asks for 0..1, but a schema is a request and not a guarantee:
+    the first real grading call this project ever made returned mastery 45 for
+    what the reason text described as a partial answer. The page clamps into
+    state.assess and does NOT clamp state.assessList, so an unbounded number
+    reaches the panel as "4500%" and arms the Mark done button, which is gated
+    on mastery >= 0.85.
+
+    The three cases, and why each resolves the way it does. A value in 1..100
+    is a percent written where a fraction was asked for, so it is divided; 45
+    becomes 0.45. Clamping it to 1.0 instead would turn a mediocre grade into a
+    perfect one and invite the candidate to tick a step they have not
+    delivered, which the grader's own system prompt calls the expensive
+    mistake. Anything else -- negative, above 100, NaN, unparseable -- is a
+    grader that is confused, and a confused grader gets no vote: the row is
+    dropped and the step reads as ungraded rather than as a score nobody meant.
+    """
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            m = float(r.get("mastery"))
+        except (TypeError, ValueError):
+            continue
+        if m != m:                      # NaN compares unequal to itself
+            continue
+        if 1.0 < m <= 100.0:
+            m = m / 100.0
+        if not 0.0 <= m <= 1.0:
+            continue
+        key = str(r.get("key", ""))[:80]
+        if not key:
+            continue
+        out.append({"key": key, "mastery": m,
+                    "reason": str(r.get("reason", ""))[:200]})
+    return out
+
+
 def _assess_batch(provider, items):
     prompt = "Grade each step. Return one object per step, nothing else.\n\n" + \
         "\n\n---\n\n".join(_digest(it) for it in items)
@@ -1209,7 +1277,11 @@ def _assess_batch(provider, items):
         parsed = json.loads(data.get("result") or "{}")
     except ValueError:
         parsed = {}
-    return parsed.get("steps") or [], _usage(data)
+    # A top-level array parses fine and then makes .get raise AttributeError,
+    # which escapes the ValueError-only guard above and costs both attempts.
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return _clean_rows(parsed.get("steps")), _usage(data)
 
 
 def assess_via_cli(provider, items):
@@ -1234,7 +1306,9 @@ def assess_via_cli(provider, items):
         for attempt in (1, 2):
             try:
                 rows, usage = _assess_batch(provider, chunk)
-                graded.extend(rows)
+                # Usage is charged before the row check on purpose: the call
+                # was made and billed whether or not it came back usable, and
+                # the old order discarded the cost of every failed attempt.
                 for k in ("in", "cached", "out"):
                     total[k] += usage[k]
                 if usage.get("costKnown") and usage.get("cost") is not None:
@@ -1242,6 +1316,15 @@ def assess_via_cli(provider, items):
                 else:
                     total["cost"] = None
                     total["costKnown"] = False
+                if not rows:
+                    # A reply that parsed but carried no usable row is a
+                    # failure, not an empty success. Treating it as success
+                    # skipped the `failed` counter below, so `capped` stayed 0
+                    # and the toast read "13 steps graded" with no suffix while
+                    # five steps silently sat at 0%, indistinguishable from
+                    # steps that were never in scope.
+                    raise RuntimeError("grader returned no usable rows")
+                graded.extend(rows)
                 break
             except Exception as e:  # noqa: BLE001
                 if attempt == 2:
@@ -2530,8 +2613,13 @@ class Handler(SimpleHTTPRequestHandler):
 
         if route == "/api/assess":
             try:
-                provider, _model = self._provider(payload, require_model=False)
+                # Shape first, provider second. The payload check is local and
+                # free; provider selection consults the machine and, when no
+                # model is reachable, raises a reason that has nothing to do
+                # with the request. Asking in that order made a malformed step
+                # list report "model calls are disabled".
                 items = _safe_assess_items(payload.get("steps"))
+                provider, _model = self._provider(payload, require_model=False)
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             except RuntimeError as exc:
@@ -2555,7 +2643,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         if route == "/api/review":
             try:
-                provider, _model = self._provider(payload, require_model=False)
+                # Shape first, provider second, for the reason given on
+                # /api/assess above.
                 messages = _safe_messages(payload.get("messages"))
                 step = payload.get("step") if isinstance(payload.get("step"), dict) else {}
                 step_key = str(payload.get("stepKey") or "")[:80]
@@ -2563,6 +2652,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("Unknown curriculum step.")
                 if str(step.get("key") or "") != step_key:
                     raise ValueError("Curriculum step does not match its key.")
+                provider, _model = self._provider(payload, require_model=False)
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             except RuntimeError as exc:
