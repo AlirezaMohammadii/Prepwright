@@ -242,13 +242,36 @@ class ASliceIsChosenForTheStepThatTeachesFromIt(Base):
                          ["Australian Privacy Principles"])
 
     def test_one_shared_common_word_in_a_body_is_not_a_match(self):
-        """MIN_TERMS. A single common word is a coincidence, and pinning on it
-        fills the pack with near-misses that push the real sections past the
-        section cap."""
+        """MIN_TERMS, as it still applies. A single common word is a
+        coincidence, and pinning on it fills the pack with near-misses that
+        push the real sections past the section cap.
+
+        The query here carries two words on purpose. This test used a one-word
+        query until 2026-09-09 and so encoded a floor that a one-word goal can
+        never satisfy: see the sibling test below for why that was a defect
+        rather than the rule working.
+        """
         handle = self._track()
         index = K.corpus_index(handle)
-        self.assertEqual(K.choose_slices(index, "requirements", ""), [],
+        self.assertEqual(K.choose_slices(index, "requirements elephants", ""), [],
                          "one body word was enough to pin a section")
+
+    def test_a_one_word_goal_can_still_match_something(self):
+        """The floor scales to the goal, because a flat 2 is UNSATISFIABLE for a
+        one-word query: no section can share two words of a one-word goal.
+
+        The consequence was not a quiet miss. `select` refused the whole file and
+        told the candidate their own resource "shares no vocabulary with the
+        goal", which is false and unactionable: rewording cannot add a second
+        word to a goal that is legitimately one word. "Kubernetes" is a
+        reasonable thing to prepare for.
+        """
+        handle = self._track()
+        index = K.corpus_index(handle)
+        self.assertEqual(K.term_floor("requirements"), 1)
+        self.assertEqual(K.term_floor("data protection principles"), 2)
+        self.assertTrue(K.choose_slices(index, "requirements", ""),
+                        "a one-word goal still matches nothing")
 
 
 class RarityIsCountedOverTheFieldsThatAreScored(Base):

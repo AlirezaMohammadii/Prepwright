@@ -21,6 +21,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -440,6 +441,121 @@ class ReadingAFileCostsNoModelCall(unittest.TestCase):
         self.assertGreater(report["sections"], 0)
         self.assertLessEqual(report["kept"], report["sections"])
         self.assertGreater(report["documents"], 0)
+
+
+class CoverageAnswersBothQuestions(unittest.TestCase):
+    """"Is this book about my goal" and "will I be taught my goal" are not the
+    same question, and the panel printed the first one beside the second.
+
+    goal_coverage measured every PARSED section, so a resource that contained
+    the idea and whose cut dropped it reported full coverage next to a "what it
+    will teach from" list that did not contain the idea. Both numbers are kept
+    now, because the two failure modes need different actions: "the book is
+    about something else" means find another source, "the cut dropped it" means
+    widen the cut, and one ratio cannot say which.
+    """
+
+    GOAL = "idempotency retries"
+    SECTIONS = [
+        ("Retries and backoff", "Retrying a request needs a backoff."),
+        ("Idempotency keys", "An idempotency key makes a repeat safe."),
+    ]
+
+    def test_the_whole_resource_is_still_measured(self):
+        cover = I.goal_coverage(self.SECTIONS, self.GOAL)
+        self.assertEqual(cover["missing"], [])
+        self.assertAlmostEqual(cover["ratio"], 1.0)
+
+    def test_the_cut_is_measured_too_when_it_is_given(self):
+        kept = [self.SECTIONS[0]]          # the idempotency section was dropped
+        cover = I.goal_coverage(self.SECTIONS, self.GOAL, kept=kept)
+        self.assertEqual(cover["missing"], [],
+                         "the resource does contain both ideas")
+        self.assertIn("idempotency", cover["kept_missing"])
+        self.assertLess(cover["kept_ratio"], 1.0)
+
+    def test_without_a_cut_the_old_shape_is_unchanged(self):
+        """Callers that do not pass `kept` must not suddenly grow keys they do
+        not handle."""
+        cover = I.goal_coverage(self.SECTIONS, self.GOAL)
+        self.assertNotIn("kept_ratio", cover)
+
+    def test_the_warning_names_an_idea_the_cut_lost(self):
+        """Silence here was the worse half: full coverage printed beside a
+        teaching list missing the idea reads as a cut that worked."""
+        kept = [self.SECTIONS[0]]
+        cover = I.goal_coverage(self.SECTIONS, self.GOAL, kept=kept)
+        warning = I._coverage_warning(cover, "handbook.pdf", len(kept),
+                                      len(self.SECTIONS))
+        self.assertIn("idempotency", warning)
+        self.assertIn("the cut kept no section", warning)
+
+    def test_a_cut_that_kept_everything_says_nothing(self):
+        cover = I.goal_coverage(self.SECTIONS, self.GOAL, kept=self.SECTIONS)
+        self.assertEqual(
+            I._coverage_warning(cover, "handbook.pdf", 2, 2), "")
+
+
+class AMalformedPdfCannotHangTheIngest(unittest.TestCase):
+    """PDF_MAX_STREAMS capped SUCCESSES, not attempts.
+
+    A file of `stream\\n` repeated made roughly 150,000 attempts per MiB, each
+    scanning up to PDF_STREAM_MAX (8 MiB) for a terminator that is not there.
+    Measured on 2026-09-09 before the rewrite: 1 MiB took 60.6 seconds and
+    yielded nothing. FILE_MAX_BYTES is 67 MiB, 64 times larger, and this is the
+    extraction path the owner's own file chooser drives, with no time bound
+    anywhere on it. Afterwards the same input takes 0.001 s and the full 64 MiB
+    takes 0.055 s.
+
+    The timing assertions carry a margin of three orders of magnitude, so they
+    fail on a return of the quadratic term and on nothing else.
+    """
+
+    def _elapsed(self, raw):
+        start = time.time()
+        found = sum(1 for _ in I._pdf_streams(raw))
+        return found, time.time() - start
+
+    def test_a_megabyte_of_unterminated_streams_is_instant(self):
+        found, seconds = self._elapsed(b"stream\n" * (1024 * 1024 // 7))
+        self.assertEqual(found, 0)
+        self.assertLess(seconds, 2.0,
+                        "this took 60.6 s before the rewrite")
+
+    def test_the_whole_file_cap_of_that_input_is_still_fast(self):
+        """64 MiB is under FILE_MAX_BYTES, so this is a file the app accepts."""
+        found, seconds = self._elapsed(b"stream\n" * (64 * 1024 * 1024 // 7))
+        self.assertEqual(found, 0)
+        self.assertLess(seconds, 5.0)
+
+    def test_a_single_unterminated_stream_over_the_whole_file_is_fast(self):
+        found, seconds = self._elapsed(b"stream\n" + b"A" * (64 * 1024 * 1024))
+        self.assertEqual(found, 0)
+        self.assertLess(seconds, 5.0)
+
+    def test_endstream_repeated_with_no_stream_is_fast(self):
+        found, seconds = self._elapsed(b"endstream" * (8 * 1024 * 1024 // 9))
+        self.assertEqual(found, 0)
+        self.assertLess(seconds, 5.0)
+
+    def test_the_stream_cap_still_bounds_a_conforming_file(self):
+        raw = b"stream\nx\nendstream" * (I.PDF_MAX_STREAMS + 500)
+        found, seconds = self._elapsed(raw)
+        self.assertEqual(found, I.PDF_MAX_STREAMS)
+        self.assertLess(seconds, 5.0)
+
+    def test_a_well_formed_body_is_still_extracted(self):
+        """The speed is worthless if it stopped reading PDFs."""
+        raw = b"%PDF-1.4\n1 0 obj\nstream\nHELLO WORLD\nendstream\nendobj\n"
+        self.assertEqual(list(I._pdf_streams(raw)), [b"HELLO WORLD"])
+
+    def test_both_line_endings_still_work(self):
+        raw = b"stream\r\nA\r\nendstream stream\nB\nendstream"
+        self.assertEqual(list(I._pdf_streams(raw)), [b"A", b"B"])
+
+    def test_a_stream_longer_than_the_per_stream_cap_is_skipped_not_yielded(self):
+        big = b"stream\n" + b"A" * (I.PDF_STREAM_MAX + 64) + b"\nendstream"
+        self.assertEqual(list(I._pdf_streams(big)), [])
 
 
 if __name__ == "__main__":

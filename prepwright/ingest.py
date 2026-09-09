@@ -271,15 +271,35 @@ PDFTOTEXT_FALLBACKS = ("/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext"
                        "/opt/local/bin/pdftotext")
 
 def _pdf_streams(raw):
-    """Yield each stream body, bounded, with two linear finds.
+    """Yield each stream body. Linear in the file, on hostile input too.
 
-    `re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.S)` rescans to end of
-    file for every `stream` token that has no `endstream` after it, which is
-    quadratic in file size on exactly the malformed input most likely to be
-    hostile, on the one extraction path with no time bound.
+    The regex this replaced, `rb"stream\r?\n(.*?)\r?\nendstream"` with re.S,
+    rescanned to end of file for every `stream` token with no `endstream` after
+    it. Bounding that rescan to one stream's worth was not enough, and the
+    measurement is why: PDF_MAX_STREAMS caps SUCCESSES, not attempts, so a file
+    of `stream\n` repeated made ~150,000 attempts per MiB and each one scanned
+    up to 8 MiB looking for a terminator that is not there.
+
+    Measured on 2026-09-09, before this rewrite: 1 MiB of that input took
+    **60.6 seconds** and yielded nothing. FILE_MAX_BYTES is 67 MiB, 64 times
+    larger, and this is the extraction path the owner's own file chooser drives.
+    That is a denial of service on a hand-picked file, not a theoretical one.
+
+    Two properties make it linear now. `endstream` positions only move forward,
+    so the search for one resumes where the last search ENDED rather than
+    restarting at each `stream` token, and the scanned ranges never overlap.
+    And a file with no `endstream` left anywhere is finished: no later token can
+    succeed where an earlier one already searched to the end and failed.
     """
-    pos, found = 0, 0
+    pos, found, seen = 0, 0, 0
+    next_end = -1                # last known endstream position, or -1
     while found < PDF_MAX_STREAMS:
+        seen += 1
+        if seen > PDF_MAX_TOKENS:
+            # A bound on the Python-level loop itself, not on the scanning. At
+            # one token per 7 bytes a 67 MiB file is ten million iterations of
+            # cheap work, which is still tens of seconds of nothing useful.
+            return
         start = raw.find(b"stream", pos)
         if start < 0:
             return
@@ -294,16 +314,35 @@ def _pdf_streams(raw):
         else:
             pos = head
             continue
-        end = raw.find(b"endstream", head, head + PDF_STREAM_MAX + 32)
-        if end < 0:
+        if next_end < head:
+            next_end = raw.find(b"endstream", head)
+            if next_end < 0:
+                # Nothing after `head` terminates a stream, and every remaining
+                # token starts after `head`. Searching again for each of them is
+                # the whole quadratic term.
+                return
+        if next_end - head > PDF_STREAM_MAX:
             pos = head
             continue
         found += 1
-        yield raw[head:end].rstrip(b"\r\n")
-        pos = end + 9
+        yield raw[head:next_end].rstrip(b"\r\n")
+        pos = next_end + 9
 
 
 PDF_MAX_STREAMS = 20_000
+# A bound on the Python-level loop, and a modest one. Measured on 8 MiB of
+# `endstream` repeated, which is the shape that makes the loop spin without ever
+# calling the expensive search: 0.173 s without this cap, 0.041 s with it. It is
+# a backstop, not the fix. The fix is the forward cursor in _pdf_streams, which
+# took the same class of input from 60.6 s to 0.001 s.
+#
+# It is stated this way on purpose. A constant whose comment implies it is doing
+# the work is how a guard survives long after it stopped doing any, which this
+# tree has already paid for three times over in dead status='done' checks.
+#
+# No conforming document reaches it: PDF_MAX_STREAMS caps a real file at 20,000
+# streams, so the stream cap binds first by an order of magnitude.
+PDF_MAX_TOKENS = 200_000
 _PDF_TEXT_OP = re.compile(rb"\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]+>")
 _PDF_SHOW = re.compile(rb"(?:Tj|TJ|'|\")")
 # One left-to-right pass, not six sequential substitutions. The old form was
@@ -902,10 +941,20 @@ def _coverage_warning(cover, name, kept=None, total=None):
                 and (kept / float(total)) < THIN_KEPT_RATIO)
     thin_cover = (cover.get("goal_terms")
                   and cover.get("ratio", 1.0) < COVERAGE_THIN)
-    if not (thin_cut or thin_cover):
+    # The cut can drop an idea the resource does contain. Silence there was the
+    # worse half of this defect: "covers everything you asked" printed beside a
+    # teaching list missing the idea reads as a working cut.
+    lost = [w for w in (cover.get("kept_missing") or [])
+            if w in (cover.get("found") or [])]
+    if not (thin_cut or thin_cover or lost):
         return ""
     missing = cover.get("missing") or []
     parts = []
+    if lost and not thin_cover:
+        parts.append("contains %s, but the cut kept no section that does, so "
+                     "nothing taught from it will cover %s"
+                     % (", ".join(lost[:6]) + ("..." if len(lost) > 6 else ""),
+                        "them" if len(lost) > 1 else "it"))
     if thin_cover:
         parts.append("covers %d of the %d ideas in what you asked to learn, and "
                      "says nothing about: %s"
@@ -940,7 +989,7 @@ def _by_density(scored):
     return out
 
 
-def goal_coverage(sections, goal):
+def goal_coverage(sections, goal, kept=None):
     """Which parts of the goal this resource actually talks about.
 
     A resource can pass the prose gate, ingest cleanly, and still not cover what
@@ -953,6 +1002,10 @@ def goal_coverage(sections, goal):
     the file the candidate supplied, because the candidate is likelier to be
     wrong about what is inside a 300-page handbook than about what is on a page
     they just read.
+
+    Pass `kept` to also measure what SURVIVED the cut. Without it the report
+    answers "is this book about my goal", which is not the same question as
+    "will I be taught my goal", and the panel prints the two side by side.
     """
     wanted = sorted(set(CURR.terms(goal)))
     if not wanted:
@@ -963,8 +1016,29 @@ def goal_coverage(sections, goal):
         haystack.update(CURR.terms(body))
     found = [w for w in wanted if w in haystack]
     missing = [w for w in wanted if w not in haystack]
-    return {"found": found, "missing": missing,
-            "ratio": len(found) / float(len(wanted)), "goal_terms": len(wanted)}
+    out = {"found": found, "missing": missing,
+           "ratio": len(found) / float(len(wanted)), "goal_terms": len(wanted)}
+    if kept is None:
+        return out
+    # The same measurement over what will actually be TAUGHT. Reporting only the
+    # first was measurably misleading: the panel printed 100% coverage beside a
+    # "what it will teach from" list that did not contain the idea, because the
+    # resource covered it and the cut dropped it.
+    #
+    # Both numbers are kept rather than one replacing the other, because the two
+    # failure modes need different actions and collapsing them destroys that.
+    # "The book is about something else" means find another source. "The book
+    # covers it and the cut dropped it" means widen the cut. One ratio cannot
+    # say which.
+    taught = set()
+    for heading, body in kept:
+        taught.update(CURR.terms(heading))
+        taught.update(CURR.terms(body))
+    kept_found = [w for w in wanted if w in taught]
+    out["kept_found"] = kept_found
+    out["kept_missing"] = [w for w in wanted if w not in taught]
+    out["kept_ratio"] = len(kept_found) / float(len(wanted))
+    return out
 
 
 def select(sections, goal, resource_title="", vetting="community", trust=3,
@@ -1006,10 +1080,25 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
         dropped = [(sections[i][0], "past the %d-section cap for one resource"
                     % limit) for i in range(len(keep), len(sections))]
         return ([sections[i] for i in keep], dropped)
+    need = CURR.term_floor(goal)
     scored = _by_density(CURR.score_sections(index, goal))
     if not scored:
-        return ([], [(heading, "shares no vocabulary with the goal")
-                     for heading, _body in sections])
+        # Per section, not one blanket claim. "Shares no vocabulary" was asserted
+        # for every section of a refused file, and it was false for any section
+        # that shared one word and failed only the count. Telling a candidate
+        # their own source has nothing to do with their own goal is the kind of
+        # wrong that makes someone stop trusting the tool.
+        wanted = set(goal_terms)
+        out = []
+        for heading, body in sections:
+            hits = sorted(wanted & set(CURR.terms(heading + " " + body)))
+            if hits:
+                out.append((heading, "mentions %s but nothing else from the goal,"
+                            " and a section needs %s to count as being about it"
+                            % (", ".join(hits[:3]), _floor_phrase(need))))
+            else:
+                out.append((heading, "shares no vocabulary with the goal"))
+        return ([], out)
     best = scored[0][0]
     ranked = [(score, int(sec["doc_id"][1:])) for score, sec in scored]
     keep = sorted(i for score, i in ranked[:limit] if score >= best * floor)
@@ -1034,9 +1123,8 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
             else:
                 dropped.append((heading,
                                 "mentions %s but nothing else from the goal, and"
-                                " a section needs two of its words, or one in its"
-                                " heading, to count as being about it"
-                                % ", ".join(hits[:3])))
+                                " a section needs %s to count as being about it"
+                                % (", ".join(hits[:3]), _floor_phrase(need))))
         elif scores[i] < best * floor:
             dropped.append((heading, "scored %.0f%% of the best match, under the "
                             "%.0f%% floor" % (100 * scores[i] / best, 100 * floor)))
@@ -1044,6 +1132,17 @@ def select(sections, goal, resource_title="", vetting="community", trust=3,
             dropped.append((heading, "past the %d-section cap for one resource"
                             % limit))
     return ([sections[i] for i in keep], dropped)
+
+
+def _floor_phrase(need):
+    """State the floor that actually applied, not a hardcoded "two".
+
+    The message said "two of its words" whatever the goal was, so a candidate
+    with a two-word goal was told to satisfy a rule they already had, and one
+    with a single-word goal was told to satisfy a rule that cannot exist.
+    """
+    return ("one of its words, or one in its heading" if need <= 1
+            else "%d of its words, or one in its heading" % need)
 
 
 # ---- grouping into documents ----------------------------------------------
@@ -1207,7 +1306,7 @@ def preview(path, goal="", vetting="community", trust=3, depth="focused"):
     sections = sections_from(text)
     kept, dropped = select(sections, goal, title, vetting, trust,
                            floor=floor_for(depth))
-    cover = goal_coverage(sections, goal)
+    cover = goal_coverage(sections, goal, kept=kept)
     report.update({
         "title": title,
         "coverage": cover,
@@ -1309,7 +1408,7 @@ def ingest_file(handle, path, goal="", title=None, vetting="community",
         if doc_id:
             stored.append({"doc_id": doc_id, "title": doc_title,
                            "sections": len(pairs)})
-    cover = goal_coverage(sections, goal)
+    cover = goal_coverage(sections, goal, kept=kept)
     return {
         # `ok` is not decoration. `preview` carries it and the page branches on
         # it, so a stored report without one rendered a successful ingest as

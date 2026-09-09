@@ -154,6 +154,24 @@ MIN_TERMS = 2
 RELATIVE_FLOOR = 0.25
 
 
+def term_floor(query):
+    """How many of the goal's words a section must share to count.
+
+    MIN_TERMS, except when the goal has fewer words than that. A flat floor of 2
+    is UNSATISFIABLE for a one-word goal: no section can match two words of a
+    one-word query, so every section is dropped, `select` refuses the whole file
+    and tells the candidate the resource "shares no vocabulary with the goal".
+    That claim is false, and worse it is unactionable, because rewording cannot
+    add a second word to a goal that is legitimately one word. "Kubernetes" is a
+    reasonable thing to prepare for.
+
+    Scaling it keeps the original rule everywhere it was doing work -- a single
+    common word in a body is still a coincidence when the goal has several -- and
+    stops it from being a gate nothing can pass.
+    """
+    return min(MIN_TERMS, len(_counts(terms(query))) or MIN_TERMS)
+
+
 def document_frequency(index):
     """How many sections each term appears in. Public because callers batch.
 
@@ -186,6 +204,7 @@ def score_sections(index, query, df=None):
     want = _counts(terms(query))
     if not want:
         return []
+    floor = min(MIN_TERMS, len(want))
     scored = []
     for sec in index:
         head = _counts(terms(sec["heading"] + " " + sec["concept"]))
@@ -204,7 +223,7 @@ def score_sections(index, query, df=None):
             # a term in one carries the most this corpus can offer.
             rarity = 1.0 + (n / float(df.get(term, 1))) ** 0.5
             total += times * hits * rarity
-        if total <= 0 or (matched < MIN_TERMS and not labelled):
+        if total <= 0 or (matched < floor and not labelled):
             continue
         total *= VETTING_WEIGHT.get(sec["vetting"], 0.78)
         total *= 0.9 + 0.05 * max(1, min(5, sec["trust"]))
