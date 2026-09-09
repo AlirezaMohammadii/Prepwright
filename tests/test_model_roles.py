@@ -283,6 +283,96 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
         self.assertEqual(self.seen[-1]["model"], "claude-haiku-4-5")
 
 
+class OneChoiceServesBothTools(RoleBase):
+    """Resume Studio and this app share one model preference through one file.
+
+    The two spell exactly one id differently -- Resume Studio pins the dated
+    claude-haiku-4-5-20251001 where this app uses claude-haiku-4-5 -- so the
+    alias is the difference between a shared preference and a preference that
+    is silently discarded every time the other tool writes it.
+    """
+
+    def setUp(self):
+        RoleBase.setUp(self)
+        real = bridge.SHARED_PREFS_PATH
+        self.shared = os.path.join(self.home, "model-prefs.json")
+        bridge.SHARED_PREFS_PATH = self.shared
+        self.addCleanup(setattr, bridge, "SHARED_PREFS_PATH", real)
+
+    def _shared(self, **kw):
+        with open(self.shared, "w", encoding="utf-8") as fh:
+            json.dump(kw, fh)
+
+    def test_the_other_tools_choice_becomes_this_apps_tutor_default(self):
+        self._shared(provider="claude", model="claude-sonnet-5", effort="high")
+        self.assertEqual(bridge._role_choice("claude", "tutor"),
+                         ("claude-sonnet-5", "high"))
+
+    def test_it_does_not_move_the_grader(self):
+        """"Which model do I want these tools to use" is a statement about the
+        one that talks to you. Moving the grader too would be a bill nobody
+        asked for."""
+        self._shared(provider="claude", model="claude-opus-5", effort="max")
+        self.assertEqual(bridge._role_choice("claude", "assess"),
+                         ("claude-haiku-4-5", "low"))
+
+    def test_the_dated_haiku_id_is_normalised_on_the_way_in(self):
+        self._shared(provider="claude", model="claude-haiku-4-5-20251001")
+        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+                         "claude-haiku-4-5")
+
+    def test_a_choice_made_here_is_written_in_the_spelling_they_read(self):
+        bridge._write_shared_prefs("claude", "claude-haiku-4-5", "low")
+        with open(self.shared, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["model"],
+                             "claude-haiku-4-5-20251001")
+
+    def test_a_choice_saved_in_this_app_outranks_the_shared_one(self):
+        self._shared(provider="claude", model="claude-sonnet-5")
+        bridge._write_settings(
+            {"roles": {"tutor": {"claude": {"model": "claude-opus-5"}}}})
+        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+                         "claude-opus-5")
+
+    def test_a_preference_for_the_other_provider_is_left_alone(self):
+        """A Codex choice must not reach into a Claude run and be rejected
+        there, leaving a default the candidate never picked."""
+        self._shared(provider="codex", model="gpt-5.6-luna", effort="max")
+        self.assertEqual(bridge._role_choice("claude", "tutor"),
+                         ("claude-opus-5", ""))
+
+    def test_a_model_this_app_does_not_have_still_lets_the_effort_through(self):
+        """Each key is dropped on its own. A partly-unusable file is still
+        partly usable."""
+        self._shared(provider="claude", model="gpt-4o", effort="xhigh")
+        self.assertEqual(bridge._role_choice("claude", "tutor"),
+                         ("claude-opus-5", "xhigh"))
+
+    def test_no_file_at_all_is_the_normal_case(self):
+        self.assertEqual(bridge._read_shared_prefs(), {})
+        self.assertEqual(bridge._role_choice("claude", "tutor"),
+                         ("claude-opus-5", ""))
+
+    def test_a_corrupt_file_does_not_take_the_tutor_down(self):
+        with open(self.shared, "w", encoding="utf-8") as fh:
+            fh.write("{{{")
+        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+                         "claude-opus-5")
+
+    def test_an_unwritable_destination_is_reported_not_raised(self):
+        """Picking a tutor model must not fail because a sibling tool's
+        directory is not writable."""
+        bridge.SHARED_PREFS_PATH = os.path.join(self.home, "nope", "x", "p.json")
+        os.makedirs(os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)),
+                    exist_ok=True)
+        os.chmod(os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)), 0o500)
+        self.addCleanup(
+            os.chmod,
+            os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)), 0o700)
+        self.assertFalse(
+            bridge._write_shared_prefs("claude", "claude-opus-5", "low"))
+
+
 class AGradeSaysWhatProducedIt(unittest.TestCase):
     """Once the grader is a choice, an unattributed grade is a claim.
 

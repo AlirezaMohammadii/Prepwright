@@ -2451,6 +2451,11 @@ function modelRolesPanel(){
       ${ROLE_SETTINGS.roles.map(r=>roleRow(r,p)).join("")}
       <div class="rolenote">The bar above sets the tutor for <b>this track only</b>, and it
         wins over the Tutor row here.</div>
+      <div class="rolenote">The <b>Tutor</b> choice is shared with Resume Studio through
+        <code>${esc(ROLE_SETTINGS.sharedPath||"~/.config/claude-apps/model-prefs.json")}</code>,
+        so picking a model in either tool picks it in both. The other four rows are
+        this app's own. <a href="http://localhost:8799/" target="_blank" rel="noopener">Open
+        Resume Studio</a> (run <code>resume-studio</code> first if it is not up).</div>
     </div>`;
 }
 async function openRolePanel(body){
@@ -2477,6 +2482,14 @@ async function saveRoleChoice(role,provider,patch){
   });
   doc.roles[role]=doc.roles[role]||{};
   doc.roles[role][provider]=Object.assign({},doc.roles[role][provider]||{},patch);
+  if(role==="tutor"){
+    /* The tutor choice is the one this machine shares with Resume Studio. It
+     * travels because this block says so, not as a side effect of the save:
+     * a preference that leaves the app should do so visibly. */
+    const t=((ROLE_SETTINGS&&ROLE_SETTINGS.roles)||[]).find(x=>x.id==="tutor");
+    const now=Object.assign({},(t&&t.resolved&&t.resolved[provider])||{},doc.roles.tutor[provider]||{});
+    doc.shared={provider:provider,model:now.model||"",effort:now.effort||""};
+  }
   const body=$(`[data-qbody="modelroles"]`);
   try{
     ROLE_SETTINGS=await apiPost("/api/settings",doc);

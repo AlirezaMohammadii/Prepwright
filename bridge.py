@@ -699,6 +699,86 @@ for _p, _rs in ROLE_DEFAULTS.items():
         assert _m in PROVIDER_MODELS[_p], (_p, _r, _m)
         assert _e == "" or _e in EFFORT_LEVELS, (_p, _r, _e)
 
+# ---- the preference this machine's other tools share -----------------------
+# Resume Studio (~/Desktop/Thesis/Job Applications/resume-studio) runs the same
+# logged-in CLIs against the same account, and picking a model twice for what is
+# one decision is the kind of friction that makes two tools feel like two tools.
+# One flat file carries it. Three string keys, no nesting, because the reader
+# has to be duplicated: neither app may import the other (this one is flat,
+# standard-library-only and installs nothing), so the format is kept small
+# enough that two copies cannot drift in an interesting way.
+# Redirectable so a harness never touches the real home. Resume Studio learned
+# this the hard way on 2026-09-09: its suite exercises the route that commits a
+# job, so the mirror fired and wrote a preference nobody had chosen.
+SHARED_PREFS_PATH = (os.environ.get("CLAUDE_APPS_PREFS")
+                     or os.path.expanduser("~/.config/claude-apps/model-prefs.json"))
+# The two apps spell exactly one model id differently: Resume Studio pins the
+# dated claude-haiku-4-5-20251001 where this one uses claude-haiku-4-5.
+# Normalising on the way IN is what makes the preference actually shared instead
+# of silently discarded every time the other tool wrote it.
+#
+# Applied ONLY to this file, never to a client request. A request naming a
+# provider and model is a billing and data-routing boundary and stays exact; a
+# file the candidate's own other tool wrote is a preference.
+SHARED_MODEL_ALIASES = {"claude-haiku-4-5-20251001": "claude-haiku-4-5"}
+# ...and back again, so a choice made here is one Resume Studio can read.
+SHARED_MODEL_ALIASES_OUT = {v: k for k, v in SHARED_MODEL_ALIASES.items()}
+
+
+def _read_shared_prefs():
+    """{"provider","model","effort"} narrowed to this app's whitelists, or {}.
+
+    Every value is optional and every bad value is dropped on its own, so a
+    file naming a model this app does not have still contributes its effort.
+    """
+    try:
+        with open(SHARED_PREFS_PATH, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    provider = str(raw.get("provider") or "").strip().lower()
+    if provider in PROVIDER_MODELS:
+        out["provider"] = provider
+    model = str(raw.get("model") or "").strip()
+    model = SHARED_MODEL_ALIASES.get(model, model)
+    for prov in PROVIDER_MODELS:
+        if model in PROVIDER_MODELS[prov]:
+            out["model"] = model
+            break
+    if "effort" in raw:
+        effort = str(raw.get("effort") or "").strip().lower()
+        if effort == "" or effort in EFFORT_LEVELS:
+            out["effort"] = effort
+    return out
+
+
+def _write_shared_prefs(provider, model, effort):
+    """Best effort. A tutor choice must not fail because a sibling tool's
+    directory is unwritable, so this reports rather than raises."""
+    provider = str(provider or "").strip().lower()
+    if provider not in PROVIDER_MODELS or model not in PROVIDER_MODELS[provider]:
+        return False
+    effort = str(effort or "").strip().lower()
+    if effort and effort not in EFFORT_LEVELS:
+        return False
+    body = json.dumps({
+        "provider": provider,
+        "model": SHARED_MODEL_ALIASES_OUT.get(model, model),
+        "effort": effort,
+        "by": APP_ID,
+    }, indent=1, sort_keys=True) + "\n"
+    try:
+        os.makedirs(os.path.dirname(SHARED_PREFS_PATH), mode=0o700, exist_ok=True)
+        PSTATE.atomic_write(SHARED_PREFS_PATH, body)
+        return True
+    except OSError as exc:
+        sys.stderr.write("tutor: shared model preference not written: %s\n" % exc)
+        return False
+
+
 _SETTINGS_LOCK = threading.Lock()
 _SETTINGS_CACHE = {"key": None, "data": {"roles": {}}}
 
@@ -792,7 +872,17 @@ def _read_settings():
 
 
 def _write_settings(raw):
-    """Validate, persist atomically, return what was actually kept."""
+    """Validate, persist atomically, return what was actually kept.
+
+    A `shared` block, when present, is mirrored to the file the other local
+    tools read. The page sends it explicitly rather than this inferring it from
+    a tutor change: a preference that leaves the app should do so because
+    something asked, not as a side effect nobody can see.
+    """
+    shared = (raw or {}).get("shared") if isinstance(raw, dict) else None
+    if isinstance(shared, dict):
+        _write_shared_prefs(shared.get("provider"), shared.get("model"),
+                            shared.get("effort"))
     data = _clean_settings(raw)
     body = json.dumps(data, indent=1, sort_keys=True) + "\n"
     os.makedirs(PC.HOME, mode=PC.DIR_MODE, exist_ok=True)
@@ -830,6 +920,8 @@ def _settings_view():
         })
     return {
         "provider": saved.get("provider", "claude"),
+        "shared": _read_shared_prefs(),
+        "sharedPath": SHARED_PREFS_PATH.replace(os.path.expanduser("~"), "~"),
         "roles": roles,
         "models": {p: list(PROVIDER_MODELS[p]) for p in PROVIDER_MODELS},
         "labels": dict(PROVIDER_LABELS),
@@ -850,6 +942,17 @@ def _role_choice(provider, role, model=None, effort=None):
     if provider not in PROVIDER_MODELS:
         raise ValueError("Unknown tutor provider.")
     d_model, d_effort = ROLE_DEFAULTS[provider][role]
+    if role == "tutor":
+        # Only the tutor takes the shared preference. "Which model do I want
+        # these tools to use" is a statement about the one that talks to you,
+        # not about the grader, and quietly moving the grader because a resume
+        # was tailored on Opus would be a bill nobody asked for.
+        shared = _read_shared_prefs()
+        if shared.get("provider", provider) == provider:
+            d_model = shared.get("model", d_model)
+            d_effort = shared.get("effort", d_effort)
+            if d_model not in PROVIDER_MODELS[provider]:
+                d_model = ROLE_DEFAULTS[provider][role][0]
     saved = (_read_settings().get("roles", {}).get(role, {}).get(provider)
              or {})
     chosen = str(model or "").strip() or saved.get("model") or d_model
