@@ -373,6 +373,31 @@ class OneChoiceServesBothTools(RoleBase):
             bridge._write_shared_prefs("claude", "claude-opus-5", "low"))
 
 
+class _FakeHandle(object):
+    """Just enough of a TrackHandle for _persist_assessment: the step ids it
+    knows, an assessment sink, and a reconcile it can count."""
+
+    def __init__(self, step_ids):
+        self.written = []
+        self.synced = 0
+        self._steps = [{"step_id": s} for s in sorted(step_ids)]
+        self.conn = self
+
+    def execute(self, sql, args=()):
+        assert "FROM step" in sql, sql
+        return list(self._steps)
+
+    def add_assessment(self, step_id, score, rubric, **kw):
+        self.written.append((step_id, score, rubric, kw.get("misconception")))
+
+    def sync_step_lifecycle(self):
+        self.synced += 1
+        return {}
+
+    def close(self):
+        pass
+
+
 class AGradeSaysWhatProducedIt(unittest.TestCase):
     """Once the grader is a choice, an unattributed grade is a claim.
 
@@ -387,12 +412,51 @@ class AGradeSaysWhatProducedIt(unittest.TestCase):
         self.assertEqual(pagestate.FIELDS.get("assessModel"),
                          ("pref", "scalar"))
 
-    def test_the_grading_route_reports_the_model_it_resolved(self):
-        """Not the one the page asked for. They differ whenever the whitelist
-        refused a saved choice, and the number on screen belongs to whichever
-        model actually ran."""
-        source = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
-        self.assertIn('"model": _role_choice(provider, "assess")[0]', source)
+    def test_the_grade_is_written_to_the_store_with_what_produced_it(self):
+        """Until 2026-09-09 /api/assess opened no handle at all, so the grade
+        lived only as page state: one superseded value, no history, and nothing
+        to rebuild the panel from after a reload."""
+        h = _FakeHandle({"1:topic:S01"})
+        self._with_handle(h)
+        landed = bridge._persist_assessment(
+            [{"key": "1:topic:S01", "mastery": 0.5, "reason": "partial"}],
+            "claude", "claude-haiku-4-5")
+        self.assertEqual(landed, 1)
+        self.assertEqual(h.written[0][0], "1:topic:S01")
+        self.assertAlmostEqual(h.written[0][1], 0.5)
+        self.assertEqual(h.written[0][2], "claude/claude-haiku-4-5")
+
+    def test_a_grade_for_a_step_this_track_lacks_is_skipped_not_fatal(self):
+        """assessment.step_id is a foreign key and PRAGMA foreign_keys is on at
+        every open, so one stale key would otherwise abort the statement and
+        cost the grades that ARE valid."""
+        h = _FakeHandle({"1:topic:S01"})
+        self._with_handle(h)
+        landed = bridge._persist_assessment(
+            [{"key": "9:topic:S99", "mastery": 0.9},
+             {"key": "1:topic:S01", "mastery": 0.5}],
+            "claude", "claude-haiku-4-5")
+        self.assertEqual(landed, 1)
+        self.assertEqual([w[0] for w in h.written], ["1:topic:S01"])
+
+    def test_a_store_failure_does_not_discard_a_grade_already_paid_for(self):
+        """By the time this runs the model call is billed. A 502 here would
+        throw away something the candidate has bought."""
+        real = bridge.open_state_track
+        self.addCleanup(setattr, bridge, "open_state_track", real)
+
+        def boom(*a, **k):
+            raise bridge.PSTATE.StoreError("disk is gone")
+
+        bridge.open_state_track = boom
+        self.assertEqual(
+            bridge._persist_assessment([{"key": "1:topic:S01", "mastery": 0.5}],
+                                       "claude", "claude-haiku-4-5"), 0)
+
+    def _with_handle(self, handle):
+        real = bridge.open_state_track
+        self.addCleanup(setattr, bridge, "open_state_track", real)
+        bridge.open_state_track = lambda *a, **k: handle
 
 
 # ---- the route, over real HTTP ----------------------------------------------

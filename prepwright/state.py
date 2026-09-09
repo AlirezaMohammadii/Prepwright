@@ -1374,6 +1374,156 @@ class TrackHandle(object):
                 step_id, role, body, client_turn_id, reply_to_seq, pack_sha16,
                 citations, ungrounded, in_tok, out_tok, spool_ref, client_meta)
 
+    # -- the step lifecycle --------------------------------------------------
+    # Nothing in production ever wrote step.status, step.score, step.review,
+    # step.opened_utc or step.completed_utc. Verified on 2026-09-09: the only
+    # two production UPDATE step statements set evidence_state and compacted,
+    # and the three that touched status or review were all in tests. One gap,
+    # three measured consequences:
+    #
+    #   1. The transcript cap was UNRECOVERABLE. append_turn catches
+    #      CapExceeded and calls compact_oldest_completed_step, whose selector
+    #      needs status='done' AND review IS NOT NULL. It could never match, so
+    #      every save past the cap failed forever. keep._compact_done_steps
+    #      carries the same dead predicate. Reachability: 12,438 B is the worst
+    #      legal single turn, so 252 turns is the floor and 1,300 to 2,700 is
+    #      typical.
+    #   2. The assessment table was dead.
+    #   3. flow.curriculum.done was a permanent 0.
+    #
+    # This is RECONCILIATION, not an event hook, and that is deliberate. Every
+    # fact it needs is already durable in the mark table, so a step row can be
+    # rebuilt from marks written by a build that predates this method, and
+    # running it twice changes nothing the first run did not. An event hook
+    # would have left every existing track wrong forever.
+    #
+    # The three marks join on two different keys, which is worth stating once
+    # because getting it backwards is silent: a `topic` mark is keyed by GAP id,
+    # while `assess` and `session` are keyed by STEP id. A gap id survives a
+    # re-cut of the plan and a step ordinal does not, which is why the tick uses
+    # the one it does.
+
+    REVIEW_MAX_CHARS = 600
+
+    @staticmethod
+    def _review_text(obj):
+        """The conclusion a compaction is allowed to keep in place of prose."""
+        parts = []
+        for field in ("covered", "explainBack", "next"):
+            val = obj.get(field)
+            if isinstance(val, str) and val.strip():
+                parts.append("%s: %s" % (field, " ".join(val.split())))
+        return " | ".join(parts)[:TrackHandle.REVIEW_MAX_CHARS]
+
+    def sync_step_lifecycle(self):
+        """Make step.status/score/review/timestamps follow what is recorded.
+
+        Returns a count per kind of change, so a caller can tell a no-op from
+        work without re-reading the table.
+
+        'skipped' is never overwritten. It is the one status a person sets to
+        mean "not for me", and a reconciler that treats it as a state to be
+        derived would erase that decision on the next save.
+        """
+        self.assert_live()
+        steps = self.conn.execute(
+            "SELECT step_id, gap_id, status, score, review, opened_utc,"
+            "       completed_utc FROM step").fetchall()
+        moved = {"opened": 0, "completed": 0, "reopened": 0,
+                 "scored": 0, "reviewed": 0}
+        if not steps:
+            return moved
+
+        ticked, scored, reviewed = {}, {}, {}
+        rows = self.conn.execute(
+            "SELECT kind, key, MAX(seq) AS seq, value FROM mark"
+            " WHERE kind IN ('topic','assess','session')"
+            " GROUP BY kind, key").fetchall()
+        for r in rows:
+            try:
+                obj = json.loads(r["value"])
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if r["kind"] == "topic":
+                ticked[r["key"]] = bool(obj.get("done"))
+            elif r["kind"] == "assess":
+                mastery = obj.get("mastery")
+                if isinstance(mastery, (int, float)) and not isinstance(mastery, bool):
+                    val = float(mastery)
+                    # The column CHECKs 0..1. A value outside it would abort the
+                    # whole transaction and take an unrelated page save with it.
+                    if 0.0 <= val <= 1.0:
+                        scored[r["key"]] = val
+            else:
+                step_key = obj.get("stepKey")
+                if isinstance(step_key, str) and step_key:
+                    # Sessions are keyed by their own id, so several can name
+                    # one step. Newest wins.
+                    prev = reviewed.get(step_key)
+                    if prev is None or int(r["seq"]) > prev[0]:
+                        reviewed[step_key] = (int(r["seq"]), self._review_text(obj))
+
+        turns = {}
+        for r in self.conn.execute(
+                "SELECT step_id, COUNT(*) AS n FROM turn GROUP BY step_id"):
+            turns[r["step_id"]] = int(r["n"])
+
+        now = utc_now()
+        with self.lock, _Txn(self.conn):
+            for row in steps:
+                step_id, status = row["step_id"], row["status"]
+                if status == "skipped":
+                    continue
+                sets, args, kinds = [], [], []
+                done = bool(ticked.get(row["gap_id"]))
+                touched = turns.get(step_id, 0) > 0
+
+                if done and status != "done":
+                    sets.append("status='done'")
+                    kinds.append("completed")
+                elif not done and status == "done":
+                    # An untick is a real event: the candidate decided they
+                    # cannot explain it after all. The step goes back to open,
+                    # not to ready, because the transcript is still there.
+                    sets.append("status='open'")
+                    sets.append("completed_utc=NULL")
+                    kinds.append("reopened")
+                elif not done and touched and status in ("locked", "ready"):
+                    sets.append("status='open'")
+                    kinds.append("opened")
+
+                if (done or touched) and not row["opened_utc"]:
+                    sets.append("opened_utc=?")
+                    args.append(now)
+                if done and not row["completed_utc"]:
+                    sets.append("completed_utc=?")
+                    args.append(now)
+
+                score = scored.get(step_id)
+                if score is not None and row["score"] != score:
+                    sets.append("score=?")
+                    args.append(score)
+                    kinds.append("scored")
+
+                review = reviewed.get(step_id)
+                if review is not None and (row["review"] or "") != review[1]:
+                    sets.append("review=?")
+                    args.append(review[1])
+                    kinds.append("reviewed")
+
+                if not sets:
+                    continue
+                args.append(step_id)
+                self.conn.execute(
+                    "UPDATE step SET %s WHERE step_id=?" % ", ".join(sets), args)
+                for k in kinds:
+                    moved[k] = moved.get(k, 0) + 1
+            if any(moved.values()):
+                self._bump_writes()
+        return moved
+
     def compact_oldest_completed_step(self):
         """Free transcript bytes from the oldest step that is safely compactable.
 

@@ -1551,6 +1551,50 @@ def _digest(it):
     )
 
 
+def _persist_assessment(graded, provider, model):
+    """Write the grades to the assessment table. Returns how many landed.
+
+    Best effort, deliberately. By the time this runs the model call is paid
+    for, so a store failure must not turn a grade the candidate has bought into
+    a 502. It is reported to the terminal and the grade still reaches the page,
+    where it is durable as a page mark either way.
+
+    Until 2026-09-09 this route opened no handle at all, so the assessment
+    table had exactly two writers and both were tests. The grade lived only as
+    page state: one superseded value, no history, and nothing to rebuild the
+    panel from after a reload.
+    """
+    try:
+        handle = open_state_track(take_lease=False)
+    except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+        sys.stderr.write("tutor: grades not written to the store: %s\n" % exc)
+        return 0
+    try:
+        known = set()
+        for row in handle.conn.execute("SELECT step_id FROM step"):
+            known.add(row["step_id"])
+        rubric = "%s/%s" % (provider, model)
+        landed = 0
+        for row in graded:
+            key = str(row.get("key") or "")
+            # assessment.step_id is a foreign key and PRAGMA foreign_keys is on
+            # every open, so a grade naming a step this track does not have
+            # would abort the statement. Filtered here so one stale key cannot
+            # cost the grades that ARE valid.
+            if key not in known:
+                continue
+            try:
+                handle.add_assessment(
+                    key, float(row.get("mastery") or 0.0), rubric,
+                    misconception=(str(row.get("reason") or "")[:400] or None))
+                landed += 1
+            except (PSTATE.StoreError, sqlite3.Error) as exc:
+                sys.stderr.write("tutor: grade for %s not stored: %s\n" % (key, exc))
+        return landed
+    finally:
+        handle.close()
+
+
 def _clean_rows(rows):
     """Grader rows, bounded to what a grade can actually mean.
 
@@ -2183,6 +2227,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(409, out)
 
             report = PS.apply_ops(handle, ops)
+            # Every fact the step table derives from arrives through this one
+            # funnel: a topic tick, a grade, a session review. Reconciling here
+            # is what finally makes step.status real, and with it the transcript
+            # cap recoverable, the assessment table reachable and
+            # flow.curriculum.done a number rather than a permanent 0.
+            #
+            # A reconcile failure must not fail the save. The candidate's words
+            # are already committed by this point, and refusing the response
+            # would make the page retry a delta that has already applied.
+            try:
+                report["lifecycle"] = handle.sync_step_lifecycle()
+            except (PSTATE.StoreError, sqlite3.Error) as exc:
+                sys.stderr.write("tutor: step lifecycle not reconciled: %s\n" % exc)
             out = {"ok": True, "trackId": handle.track_id,
                    "revision": handle.revision(), "applied": report,
                    "stale": bool(stale)}
@@ -2977,9 +3034,11 @@ class Handler(SimpleHTTPRequestHandler):
                 MODEL_GATE.release()
             if not graded:
                 return self._json(502, {"error": "The grader returned nothing — try again."})
+            model = _role_choice(provider, "assess")[0]
+            stored = _persist_assessment(graded, provider, model)
             return self._json(200, {
-                "steps": graded, "usage": usage,
-                "provider": provider, "model": _role_choice(provider, "assess")[0],
+                "steps": graded, "usage": usage, "stored": stored,
+                "provider": provider, "model": model,
                 "capped": max(0, len(payload.get("steps") or []) - MAX_ASSESS_STEPS)
                           + failed,
             })
