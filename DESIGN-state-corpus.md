@@ -60,21 +60,29 @@ Five principles carry this design. Classify bytes by whether losing them loses a
 
 Runtime file set, fixed for hash pinning, no migrations directory, no dynamic imports.
 This list must stay equal to `ls prepwright/*.py` plus `bridge.py` and `index.html`,
-because the manifest is generated from it. The modules not named below
-(`__init__.py`, `assess.py`, `curriculum.py`, `diagnose.py`, `intake.py`,
-`provider.py`, `security.py`, `teach.py`) exist as documented stubs and belong in
-the manifest from the day one of them holds code:
+because the manifest is generated from it. Every module below now holds code; the
+last four stubs were filled on 2026-09-10 (ADR 0007):
 
 ```
+prepwright/__init__.py   the package marker. Holds no code
 prepwright/config.py     every path and every cap, so a cap can be audited in one place
 prepwright/state.py      library.db + track.db: schemas, open_track(), TrackHandle, leases
 prepwright/track.py      lifecycle: create, archive, restore, trash, purge, reconcile
-prepwright/corpus.py     corpus_path(), read_section(), write_doc(), verify_doc()
-prepwright/prompt.py     build_pack(), build_prompt(), check_citations()
+prepwright/corpus.py     build_pack(), check_citations(), read_section(), write_doc()
+prepwright/prompt.py     a pointer at corpus.py and teach.py. Holds no code
+prepwright/pagestate.py  the page document and the /api/state delta protocol
+prepwright/intake.py     the job posting, pasted or imported
+prepwright/diagnose.py   the diagnostic, its judge, and the fallback when none runs
 prepwright/research.py   the ONLY module importing urllib.request
+prepwright/curriculum.py an approved gap list becomes stages and steps
+prepwright/ingest.py     documents into a track's own corpus
+prepwright/security.py   origin, host, cookie, remote identity, payload sanitisers
 prepwright/keep.py       housekeep(): reconcile, ladder, backups, archive, restore
-prepwright/serve.py      HTTP bridge on 127.0.0.1, request routing, lease heartbeat
-bridge.py                the running bridge until serve.py is extracted from it
+prepwright/provider.py   the CLIs, the model registry, five roles, saved settings
+prepwright/teach.py      one teaching turn, and the stage ladder it climbs
+prepwright/assess.py     grading, the end-of-session review, recap cards
+prepwright/serve.py      HTTP bridge on 127.0.0.1, request routing, current track
+bridge.py                the composition root: sys.path, wiring, main(). 137 lines
 index.html               the whole page: one inline <style>, one inline <script>
 ```
 

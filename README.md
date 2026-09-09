@@ -19,17 +19,21 @@ library only. Nothing to `pip install`.
 
 ## Status, in one paragraph
 
-Read this before anything else. Roughly half of the product described above is not
-written yet. What exists today is the back half: a hardened local HTTP server that
-serves one page, stores progress on disk, retrieves cited sections from the local
-corpus, relays a bounded teaching prompt to a logged-in `claude` or `codex` CLI,
-grades step transcripts, and drafts an end-of-session review. Beside it, and not yet
-wired to it, sits the persistence layer of `DESIGN-state-corpus.md`: per-track SQLite
-with delta-only writes, caps enforced inside the transaction that causes them, and
-cross-track isolation as a path and foreign-key mechanism rather than a promise. What
-does not exist is the front half of the flow: intake, the diagnostic, the gap list,
-research and curriculum generation. The **Not built yet** section below is the honest
-inventory, and it is the section worth reading first.
+Read this before anything else. The whole flow above is written and runs. Intake,
+the diagnostic, gap approval, research, curriculum generation, teaching, grading,
+the end-of-session review and the recap bank all exist, and the page calls each of
+them: `grep -n 'api/' index.html` names every route it uses, and every one is
+handled in `prepwright/serve.py`. Progress lives in per-track SQLite under
+`~/.prepwright`, delta-only, with caps enforced inside the transaction that causes
+them; the second store this file used to describe, `progress/state.json`, is gone,
+imported once and renamed. 487 tests pass on three interpreters, including under
+the launcher's `/usr/bin/python3 -I -S`.
+
+What is *not* proved is a smaller and more specific list, and it is in **Known
+limitations** below. Two things there are worth knowing before you rely on this:
+the native file-picker dialog has never been opened, because no test may open one,
+and the Codex provider path has never run on this machine for want of a `codex`
+binary to run it with.
 
 ---
 
@@ -353,35 +357,22 @@ out of version control.
 
 ---
 
-## Not built yet
+## What is deliberately absent
 
-Plainly, so nothing above reads as a promise.
+Not a to-do list. These are decisions, and each one has a reason.
 
-- **The page shows a placeholder track.** `index.html` renders stages, steps, tier
-  chips, corpus citations, the question bank and the "Your story" view, and it talks to
-  every live endpoint. The track it renders is a small synthetic example written into
-  the page so it can run before a generator exists. Intake, the gap-approval screen,
-  a research panel and a track switcher are not on it yet.
-- **Intake.** No job-description box, no folder import, no `intake/` directory, no
-  source hashing.
-- **The diagnostic.** Nothing probes what you know.
-- **The gap list and its approval step.** Nothing produces gaps, and nothing asks you
-  to approve them.
-- **Research and source vetting.** No fetching, no distillation, no vetting tiers, no
-  origin hashes, no quoted source fragments. The `corpus/` directory currently holds
-  one hand-written example document. It carries the `## ` sections the retriever
-  selects from, but not the JSON header line or the trailing source-fragment block
-  the design doc specifies.
-- **Curriculum generation.** Nothing turns an approved gap list into stages and steps.
-- **The bridge is not on the persistence layer yet.** Per-track SQLite, the library
-  registry, append-only triggers, leases, the archive format, the eviction ladder and
-  caps enforced at the write are implemented and tested in `prepwright/`, but
-  `bridge.py` still reads and writes the single JSON state file described above. Two
-  stores now describe the same thing, which is the first thing to fix.
-- **Track management at runtime.** The store handles many tracks; the page and the
-  bridge still assume one. There is no track switcher and no create-track route.
-
----
+- **No spaced-repetition scheduler.** The `card` and `card_review` tables are a
+  complete SM-2 schema that nothing writes, kept dormant and annotated by the
+  owner's ruling of 2026-09-09 (ADR 0006). The Recap drill shuffles a bank; it does
+  not schedule, and the page no longer claims it does. Dropping the tables would
+  invalidate a documented isolation layer for no change any user can see.
+- **No agentic orchestration inside the app.** The app is a page and a bridge. The
+  model is called once per turn, from an empty directory, with no tools.
+- **The model never finds sources.** Research fetches URLs the candidate supplied
+  or approved. Nothing crawls.
+- **No multi-user anything.** Two devices editing at once both land, because every
+  write is an append. That is single-user software used from more than one screen.
+- **No pip, ever.** Standard library only, Python 3.9 compatible.
 
 ## Known limitations
 
@@ -411,28 +402,50 @@ Plainly, so nothing above reads as a promise.
 - **Two devices editing at once both land.** Every write is an append, so neither
   device can overwrite the other's work and there is nothing to resolve. This is
   single-user software used from more than one screen, not multi-user software.
-- **Integrity pins are empty**, so the launcher currently verifies nothing about the
-  files it starts. See the launcher section above.
+- **The native file chooser has never been opened.** It is a macOS dialog driven by
+  `osascript`, so no test can open it: a test that did would wait on a human, and a
+  hung one parks the bridge for 240 seconds. The typed-path route into the same
+  `resolve()` and `gate()` is tested; the dialog itself is not.
+- **The Codex provider path has never run.** There is no `codex` binary on this
+  machine. The argv builder, the JSONL parser and the model whitelist are unit
+  tested; nothing has watched the process itself answer.
+- **`prep iphone` has never run**, so remote mode is implemented and untried.
 
 ---
 
 ## Files
 
 ```
-bridge.py                 the local HTTP bridge: routing, auth, state, provider calls
-prep-launcher.sh          the `prep` command: preflight, environment scrubbing, iPhone mode
-index.html                the local page: stages, chat, progress, question bank
-prepwright/               one module per concern. config, state, track, keep and
-                          pagestate are written, tested and called by bridge.py; the
-                          rest are docstring stubs
-tests/                    unittest, run with `python3 -m unittest discover -s tests`
+bridge.py                 the composition root. 137 lines, one function: it puts the
+                          package on sys.path, wires the four modules and serves
+prepwright/               one module per concern, all written and tested
+  config.py               identity, every path and every cap, in one place
+  state.py                the store: schema, triggers, caps, one handle per track
+  track.py                lifecycle: create, archive, restore, trash, purge
+  keep.py                 housekeeping: recounts, the eviction ladder, backups
+  pagestate.py            the page document and the delta protocol
+  security.py             the request boundary: origin, host, cookie, identity
+  corpus.py               build_pack and check_citations: grounding, by construction
+  intake.py               the job posting, pasted or imported
+  diagnose.py             the diagnostic and its judge
+  research.py             fetching and distilling candidate-supplied sources
+  curriculum.py           an approved gap list becomes stages and steps
+  ingest.py               documents into a track's own corpus
+  provider.py             the CLIs, the model registry, five roles, settings
+  teach.py                one teaching turn, and the stage ladder
+  assess.py               grading, the end-of-session review, recap cards
+  serve.py                every route, and which track this process serves
+  prompt.py               a pointer at corpus.py and teach.py; holds no code
+prep-launcher.sh          the `prep` command: preflight, manifest check, iPhone mode
+index.html                the page: 12 views, no framework, no build step
+MANIFEST.sha256           20 pinned files. The launcher refuses to start on any
+                          mismatch, so an edited file must be re-pinned
+tools/                    make_manifest.sh, orphan_scan.py
+tests/                    487 tests: python3 -m unittest discover -s tests
 docs/adr/                 the decisions that are settled, and why
-DESIGN-state-corpus.md    the accepted persistence and corpus design. The store and
-                          the /api/state delta protocol follow it; corpus retrieval
-                          in bridge.py does not yet
-HANDOFF.md                what the next session needs to know
-corpus/                   distilled documents the tutor teaches from. Git-ignored, so a
-                          fresh clone starts with none and the tutor says so
-progress/                 only if you are upgrading: the imported state.json, renamed
-.gitignore                keeps study data, secrets and runtime state out of version control
+DESIGN-state-corpus.md    the accepted persistence and corpus design
+HANDOFF.md                the state of the product, every claim naming its command
+corpus/                   a one-document development seed, git-ignored. NOT the
+                          runtime store: each track carries its own corpus
+.gitignore                keeps study data, secrets and runtime state out of git
 ```
