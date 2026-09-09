@@ -151,6 +151,35 @@ CLOCK_JUMP_SUSPECT_DAYS = 7
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PREPWRIGHT_PORT", "8010"))
 
+# One provider reply. Long because a schema-constrained call spends two turns
+# and the second one is the structured emit.
+REQUEST_TIMEOUT = 180
+# What one HTTP request body may carry, and what one page delta may carry. The
+# second is a delta of appended ops, never a document; see pagestate.py.
+MAX_REQUEST_BYTES = 256 * 1024
+MAX_STATE_BYTES = 4 * 1024 * 1024
+
+# ---- the installation, as opposed to the store -----------------------------
+# The directory bridge.py sits in. Derived from this file's own location rather
+# than from the entry point, so a module can find the page, the seed corpus and
+# the legacy state file without importing the script that starts the server.
+# bridge.py computes the same path a second time, before any import can happen,
+# because it needs it to put this package on sys.path at all; the two are
+# asserted equal in tests/test_extraction_seams.py rather than assumed equal.
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The development seed corpus. NOT the runtime store: a track's corpus lives
+# inside that track, under HOME/tracks/<id>/corpus, and every teaching byte is
+# read through one TrackHandle. This directory is ingested into a track once, by
+# corpus.seed_from_directory, so a track created before the research pipeline
+# exists still has something real to teach from.
+SEED_CORPUS_DIR = os.path.join(SCRIPT_DIR, "corpus")
+# Read once, imported, and renamed. There were two stores here until ADR 0002:
+# progress/state.json, a whole document written on every keystroke behind a
+# revision hash and a heuristic shrink-detector. Both stores describing the same
+# thing was the single biggest defect in that tree.
+LEGACY_STATE_DIR = os.path.join(SCRIPT_DIR, "progress")
+LEGACY_STATE_FILE = os.path.join(LEGACY_STATE_DIR, "state.json")
+
 LIFECYCLES = ("active", "archiving", "archived", "restoring", "trashed", "lost")
 OUTCOMES = ("open", "interviewing", "offer", "rejected", "withdrawn")
 SOURCE_KINDS = ("pasted", "imported", "freeform")

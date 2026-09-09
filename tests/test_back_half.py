@@ -36,6 +36,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import bridge  # noqa: E402
+# Aliased PROV, not `provider`: several helpers here take a
+# parameter called `provider`, which would shadow the module.
+from prepwright import provider as PROV  # noqa: E402
 
 
 class _Proc(object):
@@ -47,7 +50,7 @@ class _Proc(object):
 
 
 def _argv_max_turns(**kw):
-    cmd = bridge._build_claude_cmd("claude-haiku-4-5", "low", **kw)
+    cmd = PROV._build_claude_cmd("claude-haiku-4-5", "low", **kw)
     return cmd[cmd.index("--max-turns") + 1]
 
 
@@ -72,15 +75,15 @@ class ASchemaConstrainedCallGetsTheTurnItNeeds(unittest.TestCase):
         """Appending a second --max-turns instead of replacing the first would
         leave the CLI to pick, and which one it picks is not this repo's to
         assume."""
-        cmd = bridge._build_claude_cmd("claude-haiku-4-5", "low", schema="{}")
+        cmd = PROV._build_claude_cmd("claude-haiku-4-5", "low", schema="{}")
         self.assertEqual(cmd.count("--max-turns"), 1)
 
     def test_the_shared_base_list_was_not_mutated(self):
         """cmd += CLI_BASE copies the elements, so writing into cmd is safe.
         If that ever stops being true, every later call inherits the 2."""
-        bridge._build_claude_cmd("claude-haiku-4-5", "low", schema="{}")
-        i = bridge.CLI_BASE.index("--max-turns")
-        self.assertEqual(bridge.CLI_BASE[i + 1], "1")
+        PROV._build_claude_cmd("claude-haiku-4-5", "low", schema="{}")
+        i = PROV.CLI_BASE.index("--max-turns")
+        self.assertEqual(PROV.CLI_BASE[i + 1], "1")
 
 
 class AFailureBeforeAnyProseStillNamesItself(unittest.TestCase):
@@ -92,20 +95,20 @@ class AFailureBeforeAnyProseStillNamesItself(unittest.TestCase):
     })
 
     def test_a_null_result_still_yields_a_reason(self):
-        reason = bridge._cli_reason(_Proc(stdout=self.ENVELOPE))
+        reason = PROV._cli_reason(_Proc(stdout=self.ENVELOPE))
         self.assertIn("error_max_turns", reason)
 
     def test_prose_in_result_still_wins_when_it_is_there(self):
         env = json.dumps({"is_error": True, "subtype": "error_during_execution",
                           "result": "Not logged in. Please run /login"})
-        self.assertIn("Please run /login", bridge._cli_reason(_Proc(stdout=env)))
+        self.assertIn("Please run /login", PROV._cli_reason(_Proc(stdout=env)))
 
     def test_a_successful_envelope_contributes_no_false_reason(self):
         env = json.dumps({"is_error": False, "subtype": "success", "result": ""})
-        self.assertEqual(bridge._cli_reason(_Proc(stdout=env)), "")
+        self.assertEqual(PROV._cli_reason(_Proc(stdout=env)), "")
 
     def test_stderr_is_still_the_fallback(self):
-        self.assertIn("boom", bridge._cli_reason(_Proc(stdout="", stderr="boom")))
+        self.assertIn("boom", PROV._cli_reason(_Proc(stdout="", stderr="boom")))
 
 
 class AGradeIsBoundedToWhatAGradeCanMean(unittest.TestCase):

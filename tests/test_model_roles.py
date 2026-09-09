@@ -42,6 +42,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import bridge  # noqa: E402
+# Aliased PROV, not `provider`: several helpers here take a
+# parameter called `provider`, which would shadow the module.
+from prepwright import provider as PROV  # noqa: E402
 
 
 class RoleBase(unittest.TestCase):
@@ -59,9 +62,9 @@ class RoleBase(unittest.TestCase):
         real_home = bridge.PC.HOME
         bridge.PC.HOME = self.home
         self.addCleanup(setattr, bridge.PC, "HOME", real_home)
-        bridge._SETTINGS_CACHE["key"] = None
-        bridge._SETTINGS_CACHE["data"] = {"roles": {}}
-        self.addCleanup(bridge._SETTINGS_CACHE.__setitem__, "key", None)
+        PROV._SETTINGS_CACHE["key"] = None
+        PROV._SETTINGS_CACHE["data"] = {"roles": {}}
+        self.addCleanup(PROV._SETTINGS_CACHE.__setitem__, "key", None)
 
 
 class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
@@ -80,17 +83,17 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
             ("codex", "judge"): ("gpt-5.6-luna", "low"),
             ("codex", "discover"): ("gpt-5.6-terra", "low"),
         }
-        got = {(p, r): bridge._role_choice(p, r)
-               for p in bridge.PROVIDER_MODELS for r in bridge.ROLES}
+        got = {(p, r): PROV._role_choice(p, r)
+               for p in PROV.PROVIDER_MODELS for r in PROV.ROLES}
         self.assertEqual(got, expected)
 
     def test_the_tutor_default_still_sends_no_effort_flag(self):
         """"" is not the same as "low". The tutor sent no --effort before this
         existed and must still send none, because the CLI's own default is not
         this app's to override on a path nobody asked to change."""
-        _model, effort = bridge._role_choice("claude", "tutor")
+        _model, effort = PROV._role_choice("claude", "tutor")
         self.assertEqual(effort, "")
-        self.assertEqual(bridge._effort_flag(effort), [])
+        self.assertEqual(PROV._effort_flag(effort), [])
 
     def test_there_is_one_role_per_model_callsite(self):
         """Five roles, five run_cli calls. A sixth call site that forgets to
@@ -98,35 +101,35 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
         source = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
         self.assertEqual(source.count("\n    data = run_cli(")
                          + source.count("\n            data = run_cli("), 5)
-        self.assertEqual(len(bridge.ROLES), 5)
+        self.assertEqual(len(PROV.ROLES), 5)
 
 
 class AChoiceBeatsADefaultAndARequestBeatsAChoice(RoleBase):
     """Three layers, in that order, for model and for effort alike."""
 
     def _save(self, role, provider, **row):
-        bridge._write_settings({"roles": {role: {provider: row}}})
+        PROV._write_settings({"roles": {role: {provider: row}}})
 
     def test_a_saved_model_replaces_the_default(self):
         self._save("assess", "claude", model="claude-opus-5")
-        self.assertEqual(bridge._role_choice("claude", "assess")[0],
+        self.assertEqual(PROV._role_choice("claude", "assess")[0],
                          "claude-opus-5")
 
     def test_a_saved_effort_replaces_the_default(self):
         self._save("assess", "claude", effort="max")
-        self.assertEqual(bridge._role_choice("claude", "assess")[1], "max")
+        self.assertEqual(PROV._role_choice("claude", "assess")[1], "max")
 
     def test_a_request_argument_beats_the_saved_choice(self):
         self._save("tutor", "claude", model="claude-haiku-4-5")
         self.assertEqual(
-            bridge._role_choice("claude", "tutor", model="claude-opus-5")[0],
+            PROV._role_choice("claude", "tutor", model="claude-opus-5")[0],
             "claude-opus-5")
 
     def test_saving_one_role_leaves_the_others_alone(self):
         """The panel writes the whole document. A save that reset every other
         role to its default would silently undo earlier choices."""
         self._save("assess", "claude", model="claude-opus-5")
-        self.assertEqual(bridge._role_choice("claude", "review")[0],
+        self.assertEqual(PROV._role_choice("claude", "review")[0],
                          "claude-haiku-4-5")
 
     def test_an_explicitly_saved_empty_effort_is_a_real_choice(self):
@@ -134,7 +137,7 @@ class AChoiceBeatsADefaultAndARequestBeatsAChoice(RoleBase):
         is different from never having chosen. Storing it as absent would let
         the shipped "low" reappear and read as the candidate's own pick."""
         self._save("assess", "claude", effort="")
-        self.assertEqual(bridge._role_choice("claude", "assess")[1], "")
+        self.assertEqual(PROV._role_choice("claude", "assess")[1], "")
 
 
 class JunkNeverReachesTheCommandLine(RoleBase):
@@ -147,7 +150,7 @@ class JunkNeverReachesTheCommandLine(RoleBase):
     # the combined test passing because _role_choice caught it downstream.
 
     def test_layer_one_a_retired_model_id_is_never_written(self):
-        kept = bridge._write_settings(
+        kept = PROV._write_settings(
             {"roles": {"assess": {"claude": {"model": "claude-sonnet-3"}}}})
         self.assertEqual(kept["roles"], {})
         on_disk = json.load(open(os.path.join(self.home, "settings.json"),
@@ -161,77 +164,77 @@ class JunkNeverReachesTheCommandLine(RoleBase):
                   encoding="utf-8") as fh:
             json.dump({"roles": {"assess": {"claude":
                                             {"model": "claude-sonnet-3"}}}}, fh)
-        self.assertEqual(bridge._read_settings()["roles"], {})
+        self.assertEqual(PROV._read_settings()["roles"], {})
 
     def test_layer_three_the_resolver_refuses_it_even_if_handed_over(self):
         """The last line of defence, isolated by feeding _role_choice a settings
         document that never passed either cleaner."""
-        real = bridge._read_settings
-        self.addCleanup(setattr, bridge, "_read_settings", real)
-        bridge._read_settings = lambda: {
+        real = PROV._read_settings
+        self.addCleanup(setattr, PROV, "_read_settings", real)
+        PROV._read_settings = lambda: {
             "roles": {"assess": {"claude": {"model": "claude-sonnet-3"}}}}
-        self.assertEqual(bridge._role_choice("claude", "assess")[0],
+        self.assertEqual(PROV._role_choice("claude", "assess")[0],
                          "claude-haiku-4-5")
 
     def test_an_unknown_effort_level_is_never_stored(self):
         """Dropped at the write, so the role keeps its own default rather than
         falling to "no flag". A typo should not quietly change the depth the
         grader reasons at in either direction."""
-        kept = bridge._write_settings(
+        kept = PROV._write_settings(
             {"roles": {"assess": {"claude": {"effort": "turbo"}}}})
         self.assertEqual(kept["roles"], {})
-        self.assertEqual(bridge._role_choice("claude", "assess")[1], "low")
+        self.assertEqual(PROV._role_choice("claude", "assess")[1], "low")
 
     def test_an_unknown_effort_on_the_request_falls_back_not_to_nothing(self):
         """The tutor route forwards whatever the page sent. Treating a typo as
         "send no flag" would be a third distinct depth, silently."""
-        bridge._write_settings(
+        PROV._write_settings(
             {"roles": {"assess": {"claude": {"effort": "max"}}}})
         self.assertEqual(
-            bridge._role_choice("claude", "assess", effort="turbo")[1], "max")
+            PROV._role_choice("claude", "assess", effort="turbo")[1], "max")
 
     def test_a_claude_model_saved_under_codex_is_dropped(self):
         """Choices are stored per provider for this reason. One flat model
         field would carry a Claude id into a Codex run the moment the provider
         changed."""
-        kept = bridge._write_settings(
+        kept = PROV._write_settings(
             {"roles": {"assess": {"codex": {"model": "claude-opus-5"}}}})
         self.assertEqual(kept["roles"], {})
-        self.assertEqual(bridge._role_choice("codex", "assess")[0],
+        self.assertEqual(PROV._role_choice("codex", "assess")[0],
                          "gpt-5.6-luna")
 
     def test_a_hand_edited_file_that_is_not_a_dict_is_ignored(self):
         with open(os.path.join(self.home, "settings.json"), "w",
                   encoding="utf-8") as fh:
             fh.write("[1, 2, 3]")
-        self.assertEqual(bridge._read_settings(), {"roles": {}})
+        self.assertEqual(PROV._read_settings(), {"roles": {}})
 
     def test_a_corrupt_file_is_ignored_rather_than_raising(self):
         with open(os.path.join(self.home, "settings.json"), "w",
                   encoding="utf-8") as fh:
             fh.write("{not json")
-        self.assertEqual(bridge._role_choice("claude", "assess")[0],
+        self.assertEqual(PROV._role_choice("claude", "assess")[0],
                          "claude-haiku-4-5")
 
     def test_an_unknown_role_raises_rather_than_guessing(self):
         with self.assertRaises(ValueError):
-            bridge._role_choice("claude", "summarise")
+            PROV._role_choice("claude", "summarise")
 
     def test_an_unknown_provider_raises(self):
         with self.assertRaises(ValueError):
-            bridge._role_choice("gemini", "tutor")
+            PROV._role_choice("gemini", "tutor")
 
     def test_an_edit_made_outside_this_process_is_picked_up(self):
         """The read is cached against (mtime_ns, size). A cache that never
         noticed an external edit would pin the app to whatever it read first."""
-        self.assertEqual(bridge._role_choice("claude", "assess")[0],
+        self.assertEqual(PROV._role_choice("claude", "assess")[0],
                          "claude-haiku-4-5")
         with open(os.path.join(self.home, "settings.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({"roles": {"assess": {"claude":
                                             {"model": "claude-opus-5"}}}}, fh)
         os.utime(os.path.join(self.home, "settings.json"), (1, 1))
-        self.assertEqual(bridge._role_choice("claude", "assess")[0],
+        self.assertEqual(PROV._role_choice("claude", "assess")[0],
                          "claude-opus-5")
 
 
@@ -260,7 +263,7 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
         bridge.run_cli = recorder
 
     def test_the_grader_sends_the_model_the_candidate_chose(self):
-        bridge._write_settings({"roles": {"assess": {"claude": {
+        PROV._write_settings({"roles": {"assess": {"claude": {
             "model": "claude-opus-5", "effort": "xhigh"}}}})
         bridge._assess_batch("claude", [{"key": "8:topic:S08"}])
         self.assertEqual(self.seen[-1],
@@ -275,7 +278,7 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
         """Grouping review with assess would have been the tidy choice and the
         wrong one: a candidate who raises the grader to Opus has not asked to
         pay Opus rates for every recap card."""
-        bridge._write_settings({"roles": {"assess": {"claude": {
+        PROV._write_settings({"roles": {"assess": {"claude": {
             "model": "claude-opus-5"}}}})
         bridge.review_via_cli("claude", {"key": "8:topic:S08"},
                               [{"role": "user", "content": "q"},
@@ -294,10 +297,10 @@ class OneChoiceServesBothTools(RoleBase):
 
     def setUp(self):
         RoleBase.setUp(self)
-        real = bridge.SHARED_PREFS_PATH
+        real = PROV.SHARED_PREFS_PATH
         self.shared = os.path.join(self.home, "model-prefs.json")
-        bridge.SHARED_PREFS_PATH = self.shared
-        self.addCleanup(setattr, bridge, "SHARED_PREFS_PATH", real)
+        PROV.SHARED_PREFS_PATH = self.shared
+        self.addCleanup(setattr, PROV, "SHARED_PREFS_PATH", real)
 
     def _shared(self, **kw):
         with open(self.shared, "w", encoding="utf-8") as fh:
@@ -305,7 +308,7 @@ class OneChoiceServesBothTools(RoleBase):
 
     def test_the_other_tools_choice_becomes_this_apps_tutor_default(self):
         self._shared(provider="claude", model="claude-sonnet-5", effort="high")
-        self.assertEqual(bridge._role_choice("claude", "tutor"),
+        self.assertEqual(PROV._role_choice("claude", "tutor"),
                          ("claude-sonnet-5", "high"))
 
     def test_it_does_not_move_the_grader(self):
@@ -313,64 +316,64 @@ class OneChoiceServesBothTools(RoleBase):
         one that talks to you. Moving the grader too would be a bill nobody
         asked for."""
         self._shared(provider="claude", model="claude-opus-5", effort="max")
-        self.assertEqual(bridge._role_choice("claude", "assess"),
+        self.assertEqual(PROV._role_choice("claude", "assess"),
                          ("claude-haiku-4-5", "low"))
 
     def test_the_dated_haiku_id_is_normalised_on_the_way_in(self):
         self._shared(provider="claude", model="claude-haiku-4-5-20251001")
-        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+        self.assertEqual(PROV._role_choice("claude", "tutor")[0],
                          "claude-haiku-4-5")
 
     def test_a_choice_made_here_is_written_in_the_spelling_they_read(self):
-        bridge._write_shared_prefs("claude", "claude-haiku-4-5", "low")
+        PROV._write_shared_prefs("claude", "claude-haiku-4-5", "low")
         with open(self.shared, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["model"],
                              "claude-haiku-4-5-20251001")
 
     def test_a_choice_saved_in_this_app_outranks_the_shared_one(self):
         self._shared(provider="claude", model="claude-sonnet-5")
-        bridge._write_settings(
+        PROV._write_settings(
             {"roles": {"tutor": {"claude": {"model": "claude-opus-5"}}}})
-        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+        self.assertEqual(PROV._role_choice("claude", "tutor")[0],
                          "claude-opus-5")
 
     def test_a_preference_for_the_other_provider_is_left_alone(self):
         """A Codex choice must not reach into a Claude run and be rejected
         there, leaving a default the candidate never picked."""
         self._shared(provider="codex", model="gpt-5.6-luna", effort="max")
-        self.assertEqual(bridge._role_choice("claude", "tutor"),
+        self.assertEqual(PROV._role_choice("claude", "tutor"),
                          ("claude-opus-5", ""))
 
     def test_a_model_this_app_does_not_have_still_lets_the_effort_through(self):
         """Each key is dropped on its own. A partly-unusable file is still
         partly usable."""
         self._shared(provider="claude", model="gpt-4o", effort="xhigh")
-        self.assertEqual(bridge._role_choice("claude", "tutor"),
+        self.assertEqual(PROV._role_choice("claude", "tutor"),
                          ("claude-opus-5", "xhigh"))
 
     def test_no_file_at_all_is_the_normal_case(self):
-        self.assertEqual(bridge._read_shared_prefs(), {})
-        self.assertEqual(bridge._role_choice("claude", "tutor"),
+        self.assertEqual(PROV._read_shared_prefs(), {})
+        self.assertEqual(PROV._role_choice("claude", "tutor"),
                          ("claude-opus-5", ""))
 
     def test_a_corrupt_file_does_not_take_the_tutor_down(self):
         with open(self.shared, "w", encoding="utf-8") as fh:
             fh.write("{{{")
-        self.assertEqual(bridge._role_choice("claude", "tutor")[0],
+        self.assertEqual(PROV._role_choice("claude", "tutor")[0],
                          "claude-opus-5")
 
     def test_an_unwritable_destination_is_reported_not_raised(self):
         """Picking a tutor model must not fail because a sibling tool's
         directory is not writable."""
-        bridge.SHARED_PREFS_PATH = os.path.join(self.home, "nope", "x", "p.json")
-        os.makedirs(os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)),
+        PROV.SHARED_PREFS_PATH = os.path.join(self.home, "nope", "x", "p.json")
+        os.makedirs(os.path.dirname(os.path.dirname(PROV.SHARED_PREFS_PATH)),
                     exist_ok=True)
-        os.chmod(os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)), 0o500)
+        os.chmod(os.path.dirname(os.path.dirname(PROV.SHARED_PREFS_PATH)), 0o500)
         self.addCleanup(
             os.chmod,
-            os.path.dirname(os.path.dirname(bridge.SHARED_PREFS_PATH)), 0o700)
+            os.path.dirname(os.path.dirname(PROV.SHARED_PREFS_PATH)), 0o700)
         self.assertFalse(
-            bridge._write_shared_prefs("claude", "claude-opus-5", "low"))
+            PROV._write_shared_prefs("claude", "claude-opus-5", "low"))
 
 
 class _FakeHandle(object):
@@ -548,7 +551,7 @@ class TheSettingsRouteHoldsItsBoundary(unittest.TestCase):
         status, body = self.b.call("GET", "/api/settings")
         self.assertEqual(status, 200)
         self.assertEqual([r["id"] for r in body["roles"]],
-                         list(bridge.ROLES))
+                         list(PROV.ROLES))
         for role in body["roles"]:
             self.assertIn("claude", role["resolved"])
             self.assertIn("model", role["resolved"]["claude"])
