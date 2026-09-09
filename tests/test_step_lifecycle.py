@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from prepwright import config as C          # noqa: E402
+from prepwright import teach as TEACH        # noqa: E402
 from prepwright import state as S           # noqa: E402
 from prepwright import track as T           # noqa: E402
 
@@ -283,8 +284,8 @@ class TheLadderHasAnEnd(Base):
         self.h.conn.commit()
 
     def test_prepared_is_the_last_rung(self):
-        self.assertEqual(self.bridge.STAGES[-1], "prepared")
-        self.assertEqual(self.bridge.STAGES[-2], "learn")
+        self.assertEqual(TEACH.STAGES[-1], "prepared")
+        self.assertEqual(TEACH.STAGES[-2], "learn")
 
     def test_a_plan_with_work_left_is_still_learn(self):
         self.h.add_step("2:topic:S02", 2, "ETags", "Explain them")

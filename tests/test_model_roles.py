@@ -68,6 +68,19 @@ class RoleBase(unittest.TestCase):
         PROV._SETTINGS_CACHE["key"] = None
         PROV._SETTINGS_CACHE["data"] = {"roles": {}}
         self.addCleanup(PROV._SETTINGS_CACHE.__setitem__, "key", None)
+        # Pointed at a path inside this temp home that does not exist, so the
+        # shipped defaults are asserted against nothing. Without it the tutor
+        # row reads ~/.config/claude-apps/model-prefs.json and these tests fail
+        # on any machine where the sibling tool has ever saved a choice.
+        # Measured on 2026-09-10: that file held claude-sonnet-5 at xhigh,
+        # written by resume-studio, and the tutor default assertion went from
+        # "" to "xhigh" for a reason this repository does not contain. Only the
+        # TUTOR role takes the shared preference, which is why only the two
+        # tutor assertions moved. Subclasses that are ABOUT the shared file
+        # point it somewhere real themselves, after this has run.
+        real_shared = PROV.SHARED_PREFS_PATH
+        PROV.SHARED_PREFS_PATH = os.path.join(self.home, "absent-prefs.json")
+        self.addCleanup(setattr, PROV, "SHARED_PREFS_PATH", real_shared)
 
 
 class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
@@ -89,6 +102,18 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
         got = {(p, r): PROV._role_choice(p, r)
                for p in PROV.PROVIDER_MODELS for r in PROV.ROLES}
         self.assertEqual(got, expected)
+
+    def test_the_suite_never_reads_the_real_shared_preference(self):
+        """Asserted, not trusted. resume-studio learned the writing half of
+        this on 2026-09-09: its suite exercised the route that commits a job,
+        the mirror fired, and it moved this app's default model on a machine
+        where nobody had chosen anything. This is the reading half. Without the
+        redirect in RoleBase.setUp the two shipped-default tests below assert
+        the machine's cross-app preference instead of what this app ships.
+        """
+        self.assertTrue(PROV.SHARED_PREFS_PATH.startswith(self.home),
+                        PROV.SHARED_PREFS_PATH)
+        self.assertFalse(os.path.exists(PROV.SHARED_PREFS_PATH))
 
     def test_the_tutor_default_still_sends_no_effort_flag(self):
         """"" is not the same as "low". The tutor sent no --effort before this
