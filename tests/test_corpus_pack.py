@@ -93,6 +93,61 @@ class Redaction(Base):
                 on_disk += fh.read()
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", on_disk)
 
+    def test_a2_a_credential_shaped_heading_is_redacted_at_the_write(self):
+        """The body was redacted at ingest and the heading was not.
+
+        Found by the round-4 hunt on 2026-09-10 and reproduced before it was
+        fixed. `build_pack` redacts a heading on the way out, but the page path
+        does not go through `build_pack`: `curriculum.slices_by_step` selects
+        `sc.heading` straight from the store and teach.py forwards it to the
+        browser. Redacting at the write is what closes that path.
+        """
+        _tid, handle = self.a_track()
+        doc_id = X.ingest_text(
+            handle,
+            '## Config: api_key: "AKIAsupersecretvalue"\n\nOrdinary prose.\n',
+            origin_url="https://example.org/h")
+        self.assertIsNotNone(doc_id)
+        row = handle.conn.execute(
+            "SELECT heading FROM section WHERE doc_id=?", (doc_id,)).fetchone()
+        self.assertNotIn("AKIAsupersecretvalue", row["heading"])
+        self.assertIn("REDACTED", row["heading"])
+
+    def test_a3_a_redacted_heading_does_not_take_the_cite_token_with_it(self):
+        """The half that breaks grounding rather than leaking anything.
+
+        `_pack_block` renders "===== <cite> :: <heading>" on one line and
+        `redact` replaces a WHOLE matching line, so a credential-shaped heading
+        deleted the header line and with it the only occurrence of the citation
+        token. `pack["cites"]` then advertised a token that appeared nowhere in
+        the text the model was sent, while teach.py instructed it to cite
+        exactly that token. Measured before the fix: cites said D01§s01 and
+        `"D01§s01" in pack["text"]` was False.
+        """
+        _tid, handle = self.a_track()
+        doc_id = X.ingest_text(
+            handle,
+            '## Config: api_key: "AKIAsupersecretvalue"\n\nOrdinary prose.\n',
+            origin_url="https://example.org/h")
+        X.pin_all(handle, "st1", [doc_id])
+        pack = X.build_pack(handle, "st1")
+        self.assertTrue(pack["cites"], "the pack advertised no citation at all")
+        for cite in pack["cites"]:
+            self.assertIn(cite, pack["text"],
+                          "pack['cites'] names %s and the text the model is "
+                          "sent does not contain it" % cite)
+        self.assertNotIn("AKIAsupersecretvalue", pack["text"])
+
+    def test_a4_the_clamp_cannot_cut_a_credential_in_half(self):
+        """Redaction runs before the 120-character clamp. The other order
+        truncates the pattern out of existence and leaves the tail of a key in
+        the store looking like ordinary prose."""
+        long_prefix = "Deployment notes for the staging cluster " * 3
+        pairs = [(long_prefix + 'api_key: "AKIAsupersecretvalue"', "body")]
+        out = X.fit_sections(pairs)
+        self.assertNotIn("AKIAsupersecretvalue", out[0]["heading"])
+        self.assertIn("REDACTED", out[0]["heading"])
+
     def test_b_an_unterminated_pem_block_swallows_the_rest(self):
         out = X.redact("keep\n-----BEGIN RSA PRIVATE KEY-----\nMIIkey\nmore key")
         self.assertIn("keep", out)
@@ -170,6 +225,23 @@ class Pack(Base):
         self.assertFalse(pack["grounded"])
         self.assertEqual(pack["text"], X.EMPTY_CORPUS)
         self.assertTrue(X.pack_text(handle, "st1").strip())
+
+    def test_a1_an_ungrounded_pack_carries_no_hash_of_bytes_never_sent(self):
+        """Found by the round-4 hunt on 2026-09-10.
+
+        `TrackHandle.build_pack` hashes the text it composes. On this branch
+        that text is the empty join of no sections, and it is then replaced by
+        the refusal string, so the hash that shipped described bytes nobody saw.
+        The RETRIEVAL_FAILED branch already cleared it; these two now agree.
+        """
+        _tid, handle = self.a_track()
+        empty = X.build_pack(handle, "st1")
+        self.assertFalse(empty["grounded"])
+        self.assertEqual(empty["pack_sha16"], "")
+        X.ingest_text(handle, LOOSE, origin_url="https://example.org/x")
+        unpinned = X.build_pack(handle, "st1")
+        self.assertFalse(unpinned["grounded"])
+        self.assertEqual(unpinned["pack_sha16"], "")
 
     def test_b_a_corpus_with_nothing_pinned_says_so_differently(self):
         _tid, handle = self.a_track()

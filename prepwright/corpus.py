@@ -128,7 +128,28 @@ def fit_sections(pairs):
             (" " + ln) if ln.startswith("§") else ln for ln in body.split("\n"))
         if len(body) > C.SECTION_MAX_CHARS:
             body = body[:C.SECTION_MAX_CHARS - len(marker)].rstrip() + marker
-        heading = " ".join(str(heading or "(untitled)").split())[:120] or "(untitled)"
+        # Redacted like the body, and BEFORE the 120-character clamp. Two
+        # reasons, and the second is the one that is easy to miss.
+        #
+        # A heading is a redaction surface: `build_pack` already redacts it on
+        # the way out, but the page path does not go through `build_pack`, so
+        # an unredacted heading reaches the browser through
+        # `curriculum.slices_by_step`. Redacting at the write closes both.
+        #
+        # And the cite token shares a line with the heading. `_pack_block`
+        # renders "===== <cite> :: <heading>", `redact` replaces a WHOLE
+        # matching line, so a credential-shaped heading deleted the header line
+        # and with it the only occurrence of the token. `pack["cites"]` then
+        # advertised a citation that was nowhere in the text the model was
+        # sent, and teach.py told it to cite exactly that token. Reproduced on
+        # 2026-09-10: cites said D01§s01 and `D01§s01 in pack["text"]` was
+        # False. Redacting here leaves the header line intact, because the
+        # replacement string carries no credential pattern of its own.
+        #
+        # Before the clamp, because truncating first can cut a pattern in half
+        # and leave the tail of a key in the store looking harmless.
+        heading = redact(" ".join(str(heading or "(untitled)").split()))
+        heading = heading[:120] or "(untitled)"
         out.append({"sec_id": "s%02d" % i, "heading": heading, "body": body})
     return out
 
@@ -298,6 +319,14 @@ def build_pack(handle, step_id):
         except Exception:                                    # noqa: BLE001
             n_docs = 0
         pack["text"] = EMPTY_CORPUS if not n_docs else NO_SLICE
+        # Cleared, not recomputed, and for the same reason the RETRIEVAL_FAILED
+        # branch above clears it. TrackHandle.build_pack already hashed the text
+        # it composed, which on this branch is the empty join of no sections,
+        # and that text has just been thrown away. Leaving the old value shipped
+        # a hash of bytes that were never sent, which is the one thing this
+        # field exists to rule out. Nothing was retrieved, so there is no
+        # evidence to attest to and the honest value is no hash at all.
+        pack["pack_sha16"] = ""
         pack["grounded"] = False
         return pack
     # Redaction happens BEFORE the hash, and reaches the section bodies too.

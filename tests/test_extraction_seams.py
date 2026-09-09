@@ -24,6 +24,8 @@ import ast
 import glob
 import importlib
 import os
+import shutil
+import tempfile
 import sys
 import unittest
 
@@ -69,6 +71,32 @@ def _resolve(expr, aliases):
     return obj
 
 
+def _module_reads(mod, attr):
+    """True when some code in `mod`'s own source reads the name `attr`.
+
+    A patch only reaches a caller whose module-level lookup it changes, so the
+    module that is patched has to be the module that reads the name. A file
+    that merely re-exports it (`run_cli = PPROV.run_cli` and nothing else)
+    satisfies hasattr and satisfies nothing else.
+
+    A Store of the name is not a read, so the re-export line itself does not
+    count. Only a bare `Name` load counts, never an `Attribute` load: a first
+    attempt allowed `Attribute(attr=...)` too and matched the right-hand side of
+    the very re-export it was meant to reject, `sep = os.sep`. A module with no
+    source on disk is given the benefit of the doubt.
+    """
+    path = getattr(mod, "__file__", None)
+    if not path or not os.path.isfile(path):
+        return True
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name) and node.id == attr
+                and isinstance(node.ctx, ast.Load)):
+            return True
+    return False
+
+
 def _patch_sites():
     """(file, line, module_object, attribute) for every patch a test performs."""
     sites = []
@@ -108,10 +136,55 @@ class APatchOnlyCountsAtItsOwnModule(unittest.TestCase):
         found = _patch_sites()
         self.assertGreater(len(found), 0, "the scanner found no patch sites at "
                                           "all, so it is not scanning anything")
-        wrong = ["%s:%d patches %s on %s, which does not define it"
-                 % (f, line, attr, mod.__name__)
-                 for f, line, mod, attr in found if not hasattr(mod, attr)]
+        wrong = []
+        for f, line, mod, attr in found:
+            if not hasattr(mod, attr):
+                wrong.append("%s:%d patches %s on %s, which does not define it"
+                             % (f, line, attr, mod.__name__))
+            elif not _module_reads(mod, attr):
+                # hasattr is satisfied by a bare re-export, which is exactly the
+                # case the docstring above names. `bridge.run_cli` existed as
+                # `run_cli = PPROV.run_cli` right up until the handler moved out,
+                # and patching it would have gone green while provider's own
+                # callers read the real function.
+                wrong.append("%s:%d patches %s on %s, which only re-exports it:"
+                             " no code in that module reads the name"
+                             % (f, line, attr, mod.__name__))
         self.assertEqual(wrong, [], "\n".join(wrong))
+
+    def test_a_pure_re_export_is_not_an_acceptable_patch_target(self):
+        """The half hasattr cannot see, and the half that was actually wrong.
+
+        `bridge.run_cli` existed as `run_cli = PPROV.run_cli` for three of the
+        four extraction commits. hasattr was satisfied by it the whole time,
+        while provider's own callers went on reading the real function. The
+        guard now requires that the patched module contains code that READS
+        the name, which a bare re-export does not.
+        """
+        import types
+        d = tempfile.mkdtemp(prefix="pw-seam-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+
+        reexport = os.path.join(d, "reexport_only.py")
+        with open(reexport, "w", encoding="utf-8") as fh:
+            fh.write("import os\nsep = os.sep\n")
+        uses_it = os.path.join(d, "uses_it.py")
+        with open(uses_it, "w", encoding="utf-8") as fh:
+            fh.write("import os\nsep = os.sep\n\n\ndef join(a, b):\n"
+                     "    return a + sep + b\n")
+
+        mod_a = types.ModuleType("reexport_only")
+        mod_a.__file__ = reexport
+        mod_a.sep = "/"
+        mod_b = types.ModuleType("uses_it")
+        mod_b.__file__ = uses_it
+        mod_b.sep = "/"
+
+        self.assertTrue(hasattr(mod_a, "sep"),
+                        "hasattr is satisfied by the re-export, which is why "
+                        "it was not enough on its own")
+        self.assertFalse(_module_reads(mod_a, "sep"))
+        self.assertTrue(_module_reads(mod_b, "sep"))
 
     def test_the_scanner_would_notice_a_wrong_target(self):
         """The guard above is worth only what its scanner catches, so the
