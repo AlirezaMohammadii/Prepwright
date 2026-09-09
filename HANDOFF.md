@@ -116,6 +116,21 @@ protocol, 0004 is per-track evidence and the manifest.
   findings, all now fixed. The other 19 are in the journal at
   `subagents/workflows/wf_4fa46a86-880/journal.jsonl` and have been neither
   confirmed nor dismissed.
+- **The back half of the product has never run, on any track, ever.** Measured
+  2026-09-09 across all three live track databases:
+  `assessment` 0 rows, `card` 0 rows, and `mark` holds no row of kind `session`,
+  `qa`, `assess` or `card`. Command:
+  `sqlite3 ~/.Prepwright/tracks/<t>/track.db "select kind,count(*) from mark group by kind"`.
+  Teaching has produced 5 turns on one track and 2 on another. Nothing has ever
+  been graded, no session has ever been logged, no recap card has ever existed.
+- **`/api/assess` and `/api/review` have zero test coverage.** The other 13
+  routes are exercised. These two are not, by name, anywhere under `tests/`.
+  Command: `grep -rho "/api/[a-z_]*" tests/*.py | sort | uniq -c`, compared
+  against `grep -o '"/api/[a-z_]*"' bridge.py | sort -u`.
+- **The stage machine has no state after `learn`.** `flow_state` returns
+  intake, diagnose, approve, research, curriculum, learn, and then stays on
+  `learn` forever. A finished plan and a plan on its first step are the same
+  stage. Whether a track should be able to end is an open design question.
 - The Codex provider path has never run (no `codex` binary here). The iPhone
   (`prep iphone`) path has never run. `prep` is still not on `PATH`, so run
   `./prep-launcher.sh` from the repo.
@@ -251,7 +266,10 @@ cannot be read. On this machine `admin` holds root, `ali` and `_mbsetupuser`
 
 ## 6. The work, in dependency order
 
-### Task E. The 17 probes. **Still yours, still blocking.**
+### Task E. The 17 probes. **Still yours.**
+
+They gate a *well-graded* plan. They do **not** gate proving the back half:
+`t-93c97fdd6d77` already carries a full corpus and 20 ready steps. See §10a.
 
 Track `t-454d410f0522`, "Agentic AI Consultant at Proseware", 17 gaps, **16 still to
 decide, 1 approved**. Every undecided one carries "No answer given" because the
@@ -434,23 +452,53 @@ survivors, 23 confirmed. **The cap was 30 of 49, so 19 were never verified.**
 
 **Nothing from the hunt and nothing from the old §10 is open.** All 23 confirmed
 findings and all 7 pre-existing defects are fixed, each with a test that fails
-when the fix is reverted. What remains:
+when the fix is reverted. What remains is not defect repair. It is the third of
+the product that was built and never executed.
 
-1. **The 19 unverified findings.** The workflow capped refutation at 30 of 49.
-   Read them from `journal.jsonl` in the run directory named in §4 and put them
-   through a refutation pass. They are neither confirmed nor dismissed.
+### 10a. The largest hole: the loop has never closed
+
+The front half is proven on real data. `t-93c97fdd6d77` carries 20 approved
+gaps, 9 documents, 66 sections and 20 steps, all `ready`, all
+`evidence_state='full'`. Everything after that point is untested and unrun. See
+the three new bullets in §4.
+
+**Nothing blocks proving it.** That track does not need the 17 probes. Open a
+step, teach, close the session, run the assessment, drill the recap, and watch
+what breaks. Do that before writing a single test for `/api/assess`: writing the
+contract before anyone has seen the route run once is guessing.
+
+### 10b. The recap drill claims something it does not do
+
+The page kicker reads `Recap drill · spaced repetition`. The implementation is
+`recapQueue = shuffle([...bank])` plus a `missed >= 2` weak list
+(`index.html:3516`). No intervals, no due dates, no ease.
+
+Meanwhile `state.py` carries a complete SM-2 schema (`card.interval_days`,
+`ease`, `reps`, `lapses`, `due_utc`, and an append-only `card_review` ledger)
+whose only caller in the whole repository is `tests/test_persistence.py`. The
+page persists its bank as `mark` rows of kind `card` (`pagestate.FIELDS`)
+instead, so the durable scheduler is dead code and the live drill is
+mislabelled. Two card systems exist. One of them has to go, or the scheduler has
+to be wired up and the label earned.
+
+### 10c. Secondary, unchanged
+
+1. **The 19 unverified findings.** The round-2 workflow capped refutation at 30
+   of 49. Read them from `journal.jsonl` in the run directory named in §4 and
+   put them through a refutation pass. Neither confirmed nor dismissed.
 2. **Click "Choose a file…" once.** The chooser has never opened. Everything
    around it is proven. The dialog itself is not.
-3. **Answer the 17 probes** (Task E). Everything downstream of them is now built
-   and tested.
-4. **Task C's remaining four modules.**
+3. **Answer the 17 probes** (Task E). They gate a well-graded plan, not the
+   loop.
+4. **Task C's remaining four modules** (`provider.py`, `teach.py`, `assess.py`,
+   `serve.py`). Refactor debt, zero functional impact.
 5. **One generic heading word defeats MIN_TERMS**, because a hit in a heading
    sets `labelled` and one word is then enough. That is a deliberate rule with a
    stated reason (`curriculum.py:144`) and it was not changed. On a corpus whose
    headings share a common word ("Overview", "Scope", "Policy"), a gap with no
    real coverage can still be pinned to a near-miss. It cost an hour of fixture
-   debugging this session. Decide whether the rule should require the heading
-   hit to be a rare term.
+   debugging. Decide whether the rule should require the heading hit to be a
+   rare term.
 6. **The relative floor still collapses against a single dominant match.**
    Trap 28 named it and it is still true: at the `focused` floor, one short
    dense section can drop two genuinely on-topic chapters. A test in
@@ -494,14 +542,27 @@ Never let a test call a model, and now never let one open a dialog.
 
 ## 12. Definition of done for the next session
 
-- The 19 unverified hunt findings triaged: each confirmed and fixed, or
-  dismissed in writing with a reason.
-- The file chooser walked once in a browser.
-- Task E: the owner answers the 17 probes, the plan is built from a graded gap
-  list, and the result is walked end to end.
-- Task C: `provider.py` extracted, with `orphan_scan` after every deletion and
-  the launcher started afterwards.
-- The two open scoring questions in §10 decided.
-- 3-interpreter suite green, manifest clean, orphan scan clean, walked in a
-  browser with zero console errors.
-- This file rewritten for the session after that one.
+In dependency order. Each line is done only when you can name the command or the
+browser action whose output backs it.
+
+1. The back half walked end to end on `t-93c97fdd6d77` in a real browser with a
+   real model call: a step opened, taught, closed, assessed, and drilled.
+   Evidence: non-zero `assessment` rows and non-zero `mark` rows of kind
+   `session` and `card` in that track's database.
+2. Whatever that walk breaks, fixed, each fix proven by reverting it and
+   confirming its own test fails.
+3. `/api/assess` and `/api/review` covered by stub-provider route tests, written
+   against the contract the walk revealed, not the one the source implies.
+4. The card duplication in §10b decided and the decision implemented: either the
+   SM-2 tables are wired to the drill and the label is earned, or they are
+   deleted and the kicker is corrected. Do not leave both.
+5. The 19 unverified hunt findings triaged: each confirmed and fixed, or
+   dismissed in writing with a reason.
+6. The file chooser walked once in a browser.
+7. 3-interpreter suite green, manifest clean, orphan scan clean, every view
+   walked with zero console errors.
+8. This file rewritten for the session after that one, every claim naming its
+   command.
+
+Committed locally. **This repository has no remote. Never invent a push
+target.**
