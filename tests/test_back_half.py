@@ -36,6 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import bridge  # noqa: E402
+from prepwright import assess as ASSESS  # noqa: E402
 # Aliased PROV, not `provider`: several helpers here take a
 # parameter called `provider`, which would shadow the module.
 from prepwright import provider as PROV  # noqa: E402
@@ -116,12 +117,12 @@ class AGradeIsBoundedToWhatAGradeCanMean(unittest.TestCase):
     returned mastery 45 where the scale is 0..1."""
 
     def test_the_schema_states_the_scale_it_wants(self):
-        schema = json.loads(bridge.ASSESS_SCHEMA)
+        schema = json.loads(ASSESS.ASSESS_SCHEMA)
         m = schema["properties"]["steps"]["items"]["properties"]["mastery"]
         self.assertEqual((m.get("minimum"), m.get("maximum")), (0, 1))
 
     def test_a_percent_written_as_a_whole_number_is_rescaled(self):
-        rows = bridge._clean_rows([{"key": "8:topic:S08", "mastery": 45,
+        rows = ASSESS._clean_rows([{"key": "8:topic:S08", "mastery": 45,
                                     "reason": "partial"}])
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]["mastery"], 0.45)
@@ -131,12 +132,12 @@ class AGradeIsBoundedToWhatAGradeCanMean(unittest.TestCase):
         and arm the Mark-done button, which is gated on mastery >= 0.85. The
         grader's own system prompt calls an unearned pass the expensive
         mistake, so ambiguity resolves downward."""
-        rows = bridge._clean_rows([{"key": "k", "mastery": 45, "reason": ""}])
+        rows = ASSESS._clean_rows([{"key": "k", "mastery": 45, "reason": ""}])
         self.assertLess(rows[0]["mastery"], 0.85)
 
     def test_an_in_range_grade_is_left_exactly_alone(self):
         for value in (0.0, 0.3, 0.85, 1.0):
-            rows = bridge._clean_rows([{"key": "k", "mastery": value, "reason": ""}])
+            rows = ASSESS._clean_rows([{"key": "k", "mastery": value, "reason": ""}])
             self.assertEqual(rows[0]["mastery"], value)
 
     def test_a_grade_off_the_scale_is_dropped_not_invented(self):
@@ -144,23 +145,23 @@ class AGradeIsBoundedToWhatAGradeCanMean(unittest.TestCase):
         which is honest, rather than as a score nobody meant."""
         for bad in (-30, -0.5, 101, 1e9, float("nan")):
             self.assertEqual(
-                bridge._clean_rows([{"key": "k", "mastery": bad, "reason": ""}]),
+                ASSESS._clean_rows([{"key": "k", "mastery": bad, "reason": ""}]),
                 [], "mastery %r survived" % (bad,))
 
     def test_a_row_that_is_not_a_row_is_dropped(self):
-        self.assertEqual(bridge._clean_rows(["nope", None, 7, []]), [])
+        self.assertEqual(ASSESS._clean_rows(["nope", None, 7, []]), [])
 
     def test_a_row_with_no_key_is_dropped(self):
         self.assertEqual(
-            bridge._clean_rows([{"key": "", "mastery": 0.5, "reason": "x"}]), [])
+            ASSESS._clean_rows([{"key": "", "mastery": 0.5, "reason": "x"}]), [])
 
     def test_an_unparseable_mastery_is_dropped(self):
         self.assertEqual(
-            bridge._clean_rows([{"key": "k", "mastery": "high", "reason": ""}]), [])
+            ASSESS._clean_rows([{"key": "k", "mastery": "high", "reason": ""}]), [])
 
     def test_none_and_empty_are_safe(self):
-        self.assertEqual(bridge._clean_rows(None), [])
-        self.assertEqual(bridge._clean_rows([]), [])
+        self.assertEqual(ASSESS._clean_rows(None), [])
+        self.assertEqual(ASSESS._clean_rows([]), [])
 
 
 class AnEmptyBatchIsAFailureNotAnEmptySuccess(unittest.TestCase):
@@ -168,8 +169,8 @@ class AnEmptyBatchIsAFailureNotAnEmptySuccess(unittest.TestCase):
     so a batch that produced nothing was reported as graded."""
 
     def setUp(self):
-        self._real = bridge._assess_batch
-        self.addCleanup(setattr, bridge, "_assess_batch", self._real)
+        self._real = ASSESS._assess_batch
+        self.addCleanup(setattr, ASSESS, "_assess_batch", self._real)
 
     @staticmethod
     def _usage(cost=0.001):
@@ -180,8 +181,8 @@ class AnEmptyBatchIsAFailureNotAnEmptySuccess(unittest.TestCase):
                  "said": ["s"], "tutor": "t"} for i in range(n)]
 
     def test_a_batch_that_returns_no_rows_is_counted_as_failed(self):
-        bridge._assess_batch = lambda p, chunk: ([], self._usage())
-        graded, _usage, failed = bridge.assess_via_cli("claude", self._items(3))
+        ASSESS._assess_batch = lambda p, chunk: ([], self._usage())
+        graded, _usage, failed = ASSESS.assess_via_cli("claude", self._items(3))
         self.assertEqual(graded, [])
         self.assertEqual(failed, 3, "an empty batch was reported as a success")
 
@@ -189,16 +190,16 @@ class AnEmptyBatchIsAFailureNotAnEmptySuccess(unittest.TestCase):
         """The call was made and billed whether or not it came back usable.
         The old order discarded the cost of every failed attempt, so the spend
         panel under-reported exactly when the candidate most needed to see it."""
-        bridge._assess_batch = lambda p, chunk: ([], self._usage(0.002))
-        _graded, usage, _failed = bridge.assess_via_cli("claude", self._items(2))
+        ASSESS._assess_batch = lambda p, chunk: ([], self._usage(0.002))
+        _graded, usage, _failed = ASSESS.assess_via_cli("claude", self._items(2))
         self.assertAlmostEqual(usage["cost"], 0.004)
         self.assertEqual(usage["in"], 200)
 
     def test_a_good_batch_still_grades_and_charges_once(self):
-        bridge._assess_batch = lambda p, chunk: (
+        ASSESS._assess_batch = lambda p, chunk: (
             [{"key": it["key"], "mastery": 0.5, "reason": "ok"} for it in chunk],
             self._usage())
-        graded, usage, failed = bridge.assess_via_cli("claude", self._items(3))
+        graded, usage, failed = ASSESS.assess_via_cli("claude", self._items(3))
         self.assertEqual(len(graded), 3)
         self.assertEqual(failed, 0)
         self.assertAlmostEqual(usage["cost"], 0.001)
@@ -215,8 +216,8 @@ class AnEmptyBatchIsAFailureNotAnEmptySuccess(unittest.TestCase):
             return ([{"key": it["key"], "mastery": 0.4, "reason": "ok"}
                      for it in chunk], self._usage())
 
-        bridge._assess_batch = flaky
-        graded, _usage, failed = bridge.assess_via_cli("claude", self._items(7))
+        ASSESS._assess_batch = flaky
+        graded, _usage, failed = ASSESS.assess_via_cli("claude", self._items(7))
         self.assertEqual(failed, 5)
         self.assertEqual(len(graded), 2)
 
@@ -226,21 +227,21 @@ class AMalformedGraderReplyDoesNotCostBothAttempts(unittest.TestCase):
     AttributeError, which escaped the ValueError-only guard."""
 
     def setUp(self):
-        self._real = bridge.run_cli
-        self.addCleanup(setattr, bridge, "run_cli", self._real)
+        self._real = ASSESS.run_cli
+        self.addCleanup(setattr, ASSESS, "run_cli", self._real)
 
     def _returns(self, result):
-        bridge.run_cli = lambda *a, **k: {"result": result, "usage": {},
+        ASSESS.run_cli = lambda *a, **k: {"result": result, "usage": {},
                                           "total_cost_usd": 0}
 
     def test_a_top_level_array_yields_no_rows_instead_of_raising(self):
         self._returns("[{\"key\": \"k\", \"mastery\": 0.5}]")
-        rows, _usage = bridge._assess_batch("claude", [{"key": "k"}])
+        rows, _usage = ASSESS._assess_batch("claude", [{"key": "k"}])
         self.assertEqual(rows, [])
 
     def test_unparseable_text_yields_no_rows(self):
         self._returns("I graded them all, honestly.")
-        rows, _usage = bridge._assess_batch("claude", [{"key": "k"}])
+        rows, _usage = ASSESS._assess_batch("claude", [{"key": "k"}])
         self.assertEqual(rows, [])
 
     def test_the_batch_path_actually_applies_the_bound(self):
@@ -250,14 +251,14 @@ class AMalformedGraderReplyDoesNotCostBothAttempts(unittest.TestCase):
         so this one goes through the batch."""
         self._returns(json.dumps({"steps": [{"key": "8:topic:S08",
                                              "mastery": 45, "reason": "partial"}]}))
-        rows, _usage = bridge._assess_batch("claude", [{"key": "8:topic:S08"}])
+        rows, _usage = ASSESS._assess_batch("claude", [{"key": "8:topic:S08"}])
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]["mastery"], 0.45)
 
     def test_a_well_formed_reply_still_comes_through(self):
         self._returns(json.dumps({"steps": [{"key": "8:topic:S08",
                                              "mastery": 0.6, "reason": "ok"}]}))
-        rows, _usage = bridge._assess_batch("claude", [{"key": "8:topic:S08"}])
+        rows, _usage = ASSESS._assess_batch("claude", [{"key": "8:topic:S08"}])
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]["mastery"], 0.6)
 

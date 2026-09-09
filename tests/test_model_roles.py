@@ -27,6 +27,8 @@ Run:  cd ~/Desktop/Prepwright && python3 -m unittest discover -s tests -v
 """
 
 import json
+import ast
+import glob
 import os
 import shutil
 import signal
@@ -42,6 +44,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import bridge  # noqa: E402
+from prepwright import assess as ASSESS  # noqa: E402
 # Aliased PROV, not `provider`: several helpers here take a
 # parameter called `provider`, which would shadow the module.
 from prepwright import provider as PROV  # noqa: E402
@@ -97,10 +100,26 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
 
     def test_there_is_one_role_per_model_callsite(self):
         """Five roles, five run_cli calls. A sixth call site that forgets to
-        name a role raises rather than borrowing another role's setting."""
-        source = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
-        self.assertEqual(source.count("\n    data = run_cli(")
-                         + source.count("\n            data = run_cli("), 5)
+        name a role raises rather than borrowing another role's setting.
+
+        Counted over the AST of every file that can hold a call, not by
+        matching source text at two hard-coded indentation levels: two of the
+        five moved into prepwright/assess.py in ADR 0007, and the string form
+        would also have missed a call written at any third indentation.
+        """
+        sites = []
+        for path in ([os.path.join(ROOT, "bridge.py")]
+                     + sorted(glob.glob(os.path.join(ROOT, "prepwright",
+                                                     "*.py")))):
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "run_cli"):
+                    sites.append("%s:%d" % (os.path.basename(path),
+                                            node.lineno))
+        self.assertEqual(len(sites), 5, "; ".join(sites))
         self.assertEqual(len(PROV.ROLES), 5)
 
 
@@ -249,8 +268,8 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
     def setUp(self):
         RoleBase.setUp(self)
         self.seen = []
-        real = bridge.run_cli
-        self.addCleanup(setattr, bridge, "run_cli", real)
+        real = ASSESS.run_cli
+        self.addCleanup(setattr, ASSESS, "run_cli", real)
 
         def recorder(provider, model, system, prompt, effort="", **kw):
             self.seen.append({"model": model, "effort": effort})
@@ -260,17 +279,17 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
                  "recap": [{"q": "q", "a": "a"}]}),
                     "usage": {}, "total_cost_usd": 0}
 
-        bridge.run_cli = recorder
+        ASSESS.run_cli = recorder
 
     def test_the_grader_sends_the_model_the_candidate_chose(self):
         PROV._write_settings({"roles": {"assess": {"claude": {
             "model": "claude-opus-5", "effort": "xhigh"}}}})
-        bridge._assess_batch("claude", [{"key": "8:topic:S08"}])
+        ASSESS._assess_batch("claude", [{"key": "8:topic:S08"}])
         self.assertEqual(self.seen[-1],
                          {"model": "claude-opus-5", "effort": "xhigh"})
 
     def test_the_grader_sends_haiku_at_low_when_nothing_was_chosen(self):
-        bridge._assess_batch("claude", [{"key": "8:topic:S08"}])
+        ASSESS._assess_batch("claude", [{"key": "8:topic:S08"}])
         self.assertEqual(self.seen[-1],
                          {"model": "claude-haiku-4-5", "effort": "low"})
 
@@ -280,7 +299,7 @@ class TheGraderActuallyUsesWhatWasChosen(RoleBase):
         pay Opus rates for every recap card."""
         PROV._write_settings({"roles": {"assess": {"claude": {
             "model": "claude-opus-5"}}}})
-        bridge.review_via_cli("claude", {"key": "8:topic:S08"},
+        ASSESS.review_via_cli("claude", {"key": "8:topic:S08"},
                               [{"role": "user", "content": "q"},
                                {"role": "assistant", "content": "a"}])
         self.assertEqual(self.seen[-1]["model"], "claude-haiku-4-5")
@@ -376,6 +395,16 @@ class OneChoiceServesBothTools(RoleBase):
             PROV._write_shared_prefs("claude", "claude-opus-5", "low"))
 
 
+def _opener(handle):
+    """The current-track opener _persist_assessment now takes as an argument.
+
+    It used to reach for a module global, so these tests patched one. Passing it
+    in is what lets prepwright/assess.py sit below the server in the import
+    order, and it removes two monkeypatches at the same time.
+    """
+    return lambda *a, **k: handle
+
+
 class _FakeHandle(object):
     """Just enough of a TrackHandle for _persist_assessment: the step ids it
     knows, an assessment sink, and a reconcile it can count."""
@@ -420,10 +449,9 @@ class AGradeSaysWhatProducedIt(unittest.TestCase):
         lived only as page state: one superseded value, no history, and nothing
         to rebuild the panel from after a reload."""
         h = _FakeHandle({"1:topic:S01"})
-        self._with_handle(h)
-        landed = bridge._persist_assessment(
+        landed = ASSESS._persist_assessment(
             [{"key": "1:topic:S01", "mastery": 0.5, "reason": "partial"}],
-            "claude", "claude-haiku-4-5")
+            "claude", "claude-haiku-4-5", _opener(h))
         self.assertEqual(landed, 1)
         self.assertEqual(h.written[0][0], "1:topic:S01")
         self.assertAlmostEqual(h.written[0][1], 0.5)
@@ -434,32 +462,22 @@ class AGradeSaysWhatProducedIt(unittest.TestCase):
         every open, so one stale key would otherwise abort the statement and
         cost the grades that ARE valid."""
         h = _FakeHandle({"1:topic:S01"})
-        self._with_handle(h)
-        landed = bridge._persist_assessment(
+        landed = ASSESS._persist_assessment(
             [{"key": "9:topic:S99", "mastery": 0.9},
              {"key": "1:topic:S01", "mastery": 0.5}],
-            "claude", "claude-haiku-4-5")
+            "claude", "claude-haiku-4-5", _opener(h))
         self.assertEqual(landed, 1)
         self.assertEqual([w[0] for w in h.written], ["1:topic:S01"])
 
     def test_a_store_failure_does_not_discard_a_grade_already_paid_for(self):
         """By the time this runs the model call is billed. A 502 here would
         throw away something the candidate has bought."""
-        real = bridge.open_state_track
-        self.addCleanup(setattr, bridge, "open_state_track", real)
-
         def boom(*a, **k):
             raise bridge.PSTATE.StoreError("disk is gone")
 
-        bridge.open_state_track = boom
         self.assertEqual(
-            bridge._persist_assessment([{"key": "1:topic:S01", "mastery": 0.5}],
-                                       "claude", "claude-haiku-4-5"), 0)
-
-    def _with_handle(self, handle):
-        real = bridge.open_state_track
-        self.addCleanup(setattr, bridge, "open_state_track", real)
-        bridge.open_state_track = lambda *a, **k: handle
+            ASSESS._persist_assessment([{"key": "1:topic:S01", "mastery": 0.5}],
+                                       "claude", "claude-haiku-4-5", boom), 0)
 
 
 # ---- the route, over real HTTP ----------------------------------------------
