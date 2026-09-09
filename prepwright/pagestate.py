@@ -97,6 +97,11 @@ FIELDS = {
     "effort":     ("pref", "scalar"),
     "assessAt":   ("pref", "scalar"),
     "assessCost": ("pref", "scalar"),
+    # Which model produced the grade on screen. A scalar of at most ~30 bytes,
+    # so it raises no cap question. It is persisted while assessList is not,
+    # because after a reload the "Last checked" line survives and would
+    # otherwise attribute a grade to nothing at all.
+    "assessModel": ("pref", "scalar"),
 }
 # Three names in the page document that this table deliberately leaves out.
 #   assessList  the rows of the last re-check run, kept only to redraw one

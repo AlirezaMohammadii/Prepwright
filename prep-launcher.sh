@@ -4,6 +4,23 @@
 set -eu
 umask 077
 
+# --no-browser is stripped out of "$@" before anything reads $1. Every branch
+# below tests "${1:-}" by name (`iphone`, `-h`), so leaving the flag in place
+# would make `prep --no-browser iphone` look like an unknown first argument.
+# Parity with resume-studio, which exposes the same flag for the same reason:
+# a launcher that always steals focus cannot be driven from a script or a test.
+OPEN_BROWSER=1
+_args=""
+for _a in "$@"; do
+  if [ "$_a" = "--no-browser" ]; then
+    OPEN_BROWSER=0
+  else
+    _args="${_args} $(/usr/bin/printf '%s' "$_a" | /usr/bin/sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"
+  fi
+done
+eval "set -- ${_args}"
+if [ "$OPEN_BROWSER" = "1" ]; then _OPEN_VERB="— opening"; else _OPEN_VERB="at"; fi
+
 case "${1:-}" in
   -h|--help|help)
     cat <<'USAGE'
@@ -12,6 +29,7 @@ prep — Prepwright interview-preparation tutor
   prep                  start the tutor, open it in your browser (loopback only)
   prep iphone           also serve it to your iPhone over your own Tailscale tailnet
   prep iphone off       stop serving to the phone; the tutor is loopback only again
+  prep --no-browser     start (or report) without opening a browser window
   prep --help           this message
 
 iPhone mode keeps the bridge on 127.0.0.1 and reaches the phone through a
@@ -390,11 +408,13 @@ if [ -n "$running_body" ]; then
     # A bridge already up in remote mode serves this Mac at ${URL} too, so a
     # plain `prep` can hand it over instead of reporting a phantom conflict.
     if /usr/bin/printf '%s' "$running_body" | /usr/bin/grep -Eq "$REMOTE_MARKER"; then
-      echo "prep: already running (iPhone mode is on) — opening ${URL}"
+      echo "prep: already running (iPhone mode is on) ${_OPEN_VERB} ${URL}"
     else
-      echo "prep: already running — opening ${URL}"
+      echo "prep: already running ${_OPEN_VERB} ${URL}"
     fi
-    /usr/bin/open "$URL"
+    if [ "$OPEN_BROWSER" = "1" ]; then
+      /usr/bin/open "$URL"
+    fi
     exit 0
   fi
   echo "prep: port ${PORT} is occupied by a different local service; not opening it" >&2
@@ -423,9 +443,15 @@ fi
         echo "    https://${TUTOR_TS_HOST}/"
         echo "  Verified: bridge up in remote mode, tailnet handler live."
         echo "  This Mac cannot open that tailnet URL itself (a node cannot reach"
-        echo "  its own serve endpoint) — it uses ${URL} instead, opened now."
+        if [ "$OPEN_BROWSER" = "1" ]; then
+          echo "  its own serve endpoint) — it uses ${URL} instead, opened now."
+        else
+          echo "  its own serve endpoint) — reach it here at ${URL}."
+        fi
       fi
-      /usr/bin/open "$URL"
+      if [ "$OPEN_BROWSER" = "1" ]; then
+        /usr/bin/open "$URL"
+      fi
       exit 0
     fi
     i=$((i + 1))

@@ -124,10 +124,6 @@ PROVIDER_DEFAULTS = {
     "claude": "claude-opus-5",
     "codex": "gpt-5.6-sol",
 }
-PROVIDER_ASSESS_MODELS = {
-    "claude": "claude-haiku-4-5",
-    "codex": "gpt-5.6-luna",
-}
 PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
 PROVIDER_LOGIN_HINT = {"claude": "claude", "codex": "codex login"}
 
@@ -251,10 +247,6 @@ RESEARCH_BUDGET_SECONDS = 100
 DISCOVER_MAX_DOCS = 24
 DISCOVER_BUDGET_SECONDS = 900
 DISCOVER_PER_GAP = 3
-PROVIDER_DISCOVER_MODELS = {
-    "claude": "claude-sonnet-5",
-    "codex": "gpt-5.6-terra",
-}
 
 
 def _trim_report(body, discarded):
@@ -647,6 +639,236 @@ def _effort_flag(effort, default=None):
     if lvl not in EFFORT_LEVELS:
         lvl = default if default in EFFORT_LEVELS else None
     return ["--effort", lvl] if lvl else []
+
+# ---- which model does which job --------------------------------------------
+# Every model call this bridge makes belongs to exactly one role, and there are
+# exactly five, one per run_cli call site. Holding that one-to-one is what lets
+# "the candidate picks the model end to end" be checked by grep instead of
+# asserted: a sixth call site that forgets to name a role raises in _role_choice
+# rather than silently inheriting some other role's setting.
+#
+# Before this, three of the five were pinned in the source. assess, review and
+# judge each ran claude-haiku-4-5 at effort "low" whatever the model menu said,
+# and discovery ran sonnet. None of that was a quality decision anyone made:
+# those three paths had never once completed on any machine until the max-turns
+# fix in ADR 0005, so the pins were inherited from code nobody had watched run.
+# The menu governed the tutor and nothing else, while claiming to govern the app.
+#
+# ROLE_DEFAULTS reproduces the old behaviour exactly. Adopting this changes no
+# grade and no bill until the candidate moves a control.
+ROLES = ("tutor", "assess", "review", "judge", "discover")
+ROLE_LABELS = {
+    "tutor": "Tutor",
+    "assess": "Grader",
+    "review": "Reviewer",
+    "judge": "Diagnostic judge",
+    "discover": "Researcher",
+}
+ROLE_NOTES = {
+    "tutor": "Teaches a step and answers your questions.",
+    "assess": "Scores your steps when you ask to be re-checked.",
+    "review": "Writes the recap and the drill when a session closes.",
+    "judge": "Grades your intake answers into gaps.",
+    "discover": "Searches the web and reads sources into the corpus.",
+}
+# (model, effort). An effort of "" means send no --effort flag, which is what
+# the tutor did before this existed and is preserved so the tutor is unchanged.
+ROLE_DEFAULTS = {
+    "claude": {
+        "tutor":    ("claude-opus-5", ""),
+        "assess":   ("claude-haiku-4-5", "low"),
+        "review":   ("claude-haiku-4-5", "low"),
+        "judge":    ("claude-haiku-4-5", "low"),
+        "discover": ("claude-sonnet-5", "low"),
+    },
+    "codex": {
+        "tutor":    ("gpt-5.6-sol", ""),
+        "assess":   ("gpt-5.6-luna", "low"),
+        "review":   ("gpt-5.6-luna", "low"),
+        "judge":    ("gpt-5.6-luna", "low"),
+        "discover": ("gpt-5.6-terra", "low"),
+    },
+}
+assert set(ROLE_DEFAULTS) == set(PROVIDER_MODELS)
+for _p, _rs in ROLE_DEFAULTS.items():
+    assert set(_rs) == set(ROLES), _p
+    for _r, (_m, _e) in _rs.items():
+        # A default that is not on its own whitelist would be rejected by
+        # _role_choice and fall back to itself forever, so it is caught here at
+        # import instead of becoming a silent model substitution at runtime.
+        assert _m in PROVIDER_MODELS[_p], (_p, _r, _m)
+        assert _e == "" or _e in EFFORT_LEVELS, (_p, _r, _e)
+
+_SETTINGS_LOCK = threading.Lock()
+_SETTINGS_CACHE = {"key": None, "data": {"roles": {}}}
+
+
+def _settings_path():
+    """Resolved from PC.HOME at call time, not at import.
+
+    A test that redirects PREPWRIGHT_HOME after this module loads still wants
+    its own settings file rather than the candidate's real one.
+    """
+    return os.path.join(PC.HOME, "settings.json")
+
+
+def _clean_settings(raw):
+    """Keep only role/provider/model/effort values that are on the whitelists.
+
+    Validated on READ, not only on write. The file belongs to the candidate and
+    is not a threat, but a hand-edit or a stale file naming a retired model id
+    would otherwise be handed to the CLI as --model, and the CLI answers an
+    unknown model with a warning on stderr and a normal exit, so the page would
+    never learn that it graded on something other than what it displayed.
+
+    Choices are stored per provider. One flat model field would carry a Claude
+    id into a Codex run the moment the provider changed, and that id would then
+    fail the whitelist and silently revert to a default the candidate did not
+    pick.
+    """
+    out = {"roles": {}}
+    if not isinstance(raw, dict):
+        return out
+    provider = str(raw.get("provider") or "").strip().lower()
+    if provider in PROVIDER_MODELS:
+        out["provider"] = provider
+    roles = raw.get("roles")
+    if not isinstance(roles, dict):
+        return out
+    for role in ROLES:
+        entry = roles.get(role)
+        if not isinstance(entry, dict):
+            continue
+        keep = {}
+        for prov in PROVIDER_MODELS:
+            sub = entry.get(prov)
+            if not isinstance(sub, dict):
+                continue
+            row = {}
+            model = str(sub.get("model") or "").strip()
+            if model in PROVIDER_MODELS[prov]:
+                row["model"] = model
+            if "effort" in sub:
+                effort = str(sub.get("effort") or "").strip().lower()
+                # "" is a real choice meaning "send no flag", so it is kept,
+                # while an unrecognised level is dropped rather than passed on.
+                if effort == "" or effort in EFFORT_LEVELS:
+                    row["effort"] = effort
+            if row:
+                keep[prov] = row
+        if keep:
+            out["roles"][role] = keep
+    return out
+
+
+def _read_settings():
+    """The saved per-role choices, or an empty set of them.
+
+    Cached against (mtime_ns, size) so the common case is one stat, and an edit
+    made outside this process is still picked up on the next call.
+    """
+    path = _settings_path()
+    try:
+        st = os.stat(path)
+    except OSError:
+        with _SETTINGS_LOCK:
+            _SETTINGS_CACHE["key"] = None
+            _SETTINGS_CACHE["data"] = {"roles": {}}
+            return _SETTINGS_CACHE["data"]
+    key = (st.st_mtime_ns, st.st_size)
+    with _SETTINGS_LOCK:
+        if _SETTINGS_CACHE["key"] == key:
+            return _SETTINGS_CACHE["data"]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        raw = {}
+    data = _clean_settings(raw)
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE["key"] = key
+        _SETTINGS_CACHE["data"] = data
+    return data
+
+
+def _write_settings(raw):
+    """Validate, persist atomically, return what was actually kept."""
+    data = _clean_settings(raw)
+    body = json.dumps(data, indent=1, sort_keys=True) + "\n"
+    os.makedirs(PC.HOME, mode=PC.DIR_MODE, exist_ok=True)
+    PSTATE.atomic_write(_settings_path(), body)
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE["key"] = None
+    return data
+
+
+def _settings_view():
+    """What the page renders: the catalogue, plus what each role would use now.
+
+    `resolved` is the answer to "what runs if I press the button", which is the
+    only number a candidate can act on. `saved` is what they explicitly chose,
+    and is empty where they are still on the shipped default, so the panel can
+    show the difference instead of implying every value was picked by hand.
+    """
+    saved = _read_settings()
+    roles = []
+    for role in ROLES:
+        entry = saved.get("roles", {}).get(role, {})
+        roles.append({
+            "id": role,
+            "label": ROLE_LABELS[role],
+            "note": ROLE_NOTES[role],
+            "saved": {p: dict(entry.get(p) or {}) for p in PROVIDER_MODELS},
+            "resolved": {
+                p: dict(zip(("model", "effort"), _role_choice(p, role)))
+                for p in PROVIDER_MODELS
+            },
+            "default": {
+                p: dict(zip(("model", "effort"), ROLE_DEFAULTS[p][role]))
+                for p in PROVIDER_MODELS
+            },
+        })
+    return {
+        "provider": saved.get("provider", "claude"),
+        "roles": roles,
+        "models": {p: list(PROVIDER_MODELS[p]) for p in PROVIDER_MODELS},
+        "labels": dict(PROVIDER_LABELS),
+        "efforts": list(EFFORT_LEVELS),
+    }
+
+
+def _role_choice(provider, role, model=None, effort=None):
+    """(model, effort) for one role.
+
+    Three layers, each falling back to the next and each fail-closed: what this
+    request explicitly asked for, then the candidate's saved choice for that
+    role and provider, then the shipped default. An unrecognised value at any
+    layer drops to the next rather than reaching the CLI.
+    """
+    if role not in ROLES:
+        raise ValueError("Unknown model role %r." % (role,))
+    if provider not in PROVIDER_MODELS:
+        raise ValueError("Unknown tutor provider.")
+    d_model, d_effort = ROLE_DEFAULTS[provider][role]
+    saved = (_read_settings().get("roles", {}).get(role, {}).get(provider)
+             or {})
+    chosen = str(model or "").strip() or saved.get("model") or d_model
+    if chosen not in PROVIDER_MODELS[provider]:
+        chosen = d_model
+    asked = str(effort or "").strip().lower()
+    if asked in EFFORT_LEVELS:
+        level = asked
+    elif "effort" in saved:
+        # Already narrowed to "" or a real level by _clean_settings, and "" is
+        # a real choice there meaning send no --effort flag.
+        level = saved["effort"]
+    else:
+        level = d_effort
+    # No final whitelist test, deliberately. Every branch above is already
+    # narrowed, and a guard that can never fire is how this codebase grew three
+    # dead status='done' checks that hid an unrecoverable transcript cap.
+    return chosen, level
+
 
 # Redaction lives in prepwright.corpus, because the research path that fetches
 # a page and the teaching path that reads one back both need the same rules, and
@@ -1270,9 +1492,9 @@ def _clean_rows(rows):
 def _assess_batch(provider, items):
     prompt = "Grade each step. Return one object per step, nothing else.\n\n" + \
         "\n\n---\n\n".join(_digest(it) for it in items)
-    model = PROVIDER_ASSESS_MODELS[provider]
+    model, effort = _role_choice(provider, "assess")
     data = run_cli(provider, model, ASSESS_SYSTEM, prompt,
-                   effort="low", schema=ASSESS_SCHEMA)
+                   effort=effort, schema=ASSESS_SCHEMA)
     try:
         parsed = json.loads(data.get("result") or "{}")
     except ValueError:
@@ -1295,7 +1517,7 @@ def assess_via_cli(provider, items):
     more to the candidate than an error where a number should be, and the steps
     that did come back still move the percentage.
     """
-    if provider not in PROVIDER_ASSESS_MODELS:
+    if provider not in PROVIDER_MODELS:
         raise ValueError("Unknown tutor provider.")
     items = items[:MAX_ASSESS_STEPS]
     graded, total = [], {"in": 0, "cached": 0, "out": 0,
@@ -1396,7 +1618,7 @@ def review_via_cli(provider, step, messages):
     rather than inventing a review, because a fabricated recap card is worse
     than no card at all.
     """
-    if provider not in PROVIDER_ASSESS_MODELS:
+    if provider not in PROVIDER_MODELS:
         raise ValueError("Unknown tutor provider.")
     step = step if isinstance(step, dict) else {}
     turns = messages[-REVIEW_MAX_TURNS:]
@@ -1412,12 +1634,12 @@ def review_via_cli(provider, step, messages):
         " ".join(str(step.get("prompt") or "").split())[:800] or "(none given)",
         "\n".join(lines),
     )
-    model = PROVIDER_ASSESS_MODELS[provider]
+    model, effort = _role_choice(provider, "review")
     last = None
     for attempt in (1, 2):
         try:
             data = run_cli(provider, model, REVIEW_SYSTEM, prompt,
-                           effort="low", schema=REVIEW_SCHEMA)
+                           effort=effort, schema=REVIEW_SCHEMA)
             parsed = json.loads(data.get("result") or "{}")
             recap = [r for r in (parsed.get("recap") or [])
                      if isinstance(r, dict) and r.get("q") and r.get("a")]
@@ -1704,6 +1926,13 @@ class Handler(SimpleHTTPRequestHandler):
                 },
                 "efforts": list(EFFORT_LEVELS),
             })
+        if route == "/api/settings":
+            # Behind the session gate although it exposes no secret: a write
+            # lives on the same path, and a reader that is not this page has no
+            # business learning which models this machine is configured to bill.
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            return self._json(200, _settings_view())
         if route == "/api/state":
             if not self._authorized():
                 return self._json(403, {"error": "Tutor session authorization required."})
@@ -2093,14 +2322,14 @@ class Handler(SimpleHTTPRequestHandler):
             return (PDIAG.verdicts_without_a_model(plan, answers),
                     "length only (%s), so nothing was graded better than shaky"
                     % str(exc)[:120])
-        model = PROVIDER_ASSESS_MODELS[provider]
+        model, effort = _role_choice(provider, "judge")
         if not MODEL_GATE.acquire(blocking=False):
             return (PDIAG.verdicts_without_a_model(plan, answers),
                     "length only (a model call was already running), so nothing"
                     " was graded better than shaky")
         try:
             data = run_cli(provider, model, PDIAG.JUDGE_SYSTEM,
-                           PDIAG.judge_prompt(plan, answers), effort="low",
+                           PDIAG.judge_prompt(plan, answers), effort=effort,
                            schema=json.dumps(PDIAG.JUDGE_SCHEMA))
             parsed = json.loads(data.get("result") or "{}")
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
@@ -2269,7 +2498,7 @@ class Handler(SimpleHTTPRequestHandler):
                 " Decide the gap list first.")
 
         provider, _model = self._provider(payload, require_model=False)
-        model = PROVIDER_DISCOVER_MODELS[provider]
+        model, effort = _role_choice(provider, "discover")
         only = payload.get("gapIds")
         if isinstance(only, list) and only:
             wanted = {str(x) for x in only[:60]}
@@ -2329,7 +2558,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         def nominate(system, prompt, schema):
             calls["n"] += 1
-            data = run_cli(provider, model, system, prompt, effort="low",
+            data = run_cli(provider, model, system, prompt, effort=effort,
                            schema=schema, search=True)
             return data.get("result") or "{}"
 
@@ -2591,7 +2820,8 @@ class Handler(SimpleHTTPRequestHandler):
         # answered by the tutor.
         if route not in ("/api/chat", "/api/state", "/api/assess", "/api/review",
                          "/api/intake", "/api/diagnose", "/api/gap",
-                         "/api/research", "/api/curriculum", "/api/track"):
+                         "/api/research", "/api/curriculum", "/api/track",
+                         "/api/settings"):
             return self._json(404, {"error": "Not found."})
 
         if not self._authorized():
@@ -2606,6 +2836,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(413, {"error": "Request body is too large."})
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
+
+        if route == "/api/settings":
+            # No model call and no track handle: this writes one small file and
+            # answers with what was actually kept, so a value the whitelist
+            # dropped is visible in the page rather than silently discarded.
+            try:
+                _write_settings(payload)
+            except OSError as exc:
+                return self._failure(500, "Saving model settings", exc)
+            return self._json(200, _settings_view())
 
         if route in ("/api/intake", "/api/diagnose", "/api/gap",
                      "/api/research", "/api/curriculum", "/api/track"):
@@ -2636,7 +2876,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(502, {"error": "The grader returned nothing — try again."})
             return self._json(200, {
                 "steps": graded, "usage": usage,
-                "provider": provider, "model": PROVIDER_ASSESS_MODELS[provider],
+                "provider": provider, "model": _role_choice(provider, "assess")[0],
                 "capped": max(0, len(payload.get("steps") or []) - MAX_ASSESS_STEPS)
                           + failed,
             })
@@ -2688,7 +2928,14 @@ class Handler(SimpleHTTPRequestHandler):
             # by a hint the client sends. Reading a client's citation preference
             # would put the choice of evidence back in the caller's hands, which
             # is the grounding claim inverted.
-            effort = str(payload.get("effort") or "")[:12]
+            # Resolved through the role rather than taken raw, so a candidate
+            # who set a tutor model in the settings panel and then reloaded
+            # gets it even though the page sent no model on this request.
+            # _provider above has already refused anything off the whitelist.
+            model, effort = _role_choice(
+                provider, "tutor",
+                model=str(payload.get("model") or "")[:64],
+                effort=str(payload.get("effort") or "")[:12])
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
         except RuntimeError as exc:

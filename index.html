@@ -282,6 +282,15 @@ button{font-family:inherit}
 .trow .cite{font-family:var(--ff-mono);font-size:.8rem;color:var(--signal);word-break:break-word}
 .trow .teach{color:var(--text-muted);font-size:.92rem}
 .trow .q{margin-top:8px}
+.rolepanel{display:grid;gap:10px}
+.rolerow{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;
+  padding:8px 0;border-top:1px solid var(--line)}
+.rolerow:first-of-type{border-top:0}
+.rolename b{display:block}
+.rolenote{color:var(--text-faint);font-size:12px;margin-top:2px}
+.roletag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:9px;
+  border:1px solid var(--line);color:var(--text-faint);font-size:11px;vertical-align:1px}
+@media (max-width:640px){ .rolerow{grid-template-columns:1fr;gap:6px} }
 .qtoggle{background:transparent;border:1px dashed var(--line);color:var(--text-faint);
   border-radius:8px;padding:5px 10px;font-size:.8rem;cursor:pointer}
 .qtoggle:hover{color:var(--text);border-color:var(--signal-dim)}
@@ -2036,9 +2045,11 @@ function renderContinueInner(el){
         </select>
         <span class="bstat ${bstat.cls}"><span class="bdot"></span>${esc(bstat.label)}</span>
         <span id="syncPill" class="syncpill" hidden></span>
+        <button class="qtoggle" data-q="modelroles" data-label="Models">Models ▾</button>
         <button class="qtoggle" data-q="bridgehelp" data-label="Go live">Go live ▾</button>
       </div>
     </div>
+    <div class="bubble hint" data-qbody="modelroles" hidden></div>
     <div class="bubble hint bridgehelp" data-qbody="bridgehelp" hidden>
       <div class="who">${esc(bstat.cls==="on"?"Live tutor":"Turn on the live tutor")}</div>
       ${esc(bstat.help)}<br>
@@ -2344,6 +2355,10 @@ async function recheckProgress(){
     state.assessAt=Date.now();
     const u=d.usage||{};
     state.assessCost=(u.in!=null)?(usageLabel(u).replace(/^· /,"")):"";
+    /* What actually graded it, as the BRIDGE reports it, not as this page
+     * requested it. Those differ whenever the whitelist refused a saved choice,
+     * and the number on screen belongs to whichever model really ran. */
+    state.assessModel=d.model?(providerLabel(d.provider||provider)+" "+modelLabel(d.model)):"";
     bridgeOnline=true;
     toast(rows.length+" step"+(rows.length===1?"":"s")+" graded"+(d.capped?" ("+d.capped+" not graded)":""));
   }catch(e){
@@ -2387,6 +2402,95 @@ const STAGE_BLURB={
   learn:"One step at a time, grounded in the sections pinned to it."
 };
 
+async function apiGet(path){
+  const r=await fetch(API+path,{headers:{"x-tutor-bridge":"1"}});
+  let d={}; try{ d=await r.json(); }catch(_){}
+  if(!r.ok) throw Object.assign(new Error(d.error||("HTTP "+r.status)),{status:r.status,data:d});
+  return d;
+}
+/* ---- which model does which job --------------------------------------------
+ * Five roles, one per model call the bridge makes. Held on the machine rather
+ * than in this page's state, because it is a property of the installation and
+ * not of a track: a candidate who moves the grader to Opus means it for every
+ * track, and re-picking it per track would be the same tedium the per-model
+ * effort memory exists to avoid.
+ *
+ * The bar above still sets the tutor for the CURRENT track and outranks the
+ * tutor row here. That is not an accident of two stores: "this track, now" and
+ * "every track, by default" are different questions, and the bridge resolves
+ * them in that order.
+ *
+ * Loaded lazily when the panel is first opened. Fetching it on every bridge
+ * ping would put a request behind a poll that runs while nothing is being read.
+ */
+let ROLE_SETTINGS=null;
+function roleRow(r,provider){
+  const models=modelsFor(provider);
+  const cur=(r.resolved&&r.resolved[provider])||{};
+  const saved=(r.saved&&r.saved[provider])||{};
+  const onDefault=!saved.model&&!("effort" in saved);
+  return `<div class="rolerow">
+      <div class="rolename"><b>${esc(r.label)}</b>${onDefault?'<span class="roletag">default</span>':""}
+        <div class="rolenote">${esc(r.note)}</div></div>
+      <select class="mselect" data-rolefield="model" data-role="${esc(r.id)}"
+        aria-label="Model for ${esc(r.label)}">
+        ${models.map(m=>`<option value="${esc(m.id)}" ${cur.model===m.id?"selected":""}>${esc(m.name)}</option>`).join("")}
+      </select>
+      <select class="mselect" data-rolefield="effort" data-role="${esc(r.id)}"
+        aria-label="Thinking effort for ${esc(r.label)}">
+        ${EFFORTS.map(x=>`<option value="${esc(x.id)}" ${(cur.effort||"")===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
+      </select>
+    </div>`;
+}
+function modelRolesPanel(){
+  if(!ROLE_SETTINGS) return `<div class="rolenote">Model settings need the live bridge.</div>`;
+  const p=activeProvider();
+  return `<div class="rolepanel">
+      <div class="rolenote">Which model does which job, for every track on this machine.
+        Stored on this Mac in <code>~/.prepwright/settings.json</code>, never in this browser.</div>
+      ${ROLE_SETTINGS.roles.map(r=>roleRow(r,p)).join("")}
+      <div class="rolenote">The bar above sets the tutor for <b>this track only</b>, and it
+        wins over the Tutor row here.</div>
+    </div>`;
+}
+async function openRolePanel(body){
+  if(!ROLE_SETTINGS){
+    body.innerHTML=`<div class="rolenote">Reading the model settings…</div>`;
+    try{ ROLE_SETTINGS=await apiGet("/api/settings"); }
+    catch(err){
+      body.innerHTML=`<div class="rolenote">Model settings need the live bridge. ${esc(err.message||"")}</div>`;
+      return;
+    }
+  }
+  body.innerHTML=modelRolesPanel();
+}
+async function saveRoleChoice(role,provider,patch){
+  /* The whole document goes over, not the one field. The bridge replaces what
+   * it is given, so posting a single role would drop every other saved choice. */
+  const doc={roles:{}};
+  ((ROLE_SETTINGS&&ROLE_SETTINGS.roles)||[]).forEach(r=>{
+    const keep={};
+    Object.keys(r.saved||{}).forEach(pv=>{
+      if(r.saved[pv]&&Object.keys(r.saved[pv]).length) keep[pv]=Object.assign({},r.saved[pv]);
+    });
+    if(Object.keys(keep).length) doc.roles[r.id]=keep;
+  });
+  doc.roles[role]=doc.roles[role]||{};
+  doc.roles[role][provider]=Object.assign({},doc.roles[role][provider]||{},patch);
+  const body=$(`[data-qbody="modelroles"]`);
+  try{
+    ROLE_SETTINGS=await apiPost("/api/settings",doc);
+  }catch(err){
+    toast("Could not save the model setting: "+(err.message||err));
+    return;
+  }
+  const r=(ROLE_SETTINGS.roles||[]).find(x=>x.id===role)||{label:role};
+  const got=(r.resolved&&r.resolved[provider])||{};
+  /* Reports what the bridge RESOLVED, not what was clicked. A value its
+   * whitelist refused reverts here in words instead of appearing to stick. */
+  toast(r.label+": "+modelLabel(got.model)+" · thinking "+effortLabel(got.effort));
+  if(body&&!body.hidden) body.innerHTML=modelRolesPanel();
+}
 async function apiPost(path, body){
   const r=await fetch(API+path,{method:"POST",
     headers:{"content-type":"application/json","x-tutor-bridge":"1"},
@@ -3199,7 +3303,7 @@ function recheckPanel(){
       assessing?"Reading your transcripts…":"Re-check my progress"}</button>
     <div class="hint recheckhint">${
       assessing?"One call over every unmarked step that has chat on it."
-      :(when?("Last checked "+esc(when)+(cost?" · "+esc(cost):"")):"Grades how much of each step's own task you delivered. Side questions do not count. One efficient provider call.")}</div>
+      :(when?("Last checked "+esc(when)+(state.assessModel?" · graded by "+esc(state.assessModel):"")+(cost?" · "+esc(cost):"")):"Grades how much of each step's own task you delivered. Side questions do not count. One efficient provider call.")}</div>
     ${rows.length?`<div class="sidehead">Delivered against each task</div>${rows.map(r=>{
       const s=stepFromKey(r.key);
       /* A row can outlive the step it grades, because the curriculum can be
@@ -3697,7 +3801,8 @@ document.addEventListener("click",e=>{
 
   // socratic reveal
   const qt=t.closest(".qtoggle");
-  if(qt){ const id=qt.dataset.q; const body=$(`[data-qbody="${id}"]`); if(body){ body.hidden=!body.hidden; const lab=qt.dataset.label||"Question"; qt.textContent=lab+" "+(body.hidden?"▾":"▴"); } return; }
+  if(qt){ const id=qt.dataset.q; const body=$(`[data-qbody="${id}"]`); if(body){ body.hidden=!body.hidden; const lab=qt.dataset.label||"Question"; qt.textContent=lab+" "+(body.hidden?"▾":"▴");
+    if(id==="modelroles"&&!body.hidden) openRolePanel(body); } return; }
 
   // tier tab
   const tab=t.closest(".tab");
@@ -3785,6 +3890,11 @@ document.addEventListener("change",e=>{
     state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model; save();
     toast("Tutor model: "+modelLabel(state.model)+" · thinking "+effortLabel(effortFor(state.model)));
     renderContinue($("#view-continue")); return; }
+  const rf=e.target.closest("[data-rolefield]");
+  if(rf){
+    const patch={}; patch[rf.dataset.rolefield]=rf.value;
+    saveRoleChoice(rf.dataset.role,activeProvider(),patch); return;
+  }
   const eff=e.target.closest("#tutorEffort");
   if(eff){ const m=activeModel(); setEffortFor(m,eff.value);
     toast(modelLabel(m)+" thinking: "+effortLabel(eff.value)
