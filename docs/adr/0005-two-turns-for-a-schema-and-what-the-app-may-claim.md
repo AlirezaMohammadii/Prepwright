@@ -4,6 +4,20 @@ Date: 2026-09-09
 Status: Accepted. Implemented in `bridge.py`, `index.html`, `prepwright/state.py`
 and `tests/test_back_half.py`.
 
+> **Partly superseded by ADR 0006, same day.** Everything this record says about
+> the max-turns bug and the honesty fixes still stands. Three things it left open
+> have since been decided and built, so read those sections as history rather
+> than as the current state:
+>
+> - "The SM-2 scheduler stays for now" — the owner ruled: it stays permanently,
+>   dormant and annotated. The five open questions listed below are moot while
+>   that holds.
+> - "A track still cannot end" — it can. The owner ruled that "finished" means
+>   the written plan, and `prepared` is now the last rung of `STAGES`.
+> - "The `assessment` table is still dead, and this is now the clearest open
+>   question in the project" — it is written to. `/api/assess` opens a handle,
+>   and the step-lifecycle writer that made the table reachable landed with it.
+
 ## Context
 
 The back half of this product had never executed. Not once, on any machine, on

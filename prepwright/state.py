@@ -535,12 +535,18 @@ CREATE TRIGGER IF NOT EXISTS assessment_no_delete BEFORE DELETE ON assessment
 -- word. Measured 2026-09-09 across all three live tracks: card 0 rows,
 -- card_review 0 rows.
 --
--- They are retained rather than dropped because the removal is larger than it
--- looks and carries five open questions. ADR 0005 records them, along with the
--- one fact that decides the migration: card_review.card_id references
--- card(card_id) and PRAGMA foreign_keys is ON, so card_review must be dropped
--- FIRST, and the wrong order succeeds on an empty database and fails only for
--- someone who has graded a card.
+-- DECIDED 2026-09-09, by the owner, after the removal was costed: the tables
+-- STAY, dormant and annotated. ADR 0006 records the ruling and ADR 0005 the
+-- 37-point surface behind it. The reasoning is short: the user-visible lie was
+-- the kicker claiming "spaced repetition" over a shuffled bank, and that is
+-- already fixed; the tables cost nothing at rest; and dropping them would
+-- invalidate a documented architecture layer for no change anyone can see.
+--
+-- If that is ever reversed, one fact decides the migration: card_review.card_id
+-- references card(card_id) and PRAGMA foreign_keys is ON, so card_review must
+-- be dropped FIRST. The wrong order succeeds on an empty database and fails
+-- only for someone who has graded a card, which is a migration that passes
+-- every test and breaks in the field.
 CREATE TABLE IF NOT EXISTS card (
   card_id TEXT PRIMARY KEY, step_id TEXT REFERENCES step(step_id),
   front TEXT NOT NULL, back TEXT NOT NULL,
