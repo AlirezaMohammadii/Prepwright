@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from prepwright import config as C          # noqa: E402
+from prepwright import keep as K            # noqa: E402
 from prepwright import teach as TEACH        # noqa: E402
 from prepwright import state as S           # noqa: E402
 from prepwright import track as T           # noqa: E402
@@ -319,6 +320,112 @@ class TheLadderHasAnEnd(Base):
         the revert discipline exists to catch.
         """
         return TEACH.flow_state(self.h)["stage"]
+
+
+class TheEvictionLadderCanReachACompletedStep(Base):
+    """keep._compact_done_steps, run for the first time.
+
+    Its selector needs `status='done' AND review IS NOT NULL AND review <> ''`,
+    and until the step-lifecycle writer landed on 2026-09-09 nothing in
+    production ever wrote step.status, so the predicate could not match on any
+    track. The same dead predicate made the 3 MiB transcript cap unrecoverable;
+    that half was exercised then, this half was not.
+
+    Rung 6 of the ladder only fires above LIBRARY_SOFT, which is 192 MiB, so
+    the function is called directly here rather than through housekeep(). What
+    is under test is the predicate and what it does, not the pressure rule that
+    decides when to ask.
+    """
+
+    def setUp(self):
+        Base.setUp(self)
+        self.h.add_gap("g02", 2, "Indexes", "the posting asks for it")
+        self.h.add_step("1:topic:S02", 2, "Index design", "Explain covering",
+                        gap_id="g02")
+        # A tutor turn on each, because only a tutor turn may be compacted and
+        # only a non-empty one is selected.
+        self.h.append_turn("1:topic:S01", "tutor", "Long prose about caching.",
+                           "t-s01")
+        self.h.append_turn("1:topic:S02", "tutor", "Long prose about indexes.",
+                           "t-s02")
+        self.tick(gap="g01", op="tick-1")
+        self.tick(gap="g02", op="tick-2")
+        # A review for S01 only. S02 is done and reviewless, which is the case
+        # the predicate exists to protect: compacting its prose would lose the
+        # conclusion as well as the words.
+        self.h.append_mark("session", "sess-1", json.dumps(
+            {"stepKey": "1:topic:S01", "covered": "revalidation and ETags",
+             "explainBack": "solid", "next": "cache-control"}), "op-sess-1")
+        moved = self.h.sync_step_lifecycle()
+        self.assertEqual(moved["completed"], 2)
+        self.assertEqual(moved["reviewed"], 1)
+
+    def _seq(self, step_id):
+        return int(self.h.conn.execute(
+            "SELECT seq FROM turn WHERE step_id=? AND role='tutor'",
+            (step_id,)).fetchone()["seq"])
+
+    def _compact(self):
+        lib = S.open_library()
+        try:
+            return K._compact_done_steps(lib, self.track_id)
+        finally:
+            lib.close()
+
+    def test_a_reviewed_done_step_has_its_tutor_prose_compacted(self):
+        compacted = self._compact()
+        self.assertIn(self._seq("1:topic:S01"), compacted)
+        body = self.h.conn.execute(
+            "SELECT body FROM turn WHERE step_id='1:topic:S01'").fetchone()["body"]
+        self.assertEqual(body, "")
+
+    def test_the_selector_itself_excludes_a_step_with_no_review(self):
+        """Layer 1 of 2, and the one that had no test.
+
+        Measured on 2026-09-10: deleting `review IS NOT NULL AND review <> \'\'`
+        from the selector left all 26 tests in this file green, because
+        `compact_turn` refuses a reviewless step and `_compact_done_steps`
+        swallows the StoreError. Every assertion below about what was NOT
+        compacted was therefore passing on layer 2's work. This one asserts the
+        predicate, through the production query rather than a copy of it.
+        """
+        offered = K._done_reviewed_turns(self.h)
+        self.assertIn(self._seq("1:topic:S01"), offered)
+        self.assertNotIn(self._seq("1:topic:S02"), offered)
+
+    def test_a_done_step_with_no_review_is_left_alone(self):
+        """The clause that carries this is `review IS NOT NULL AND review <> \'\'`.
+        Without it the ladder would take the prose of a step whose conclusion
+        was never written, which loses the lesson and not just the words."""
+        compacted = self._compact()
+        self.assertNotIn(self._seq("1:topic:S02"), compacted)
+        body = self.h.conn.execute(
+            "SELECT body FROM turn WHERE step_id='1:topic:S02'").fetchone()["body"]
+        self.assertEqual(body, "Long prose about indexes.")
+
+    def test_the_compaction_wrote_its_receipt_before_it_acted(self):
+        """A compaction that leaves no receipt is a deletion. The store's own
+        trigger enforces this; the assertion here is that the ladder reaches a
+        path where the receipt is actually written."""
+        self._compact()
+        row = self.h.conn.execute(
+            "SELECT orig_bytes, orig_sha16, step_review_present, reason"
+            " FROM turn_compaction WHERE turn_seq=?",
+            (self._seq("1:topic:S01"),)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["reason"], "stale")
+        self.assertEqual(int(row["step_review_present"]), 1)
+        self.assertEqual(int(row["orig_bytes"]),
+                         len("Long prose about caching.".encode("utf-8")))
+        self.assertTrue(row["orig_sha16"])
+
+    def test_nothing_is_compacted_before_the_reconciler_has_run(self):
+        """The predicate reads step.status, and until 2026-09-09 nothing wrote
+        it. A track whose marks have not been reconciled still has status
+        'ready', so the ladder correctly finds nothing."""
+        self.h.conn.execute("UPDATE step SET status='ready', review=NULL")
+        self.h.conn.commit()
+        self.assertEqual(self._compact(), [])
 
 
 if __name__ == "__main__":

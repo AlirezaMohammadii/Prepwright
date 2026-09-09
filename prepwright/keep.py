@@ -635,6 +635,27 @@ def _sweep_writing_docs(lib, track_id):
     return swept, freed
 
 
+def _done_reviewed_turns(handle):
+    """The tutor turns rung 6 is allowed to consider, newest schema order.
+
+    Named rather than inlined so a test can assert the predicate itself instead
+    of re-implementing it. That is not cosmetic here. Measured on 2026-09-10:
+    with the review clause deleted, every test still passed, because
+    `compact_turn` refuses a reviewless step downstream and the caller swallows
+    the StoreError. The two layers are tested separately for that reason, as
+    the model whitelist has been since 2026-09-09.
+
+    `review IS NOT NULL AND review <> ''` is the clause that matters. Compacting
+    the prose of a step whose conclusion was never written loses the lesson as
+    well as the words. `status='done'` could not match at all until the
+    step-lifecycle writer landed, which is why this path had never run.
+    """
+    return [int(r["seq"]) for r in handle.conn.execute(
+        "SELECT t.seq FROM turn t JOIN step s ON s.step_id = t.step_id"
+        " WHERE s.status='done' AND s.review IS NOT NULL AND s.review <> ''"
+        "   AND t.role='tutor' AND t.body <> ''").fetchall()]
+
+
 def _compact_done_steps(lib, track_id):
     out = []
     db = os.path.join(C.TRACKS_ROOT, track_id, "track.db")
@@ -642,15 +663,15 @@ def _compact_done_steps(lib, track_id):
         return out
     handle = S.open_track(track_id, lib=lib, take_lease=False, touch=False)
     try:
-        rows = handle.conn.execute(
-            "SELECT t.seq FROM turn t JOIN step s ON s.step_id = t.step_id"
-            " WHERE s.status='done' AND s.review IS NOT NULL AND s.review <> ''"
-            "   AND t.role='tutor' AND t.body <> ''").fetchall()
-        for r in rows:
+        for seq in _done_reviewed_turns(handle):
             try:
-                handle.compact_turn(int(r["seq"]), reason="stale")
-                out.append(int(r["seq"]))
+                handle.compact_turn(seq, reason="stale")
+                out.append(seq)
             except S.StoreError:
+                # The store refuses what the selector should never have offered.
+                # Swallowed because rung 6 runs unattended and one odd row must
+                # not stop the pass; the selector above is the layer that is
+                # supposed to prevent it, and it has its own test.
                 pass
     finally:
         handle.close()
