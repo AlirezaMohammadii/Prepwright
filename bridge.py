@@ -229,7 +229,21 @@ def current_track_id():
 # "confirm" was in this list and `flow_state` never returns it. A stage the
 # contract advertises and the code cannot reach is a rail step the candidate
 # waits for and never sees.
-STAGES = ("intake", "diagnose", "approve", "research", "curriculum", "learn")
+# "prepared" is the terminal stage. Until 2026-09-09 the ladder had no end: a
+# track that had been worked through completely still reported "learn", which is
+# a screen asking you to keep going, forever.
+#
+# It is derived from the same kind of fact as every other stage: a count in the
+# step table, which only became a real number when the step-lifecycle writer
+# landed in the same session. Before that, status was never written and this
+# stage could never have been reached, which is why it was not added earlier.
+#
+# The owner ruled on 2026-09-09 that "finished" means THE WRITTEN PLAN, not what
+# the page shows. The page invents practice and check items client-side that
+# have no step row, and those are deliberately not counted: the denominator is
+# the step table, and a topic mark with no step to join to is ignored.
+STAGES = ("intake", "diagnose", "approve", "research", "curriculum", "learn",
+          "prepared")
 
 MAX_RESEARCH_URLS = 12
 # Twelve hosts at the per-fetch ceiling is nine minutes. Handler.timeout bounds
@@ -367,6 +381,14 @@ def flow_state(handle):
         stage = "research"
     elif not steps:
         stage = "curriculum"
+    elif (all(s["status"] in ("done", "skipped") for s in steps)
+          and any(s["status"] == "done" for s in steps)):
+        # 'skipped' counts as settled: it is the candidate deciding a step is
+        # not for them, and a plan that can never end once anything is skipped
+        # would punish that decision. But at least one step must actually be
+        # DELIVERED, so a track where everything was skipped does not get to
+        # claim preparation.
+        stage = "prepared"
     else:
         stage = "learn"
 

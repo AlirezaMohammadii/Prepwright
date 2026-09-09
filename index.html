@@ -2391,7 +2391,7 @@ let flow=null, flowErr="", flowBusy="";
 const STAGE_LABEL={
   intake:"Add the job", confirm:"Check what we read", diagnose:"A short conversation",
   approve:"Approve the gaps", research:"Add your sources", curriculum:"Your plan",
-  learn:"Learn"
+  learn:"Learn", prepared:"Ready"
 };
 const STAGE_BLURB={
   intake:"Paste the link to the job, or the description itself. Either works, and neither is better.",
@@ -2674,7 +2674,12 @@ async function loadFlow(quiet){
  * the store already holds, which it refuses, so offering it would be a button
  * that only ever produces an error. */
 function stageRail(current){
-  const order=["intake","diagnose","approve","research","curriculum","learn"];
+  /* The ladder comes from the bridge, which derives the stage in the first
+   * place. It used to be a second copy here, so adding a stage server-side
+   * changed which screen you were on without changing the rail that says where
+   * you are. */
+  const order=(flow&&Array.isArray(flow.stages)&&flow.stages.length)
+    ?flow.stages:["intake","diagnose","approve","research","curriculum","learn","prepared"];
   const at=order.indexOf(current);
   return `<ol class="rail-flow" aria-label="Where you are">`+order.map((id,i)=>{
     const st=i<at?"done":(i===at?"now":"next");
@@ -2764,7 +2769,31 @@ function stageBody(stage){
   if(stage==="approve")    return approveCard();
   if(stage==="research")   return researchCard(stage);
   if(stage==="curriculum") return curriculumCard();
+  if(stage==="prepared")   return preparedCard();
   return learnCard();
+}
+
+/* The end of the ladder. Worth a screen of its own rather than a "learn" screen
+ * that quietly has nothing left to ask for: a track with every step delivered
+ * used to still say "keep going", which is the app claiming work that does not
+ * exist. The numbers come from flow.curriculum, which is counted in the step
+ * table, so this screen cannot disagree with the plan. */
+function preparedCard(){
+  const c=(flow&&flow.curriculum)||{};
+  const total=c.steps||0, done=c.done||0;
+  return `<div class="card pad stagecard">
+    <h2>You are through the plan</h2>
+    <p class="muted">Every step of this track is settled: <b>${done}</b> delivered
+      of <b>${total}</b> in the written plan. Nothing here is asking you for more work.</p>
+    <p class="muted">The material does not go away. Drill the recap bank, re-read a
+      step, or re-check your progress whenever you want the numbers again. If the
+      posting changes, add the new one as its own track rather than editing this one.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn navlink" data-view="recap">Drill the recap bank</button>
+      <button class="btn btn-ghost navlink" data-view="continue">Back to the steps</button>
+      <button class="btn btn-ghost navlink" data-view="curriculum">See the whole plan</button>
+    </div>
+  </div>`;
 }
 
 function intakeCard(){

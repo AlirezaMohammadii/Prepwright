@@ -243,5 +243,82 @@ class TheThreeSymptoms(Base):
         self.assertEqual(n, 1)
 
 
+class TheLadderHasAnEnd(Base):
+    """Until 2026-09-09 a track that had been worked through completely still
+    reported stage "learn", which is a screen asking you to keep going, forever.
+
+    The terminal stage is derived from the same kind of fact as every other one:
+    a count in the step table. That count only became real when the
+    step-lifecycle writer landed, which is why this could not have been added
+    before it.
+
+    Owner ruling, 2026-09-09: "finished" means THE WRITTEN PLAN. The page
+    invents practice and check items client-side that have no step row, and
+    those are deliberately not counted.
+    """
+
+    def setUp(self):
+        Base.setUp(self)
+        sys.path.insert(0, ROOT)
+        import bridge                                        # noqa: PLC0415
+        self.bridge = bridge
+        # Every rung below "learn" is a precondition, and flow_state checks them
+        # in order, so all of them have to hold before the last one is reachable.
+        self.h.set_intake("pasted",
+                          "We need someone who understands HTTP caching.")
+        gap = self.h.conn.execute(
+            "SELECT rev FROM gap WHERE gap_id='g01'").fetchone()
+        self.h.set_gap_status("g01", "approved", gap["rev"])
+        self.h.write_doc(
+            "http-caching", "HTTP caching",
+            [{"sec_id": "s01", "heading": "what-max-age-promises",
+              "body": "max-age sets how long a stored response stays fresh.",
+              "origin_span": "max-age sets how long a stored response"}],
+            origin_url="https://example.org/caching", origin_bytes=412880,
+            origin_sha256="c" * 64, extract_sha256="9" * 64)
+
+    def _finish(self, step_id, status="done"):
+        self.h.conn.execute("UPDATE step SET status=? WHERE step_id=?",
+                            (status, step_id))
+        self.h.conn.commit()
+
+    def test_prepared_is_the_last_rung(self):
+        self.assertEqual(self.bridge.STAGES[-1], "prepared")
+        self.assertEqual(self.bridge.STAGES[-2], "learn")
+
+    def test_a_plan_with_work_left_is_still_learn(self):
+        self.h.add_step("2:topic:S02", 2, "ETags", "Explain them")
+        self._finish("1:topic:S01")
+        self.assertEqual(self._stage(), "learn")
+
+    def test_every_step_delivered_reaches_the_end(self):
+        self._finish("1:topic:S01")
+        self.assertEqual(self._stage(), "prepared")
+
+    def test_a_skipped_step_counts_as_settled(self):
+        """A plan that can never end once anything is skipped would punish the
+        candidate for deciding a step is not for them."""
+        self.h.add_step("2:topic:S02", 2, "ETags", "Explain them")
+        self._finish("1:topic:S01", "done")
+        self._finish("2:topic:S02", "skipped")
+        self.assertEqual(self._stage(), "prepared")
+
+    def test_skipping_everything_does_not_claim_preparation(self):
+        """At least one step has to be actually delivered. Otherwise a track
+        where nothing was learned would announce that you are ready."""
+        self._finish("1:topic:S01", "skipped")
+        self.assertEqual(self._stage(), "learn")
+
+    def _stage(self):
+        """The real derivation, not a restatement of it.
+
+        Building the whole precondition chain costs a few lines and is worth
+        every one: a helper that re-implemented the predicate would go green
+        against a rule the app had stopped applying, which is the exact failure
+        the revert discipline exists to catch.
+        """
+        return self.bridge.flow_state(self.h)["stage"]
+
+
 if __name__ == "__main__":
     unittest.main()
