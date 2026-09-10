@@ -250,6 +250,70 @@ class OpValidation(Base):
 
 
 # ============================================================================
+class TheGroundingRecordReachesItsOwnColumns(Base):
+    """`turn.pack_sha16`, `turn.citations` and `turn.ungrounded` had no writer.
+
+    `apply_ops` handed the page's blob to `client_meta` and left the three
+    columns beside it null, so a query of the columns built to answer "what did
+    this turn cite" returned nothing. The facts were never lost, because the
+    blob carries them, but `client_meta` is presentation metadata with its own
+    cap that may be trimmed, and the typed columns are the durable record.
+
+    Found on 2026-09-10 by reading the store after a real teaching turn on the
+    Wingtip track: the reply cited D03§s02 and D07§s06 while `citations` read `[]`
+    and `pack_sha16` was null.
+    """
+
+    META = json.dumps({"role": "assistant", "grounded": True,
+                       "cites": ["D01§s01", "D01§s02"],
+                       "cited": ["D01§s01"], "invented": [],
+                       "packSha16": "7e54093720db5dad"})
+
+    def _apply(self, meta):
+        _tid, handle = self.a_track()
+        ops = P.validate_ops([{"op": "turn", "id": "t1", "step": "1:topic:T1",
+                               "pageRole": "assistant", "text": "A reply.",
+                               "meta": json.loads(meta) if meta else None}])
+        P.apply_ops(handle, ops)
+        return handle.conn.execute(
+            "SELECT pack_sha16, citations, ungrounded, client_meta FROM turn"
+            " WHERE client_turn_id='t1'").fetchone()
+
+    def test_the_pack_hash_and_the_citations_land_in_their_columns(self):
+        row = self._apply(self.META)
+        self.assertEqual(row["pack_sha16"], "7e54093720db5dad")
+        self.assertEqual(json.loads(row["citations"]), ["D01§s01"])
+        self.assertEqual(int(row["ungrounded"]), 0)
+
+    def test_an_ungrounded_reply_is_flagged_in_its_own_column(self):
+        """Only an explicit False sets it. A blob with no `grounded` key is not
+        a claim that the turn was ungrounded."""
+        meta = json.dumps({"role": "assistant", "grounded": False,
+                           "cited": [], "packSha16": ""})
+        row = self._apply(meta)
+        self.assertEqual(int(row["ungrounded"]), 1)
+        silent = self._apply(json.dumps({"role": "assistant", "cited": []}))
+        self.assertEqual(int(silent["ungrounded"]), 0)
+
+    def test_a_malformed_blob_costs_the_columns_and_never_the_turn(self):
+        """Best effort, deliberately. The transcript is the thing the candidate
+        cannot lose; the columns are an audit convenience."""
+        _tid, handle = self.a_track()
+        ops = P.validate_ops([{"op": "turn", "id": "t2", "step": "1:topic:T1",
+                               "pageRole": "assistant", "text": "Still stored."}])
+        P.apply_ops(handle, ops)
+        row = handle.conn.execute(
+            "SELECT body, pack_sha16, citations FROM turn"
+            " WHERE client_turn_id='t2'").fetchone()
+        self.assertEqual(row["body"], "Still stored.")
+        self.assertIsNone(row["pack_sha16"])
+        self.assertEqual(json.loads(row["citations"]), [])
+        self.assertEqual(P._grounding_from_meta("{not json"), {})
+        self.assertEqual(P._grounding_from_meta("[1,2,3]"), {})
+        self.assertEqual(P._grounding_from_meta(None), {})
+
+
+# ============================================================================
 class TrackIsolation(Base):
     """One track's rows cannot appear in another track's document."""
 

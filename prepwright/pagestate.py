@@ -322,6 +322,43 @@ def validate_ops(raw_ops):
     return out
 
 
+def _grounding_from_meta(meta_json):
+    """The typed grounding columns, lifted out of the page's turn metadata.
+
+    `turn.pack_sha16`, `turn.citations` and `turn.ungrounded` are the durable
+    record of which evidence a reply saw, and nothing wrote them: `apply_ops`
+    passed the page's blob to `client_meta` and left the three columns beside it
+    null. The facts were never lost, because the blob carries them, but a query
+    of the columns built to answer "what did this turn cite" returned nothing,
+    and `client_meta` is presentation metadata with its own cap that may be
+    trimmed. Found on 2026-09-10 by reading the store after a real teaching turn
+    whose reply cited D03§s02 while `citations` read `[]`.
+
+    Best effort. A malformed or absent blob costs the columns, never the turn:
+    the transcript is the thing the candidate cannot lose.
+    """
+    if not meta_json:
+        return {}
+    try:
+        meta = json.loads(meta_json)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(meta, dict):
+        return {}
+    out = {}
+    sha = meta.get("packSha16")
+    if isinstance(sha, str) and sha:
+        out["pack_sha16"] = sha[:16]
+    cited = meta.get("cited")
+    if isinstance(cited, list):
+        out["citations"] = [str(c) for c in cited if isinstance(c, str)]
+    # `grounded` is the pack's own verdict, so its absence is not a claim that
+    # the turn was ungrounded. Only an explicit False sets the flag.
+    if meta.get("grounded") is False:
+        out["ungrounded"] = 1
+    return out
+
+
 def apply_ops(handle, ops):
     """Apply validated ops in order. Returns what happened, per class.
 
@@ -336,7 +373,8 @@ def apply_ops(handle, ops):
             if handle.ensure_step(op["step"], op["title"]):
                 report["steps"] += 1
             handle.append_turn(op["step"], op["role"], op["text"], op["id"],
-                               client_meta=op["meta_json"])
+                               client_meta=op["meta_json"],
+                               **_grounding_from_meta(op["meta_json"]))
             report["turns"] += 1
         else:
             current = handle.current_mark(op["kind"], op["key"])
