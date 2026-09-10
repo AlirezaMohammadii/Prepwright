@@ -1722,6 +1722,44 @@ async function reconcileWithDisk(){
     setSync("saved");
   }
   if(adopted) toast("Restored your progress from disk");
+  await loadAssessments();
+}
+
+/* The grade panel is redrawn from the STORE, not from page state.
+ *
+ * state.assessList is a client cache and is deliberately absent from
+ * pagestate.FIELDS: 18 rows carrying 200-character reasons measure 4,753 bytes
+ * against the 4 KiB per-mark cap, and validate_ops rejects the WHOLE delta, so
+ * one verbose grading run would wedge every later save. Persisting it was never
+ * the fix. The grades have been in the assessment table since the step-lifecycle
+ * writer landed on 2026-09-09, and GET /api/assessments returns the newest row
+ * per step with what produced it, which is the durable source the panel needed.
+ *
+ * Failure is silent on purpose. A reload that cannot reach this route should
+ * show an empty panel, exactly as it did before the route existed, rather than
+ * an error over a feature that is a convenience. */
+async function loadAssessments(){
+  try{
+    const r=await fetch(API+"/api/assessments",{cache:"no-store",
+      headers:{"X-Tutor-Bridge":"1"}});
+    if(!r.ok) return;
+    const d=await r.json();
+    const rows=Array.isArray(d.rows)?d.rows:[];
+    if(!rows.length) return;
+    state.assessList=rows.map(x=>({key:x.key,mastery:x.mastery,reason:x.reason||""}));
+    /* rubric is "<provider>/<model>". The panel names the model alone, and only
+     * if nothing has already told it which one, because a grading run in THIS
+     * session is more current than the newest stored row. */
+    if(!state.assessModel && rows[0].rubric){
+      state.assessModel=String(rows[0].rubric).split("/").slice(1).join("/")
+                        ||rows[0].rubric;
+    }
+    if(!state.assessAt && rows[0].at){
+      const t=Date.parse(rows[0].at);
+      if(!isNaN(t)) state.assessAt=t;
+    }
+    render(currentView(),{silent:true,keepScroll:true});
+  }catch(e){ /* offline or no bridge: leave the panel as it was */ }
 }
 
 /* =====================================================================
@@ -3353,12 +3391,12 @@ function recheckPanel(){
        * missing DATA entry and take the whole Continue view down with a
        * TypeError, so the guard stays.
        *
-       * The old wording here said assessList is persisted. It is not, and
-       * pagestate.FIELDS says why beside the table: the list grows with the
-       * curriculum and would sit behind a 4 KiB per-mark cap. What survives a
-       * reload is state.assess (the clamped map that drives the percentages)
-       * plus assessAt and assessCost, which is why the "Last checked" hint
-       * outlives the rows it introduces. */
+       * assessList is NOT persisted as page state and cannot be: 18 rows with
+       * 200-character reasons reach 4,753 bytes against the 4 KiB per-mark cap
+       * and validate_ops would reject the whole delta. It is rebuilt after a
+       * reload instead, by loadAssessments() from GET /api/assessments, which
+       * reads the assessment table. So these rows now outlive a reload, along
+       * with state.assess, assessAt and assessCost. */
       const known=(s.type==="topic")?DATA.topics[s.id]
                  :(s.type==="practice")?DATA.practice[s.id]:DATA.checks[s.id];
       if(!known) return "";

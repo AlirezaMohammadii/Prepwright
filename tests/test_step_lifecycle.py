@@ -39,6 +39,7 @@ sys.path.insert(0, ROOT)
 
 from prepwright import config as C          # noqa: E402
 from prepwright import keep as K            # noqa: E402
+from prepwright import pagestate as PS       # noqa: E402
 from prepwright import teach as TEACH        # noqa: E402
 from prepwright import state as S           # noqa: E402
 from prepwright import track as T           # noqa: E402
@@ -426,6 +427,72 @@ class TheEvictionLadderCanReachACompletedStep(Base):
         self.h.conn.execute("UPDATE step SET status='ready', review=NULL")
         self.h.conn.commit()
         self.assertEqual(self._compact(), [])
+
+
+class TheGradePanelIsRebuiltFromTheStore(Base):
+    """`state.assessList` is a client cache, and the store is the record.
+
+    It is deliberately absent from `pagestate.FIELDS`. The measured objection
+    stands: 18 rows carrying 200-character reasons reach 4,753 bytes against the
+    4,096-byte per-mark cap, and `validate_ops` rejects the WHOLE delta, so one
+    verbose grading run would wedge every later save. Persisting it was never
+    the fix. `TrackHandle.latest_assessments` reads the grades back instead, and
+    GET /api/assessments serves them to the panel after a reload.
+    """
+
+    REASON = "R" * 200
+
+    def _grade(self, n):
+        for i in range(1, n + 1):
+            key = "1:topic:S%02d" % i
+            if i > 1:
+                self.h.add_gap("g%02d" % i, i, "Topic %d" % i, "why")
+                self.h.add_step(key, i, "Topic %d" % i, "Explain",
+                                gap_id="g%02d" % i)
+            self.h.add_assessment(key, 0.5, "claude/claude-haiku-4-5",
+                                  misconception=self.REASON)
+
+    def test_thirty_grades_with_long_reasons_come_back_whole(self):
+        self._grade(30)
+        rows = self.h.latest_assessments()
+        self.assertEqual(len(rows), 30)
+        self.assertTrue(all(r["reason"] == self.REASON for r in rows))
+        self.assertTrue(all(r["rubric"] == "claude/claude-haiku-4-5"
+                            for r in rows))
+
+    def test_thirty_grades_do_not_cost_the_page_its_next_save(self):
+        """The cap objection, stated as a test. Thirty grades of this size are
+        far past the 4,096 bytes one mark may carry, and the page still saves,
+        because they were never in the page document to begin with."""
+        self._grade(30)
+        self.assertNotIn("assessList", PS.FIELDS)
+        doc = PS.materialise(self.h)
+        self.assertNotIn("assessList", doc)
+        payload = json.dumps([r["reason"] for r in self.h.latest_assessments()])
+        self.assertGreater(len(payload.encode("utf-8")), C.MARK_MAX_BYTES,
+                           "the fixture is too small to exercise the cap")
+        # An ordinary save still lands.
+        self.h.append_mark("topic", "g01", json.dumps({"done": True}), "op-after")
+        self.assertEqual(
+            self.h.conn.execute(
+                "SELECT COUNT(*) c FROM mark WHERE client_op_id='op-after'"
+            ).fetchone()["c"], 1)
+
+    def test_a_regraded_step_reports_only_its_newest_verdict(self):
+        """The table is append-only, so a step graded three times has three
+        rows and only the last is the current verdict. MAX(seq) picks it,
+        because seq orders by write even when two rows share an at_utc second.
+        """
+        for score in (0.1, 0.4, 0.9):
+            self.h.add_assessment("1:topic:S01", score, "claude/x",
+                                  misconception="try %s" % score)
+        rows = self.h.latest_assessments()
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["mastery"], 0.9)
+        self.assertEqual(rows[0]["reason"], "try 0.9")
+
+    def test_a_track_with_no_grades_returns_an_empty_list_not_an_error(self):
+        self.assertEqual(self.h.latest_assessments(), [])
 
 
 if __name__ == "__main__":

@@ -723,6 +723,25 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._failure(500, "Ledger", exc)
             finally:
                 handle.close()
+        if route == "/api/assessments":
+            # GET, so it needs neither of the two do_POST edits. The grade panel
+            # redraws from here after a reload instead of from page state:
+            # assessList is not persisted and cannot be, because 18 rows with
+            # 200-character reasons measure 4,753 bytes against the 4 KiB
+            # per-mark cap and validate_ops rejects the whole delta. The store
+            # has held the grades since the writer landed on 2026-09-09.
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            try:
+                handle = open_state_track(take_lease=False)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Assessments", exc)
+            try:
+                return self._json(200, {"rows": handle.latest_assessments()})
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Assessments", exc)
+            finally:
+                handle.close()
         if route == "/api/tracks":
             if not self._authorized():
                 return self._json(403, {"error": "Tutor session authorization required."})

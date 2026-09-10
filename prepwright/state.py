@@ -1696,6 +1696,34 @@ class TrackHandle(object):
                  misconception))
             self._bump_writes()
 
+    def latest_assessments(self):
+        """The newest grade per step, with what produced it. Newest first.
+
+        The assessment table is append-only, so a step regraded three times has
+        three rows and only the last one is the current verdict. MAX(seq) picks
+        it: seq is the AUTOINCREMENT primary key, so it orders by write even
+        when two grades share an at_utc second.
+
+        This exists so the page can redraw the grade panel from the store after
+        a reload instead of from page state. `assessList` was never persisted
+        and never can be: 18 rows carrying 200-character reasons measure 4,753
+        bytes against the 4 KiB per-mark cap, and validate_ops rejects the
+        WHOLE delta, so one verbose grading run would wedge every later save.
+        Reading it back costs one indexed query and no cap at all.
+        """
+        self.assert_live()
+        rows = self.conn.execute(
+            "SELECT a.step_id AS step_id, a.score AS score, a.rubric AS rubric,"
+            "       a.misconception AS misconception, a.at_utc AS at_utc"
+            "  FROM assessment a"
+            "  JOIN (SELECT step_id, MAX(seq) AS seq FROM assessment"
+            "         GROUP BY step_id) newest"
+            "    ON newest.step_id = a.step_id AND newest.seq = a.seq"
+            " ORDER BY a.seq DESC").fetchall()
+        return [{"key": r["step_id"], "mastery": float(r["score"]),
+                 "rubric": r["rubric"], "reason": r["misconception"] or "",
+                 "at": r["at_utc"]} for r in rows]
+
     def add_card(self, card_id, front, back, cite, cite_snippet, step_id=None,
                  due_utc=None):
         """A card cites a section that exists, and freezes the cited text.
