@@ -308,6 +308,36 @@ class AFinishedApplicationOpensOverHttp(Base):
         self.assertEqual(status, 403)
 
 
+class RehearsalOverHttp(Base):
+    """ADR 0008. /api/rehearse is a new POST route, so it has to be both on the
+    do_POST allowlist and handled before the /api/chat fall-through (trap 9),
+    or the tutor answers it. It refuses before a study plan exists, grades only
+    rehearsal steps, and never reaches a model under PREPWRIGHT_NO_MODEL."""
+
+    def test_the_route_is_its_own_and_refuses_what_it_cannot_do(self):
+        self._intake()
+        status, body = self.b.call("POST", "/api/rehearse", {"action": "plan"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Build the study plan first", body["error"])
+        status, body = self.b.call("POST", "/api/rehearse", {
+            "action": "answer", "stepKey": "1:topic:S01", "answer": "one two three four five"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("not a rehearsal step", body["error"])
+        status, body = self.b.call("POST", "/api/rehearse", {"action": "tell me a story"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Unknown rehearse action", body["error"])
+
+    def test_the_brief_is_a_read_that_always_answers(self):
+        self._intake()
+        status, body = self.b.call("GET", "/api/brief")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["markdown"].startswith("# The day before: Analyst at Example Corp"),
+                        body["markdown"][:80])
+        self.assertIn("## Questions to ask them", body["markdown"])
+        status, _ = self.b.call("GET", "/api/brief", cookie="pw=forged")
+        self.assertEqual(status, 403)
+
+
 class TheFlowIsDerivedFromTheStoreNotStored(Base):
     def test_it_walks_intake_diagnose_approve_research(self):
         _status, flow = self.b.call("GET", "/api/flow")

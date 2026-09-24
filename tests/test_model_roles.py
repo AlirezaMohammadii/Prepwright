@@ -94,11 +94,13 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
             ("claude", "review"): ("claude-haiku-4-5", "low"),
             ("claude", "judge"): ("claude-haiku-4-5", "low"),
             ("claude", "discover"): ("claude-sonnet-5", "low"),
+            ("claude", "rehearse"): ("claude-sonnet-5", "low"),
             ("codex", "tutor"): ("gpt-5.6-sol", ""),
             ("codex", "assess"): ("gpt-5.6-luna", "low"),
             ("codex", "review"): ("gpt-5.6-luna", "low"),
             ("codex", "judge"): ("gpt-5.6-luna", "low"),
             ("codex", "discover"): ("gpt-5.6-terra", "low"),
+            ("codex", "rehearse"): ("gpt-5.6-terra", "low"),
         }
         got = {(p, r): PROV._role_choice(p, r)
                for p in PROV.PROVIDER_MODELS for r in PROV.ROLES}
@@ -125,8 +127,9 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
         self.assertEqual(PROV._effort_flag(effort), [])
 
     def test_there_is_one_role_per_model_callsite(self):
-        """Five roles, five run_cli calls. A sixth call site that forgets to
-        name a role raises rather than borrowing another role's setting.
+        """Six roles, six run_cli calls. A seventh call site that forgets to
+        name a role raises rather than borrowing another role's setting. The
+        sixth, `rehearse`, arrived with ADR 0008 and its own call site.
 
         Counted over the AST of every file that can hold a call, not by
         matching source text at two hard-coded indentation levels: two of the
@@ -145,8 +148,8 @@ class TheShippedDefaultsAreTheOldBehaviour(RoleBase):
                         and node.func.id == "run_cli"):
                     sites.append("%s:%d" % (os.path.basename(path),
                                             node.lineno))
-        self.assertEqual(len(sites), 5, "; ".join(sites))
-        self.assertEqual(len(PROV.ROLES), 5)
+        self.assertEqual(len(sites), 6, "; ".join(sites))
+        self.assertEqual(len(PROV.ROLES), 6)
 
 
 class AChoiceBeatsADefaultAndARequestBeatsAChoice(RoleBase):

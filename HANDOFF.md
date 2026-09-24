@@ -51,6 +51,7 @@ bank, and a terminal `prepared` stage.
 | Page and store agree after a reload | page 11 turns == store 11, `curriculum.done` 0 == 0 done steps, 20 == 20 total |
 | The eviction ladder can reach a completed step | `tests/test_step_lifecycle.py::TheEvictionLadderCanReachACompletedStep`, 5 tests |
 | Only the tutor role takes the shared model preference | in one walk the tutor ran on `claude-sonnet-5` and the grader on `claude-haiku-4-5` |
+| Rehearsal works on a real application (2026-09-24, ADR 0008) | fresh throwaway home, the UniExample folder by deep link: the plan came out as 1 study step and 8 rehearsal steps R01–R08, the resume and the fit report were stored as "Your application" D03/D04 (vetting primary). R01, the red-team objection, graded 6/8 on claude-sonnet-5 ($0.051), with every sentence of the strong answer cited to D03/D04, and the step went to `done` from the grade alone. On R06 the grader caught an answer that said "no number for FakeAVCeleb" against his resume's 96.8% AUC, which is the false line the blind tutor had coached ($0.031). The brief rendered with 0 console errors |
 | Resume Studio's Prep button opens a finished application as its own role (2026-09-24) | `?application=<the real 2026-09-24__Research_Fellow_University_Of_Example folder>` on a throwaway :8011 instance: the card read "Prepare for Research Fellow at University Of Example", one click made one `imported` track with that employer and role, the page landed on the diagnostic, 0 console errors. Tests: `AFinishedApplicationOpensAsItsOwnRole`, `AFinishedApplicationOpensOverHttp` |
 
 **Not verified. Say so rather than assuming.**
@@ -64,8 +65,10 @@ bank, and a terminal `prepared` stage.
   what nobody has watched. See §6.
 - The Codex provider path has never run: no `codex` binary on this machine.
 - `prep iphone` has never run.
-- The `prepared` stage has not been reached on a real track. It needs 20 real
-  ticks, which is you studying, not an engineer.
+- The `prepared` stage has not been reached on a real track. It needs every
+  study step ticked and every rehearsal step answered at 6 of 8 or better (ADR
+  0008), which is you preparing, not an engineer. The route to it is tested
+  (`ARehearsalStepIsDeliveredByAGradeNotATick`).
 
 ## 4. Do not
 
@@ -130,6 +133,7 @@ prepwright/          one module per concern, all written
   provider.py        the CLIs, the model registry, five roles, settings
   teach.py           one teaching turn, and the stage ladder
   assess.py          grading, the end-of-session review, recap cards
+  rehearse.py        rehearsal steps, the rubric grade, the day-before brief
   serve.py           every route, and which track this process serves
 index.html           the page: 12 views, no framework, no build step
 docs/adr/            the decisions that are settled, and why

@@ -81,6 +81,7 @@ prepwright/keep.py       housekeep(): reconcile, ladder, backups, archive, resto
 prepwright/provider.py   the CLIs, the model registry, five roles, saved settings
 prepwright/teach.py      one teaching turn, and the stage ladder it climbs
 prepwright/assess.py     grading, the end-of-session review, recap cards
+prepwright/rehearse.py   rehearsal steps, the rubric grade, the day-before brief
 prepwright/serve.py      HTTP bridge on 127.0.0.1, request routing, current track
 bridge.py                the composition root: sys.path, wiring, main(). 137 lines
 index.html               the whole page: one inline <style>, one inline <script>

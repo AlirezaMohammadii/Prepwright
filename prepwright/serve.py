@@ -48,6 +48,7 @@ from prepwright import intake as PINTAKE
 from prepwright import keep as PK
 from prepwright import pagestate as PS
 from prepwright import provider as PPROV
+from prepwright import rehearse as PREHEARSE
 from prepwright import research as PRESEARCH
 from prepwright import security as PSEC
 from prepwright import state as PSTATE
@@ -774,6 +775,31 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._failure(500, "Assessments", exc)
             finally:
                 handle.close()
+        if route == "/api/brief":
+            # The day-before page: read-only, built from the store (ADR 0008).
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            try:
+                handle = open_state_track(take_lease=False)
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Brief", exc)
+            try:
+                intake = handle.intake()
+                lib = PSTATE.open_library()
+                try:
+                    row = lib.execute("SELECT employer, role_title FROM track WHERE track_id=?",
+                                      (handle.track_id,)).fetchone()
+                finally:
+                    lib.close()
+                text = PREHEARSE.brief(handle, self._fit_report_for(handle) or {},
+                                       intake["body"] if intake else "",
+                                       employer=(row["employer"] if row else "") or "",
+                                       role=(row["role_title"] if row else "") or "")
+                return self._json(200, {"markdown": text})
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Brief", exc)
+            finally:
+                handle.close()
         if route == "/api/application":
             # What the Prep deep link would open, before the candidate confirms.
             if not self._authorized():
@@ -967,6 +993,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._route_research(handle, payload)
             if route == "/api/curriculum":
                 return self._route_curriculum(handle, payload)
+            if route == "/api/rehearse":
+                return self._route_rehearse(handle, payload)
             return self._json(404, {"error": "Not found."})
         except (PDIAG.DiagnoseRefused, PCURR.CurriculumRefused,
                 PRESEARCH.FetchRefused, PINGEST.IngestRefused, ValueError) as exc:
@@ -1663,8 +1691,80 @@ class Handler(SimpleHTTPRequestHandler):
         edges = payload.get("edges")
         edges = edges if isinstance(edges, list) else ()
         built = PCURR.build(handle, gaps, edges=edges)
+        # The rehearsal steps follow the study plan in the same written plan
+        # (ADR 0008). A failure here costs the rehearsal, never the plan.
+        try:
+            built["rehearsal"] = self._plan_rehearsal(handle)[0]
+        except (PSTATE.CapExceeded, ValueError, OSError) as exc:
+            built["rehearsal"], built["rehearsalError"] = 0, str(exc)
         built["flow"] = flow_state(handle)
         return self._json(200, built)
+
+    def _plan_rehearsal(self, handle):
+        intake = handle.intake()
+        requirements = PDIAG.requirements_from_posting(intake["body"]) if intake else []
+        lib = PSTATE.open_library()
+        try:
+            row = lib.execute("SELECT employer, role_title FROM track WHERE track_id=?",
+                              (handle.track_id,)).fetchone()
+        finally:
+            lib.close()
+        return PREHEARSE.plan(handle, self._fit_report_for(handle) or {}, requirements,
+                              employer=(row["employer"] if row else "") or "",
+                              role=(row["role_title"] if row else "") or "")
+
+    def _route_rehearse(self, handle, payload):
+        """Plan the rehearsal steps, or grade one answer to a panel question.
+
+        The question is the step's own objective, so asking costs nothing. The
+        answer is graded by the grader role against rehearse.RUBRIC, from the
+        same evidence pack a teaching turn gets, and the grade is written to the
+        assessment table, which is what delivers the step (ADR 0008).
+        """
+        action = str(payload.get("action") or "")
+        if action == "plan":
+            if handle.conn.execute(
+                    "SELECT 1 FROM step WHERE gap_id IS NOT NULL LIMIT 1").fetchone() is None:
+                raise ValueError("Build the study plan first. Rehearsal follows the teaching.")
+            added, questions = self._plan_rehearsal(handle)
+            return self._json(200, {"added": added, "questions": questions,
+                                    "flow": flow_state(handle)})
+        if action != "answer":
+            raise ValueError("Unknown rehearse action.")
+        step_key = str(payload.get("stepKey") or "")[:80]
+        step = handle.conn.execute("SELECT objective FROM step WHERE step_id=?",
+                                   (step_key,)).fetchone()
+        if not PREHEARSE.is_rehearsal(step_key) or step is None:
+            raise ValueError("That is not a rehearsal step on this track.")
+        answer = str(payload.get("answer") or "").strip()[:6000]
+        if PREHEARSE.words_in(answer) < 5:
+            raise ValueError("Answer the question the way you would out loud, then send it.")
+        provider, _model = self._provider(payload, require_model=False)
+        model, effort = _role_choice(provider, "rehearse")
+        pack = evidence_pack(handle, step_key)
+        if not MODEL_GATE.acquire(blocking=False):
+            return self._json(429, {"error": "A model call is already running."})
+        try:
+            data = PREHEARSE.retry_on_max_turns(lambda: run_cli(
+                provider, model, PREHEARSE.GRADE_SYSTEM,
+                PREHEARSE.grade_prompt(step["objective"], answer, pack["text"]),
+                effort=effort, schema=PREHEARSE.GRADE_SCHEMA))
+        except (subprocess.SubprocessError, OSError) as exc:
+            return self._failure(502, "Rehearsal grade", exc)
+        finally:
+            MODEL_GATE.release()
+        try:
+            parsed = json.loads(data.get("result") or "{}")
+        except ValueError:
+            parsed = {}
+        result = PREHEARSE.grade_result(parsed, answer, pack)
+        handle.add_assessment(step_key, result["total"],
+                              "%s%s/%s" % (PC.REHEARSAL_RUBRIC, provider, model),
+                              misconception=(result["sinks"][:400] or None))
+        handle.sync_step_lifecycle()
+        result.update(text=PREHEARSE.feedback_text(result), provider=provider, model=model,
+                      usage=PPROV._usage(data), flow=flow_state(handle))
+        return self._json(200, result)
 
     def do_POST(self):
         route = self.path.split("?")[0]
@@ -1677,7 +1777,7 @@ class Handler(SimpleHTTPRequestHandler):
         if route not in ("/api/chat", "/api/state", "/api/assess", "/api/review",
                          "/api/intake", "/api/diagnose", "/api/gap",
                          "/api/research", "/api/curriculum", "/api/track",
-                         "/api/settings"):
+                         "/api/settings", "/api/rehearse"):
             return self._json(404, {"error": "Not found."})
 
         if not self._authorized():
@@ -1704,7 +1804,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, _settings_view())
 
         if route in ("/api/intake", "/api/diagnose", "/api/gap",
-                     "/api/research", "/api/curriculum", "/api/track"):
+                     "/api/research", "/api/curriculum", "/api/track",
+                     "/api/rehearse"):
             return self._pipeline(route, payload)
 
         if route == "/api/assess":

@@ -177,7 +177,7 @@ def _effort_flag(effort, default=None):
 #
 # ROLE_DEFAULTS reproduces the old behaviour exactly. Adopting this changes no
 # grade and no bill until the candidate moves a control.
-ROLES = ("tutor", "assess", "review", "judge", "discover")
+ROLES = ("tutor", "assess", "review", "judge", "discover", "rehearse")
 
 
 ROLE_LABELS = {
@@ -186,6 +186,7 @@ ROLE_LABELS = {
     "review": "Reviewer",
     "judge": "Diagnostic judge",
     "discover": "Researcher",
+    "rehearse": "Rehearsal grader",
 }
 
 
@@ -195,6 +196,7 @@ ROLE_NOTES = {
     "review": "Writes the recap and the drill when a session closes.",
     "judge": "Grades your intake answers into gaps.",
     "discover": "Searches the web and reads sources into the corpus.",
+    "rehearse": "Grades your answer to a panel question and writes a strong one from your evidence.",
 }
 
 
@@ -207,6 +209,9 @@ ROLE_DEFAULTS = {
         "review":   ("claude-haiku-4-5", "low"),
         "judge":    ("claude-haiku-4-5", "low"),
         "discover": ("claude-sonnet-5", "low"),
+        # Not the grader's haiku: this call also writes the strong answer the
+        # candidate will say in the room, from his evidence, with citations.
+        "rehearse": ("claude-sonnet-5", "low"),
     },
     "codex": {
         "tutor":    ("gpt-5.6-sol", ""),
@@ -214,6 +219,7 @@ ROLE_DEFAULTS = {
         "review":   ("gpt-5.6-luna", "low"),
         "judge":    ("gpt-5.6-luna", "low"),
         "discover": ("gpt-5.6-terra", "low"),
+        "rehearse": ("gpt-5.6-terra", "low"),
     },
 }
 

@@ -86,6 +86,22 @@ prompt assembly, history trimming, corpus retrieval, provider invocation, and th
 no-errands rule are written. What fills the corpus is not, so today the tutor teaches
 from whatever documents are placed in `corpus/` by hand.
 
+**8. Rehearsal.** *(built, ADR 0008)* After the teaching, the panel's likeliest
+questions become steps of their own: the red-team objection first, then what the
+posting asks for and the application could not show, the resume's own claims, and
+behavioural prompts, eight at most, with application logistics and work rights left
+out. Your resume's lines (never its header or contact block) and your fit report are
+stored as corpus titled "Your application", vetting primary, and pinned to each
+question, so the grader builds a strong answer from your own record and cites it.
+An answer is graded against a stated rubric: grounded, specific, structured, and
+about 250 words spoken, which is counted rather than judged. You get what would
+cost you in the room, the strong answer, and the panel's next question. A
+rehearsal step is delivered only by a grade of 6 of 8 or better with no criterion
+at 0, never by a tick, so `prepared` now means you answered well. "Day-before
+brief" writes one page from the store: the concepts that carry the interview, your
+five strongest stories mapped to requirements, the three likeliest objections with
+the answer you rehearsed, and cited questions to ask them.
+
 **7. Assessment and review.** *(built)* A grading
 pass reads the transcripts of steps you have not ticked off and scores how much of
 each step's own task you delivered. Off-topic conversation scores zero on purpose. A
@@ -442,9 +458,10 @@ prepwright/               one module per concern, all written and tested
   research.py             fetching and distilling candidate-supplied sources
   curriculum.py           an approved gap list becomes stages and steps
   ingest.py               documents into a track's own corpus
-  provider.py             the CLIs, the model registry, five roles, settings
+  provider.py             the CLIs, the model registry, six roles, settings
   teach.py                one teaching turn, and the stage ladder
   assess.py               grading, the end-of-session review, recap cards
+  rehearse.py             the panel's questions, the rubric grade, the brief
   serve.py                every route, and which track this process serves
   prompt.py               a pointer at corpus.py and teach.py; holds no code
 prep-launcher.sh          the `prep` command: preflight, manifest check, iPhone mode

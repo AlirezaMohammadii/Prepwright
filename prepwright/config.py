@@ -198,6 +198,19 @@ STEP_STATUSES = ("locked", "ready", "open", "done", "skipped")
 GAP_STATUSES = ("proposed", "approved", "edited", "declined", "covered")
 DOC_STATUSES = ("writing", "ready", "quarantined", "origin_drift", "unverifiable")
 
+# ---- rehearsal (ADR 0008) ---------------------------------------------------
+# Teaching makes a concept explainable; the room asks the candidate to defend a
+# line of the resume, answer an objection, or tell a story. A rehearsal step is a
+# topic step whose id is R<nn>, planned after the study steps, asked by the
+# panel and graded against a stated rubric. It is delivered by a graded answer
+# at REHEARSAL_PASS or above, never by a tick, so `prepared` needs performance.
+REHEARSAL_STEP_RE = r"^\d{1,2}:topic:R\d{2}\Z"
+REHEARSAL_RUBRIC = "rehearsal:"      # the assessment.rubric prefix of a rehearsal grade
+REHEARSAL_PASS = 0.75                # 6 of 8 rubric points
+REHEARSAL_MAX = 8                    # steps planned per track
+REHEARSAL_SPOKEN_WORDS = 250         # about two minutes out loud
+RESUME_EVIDENCE_SUFFIX = "_ResumeEvidence.md"
+
 # A track in one of these outcomes is never touched by an automatic transition,
 # whatever the pressure. Neither is a pinned one.
 PROTECTED_OUTCOMES = ("interviewing", "offer")

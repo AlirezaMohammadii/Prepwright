@@ -31,6 +31,7 @@ from prepwright import corpus as PCORPUS
 from prepwright import curriculum as PCURR
 from prepwright import diagnose as PDIAG
 from prepwright import provider as PPROV
+from prepwright import rehearse as PREHEARSE
 from prepwright import state as PSTATE
 
 SEED_CORPUS_DIR = PC.SEED_CORPUS_DIR
@@ -140,8 +141,16 @@ def flow_state(handle):
         "curriculum": {"steps": len(steps),
                        "minutes": sum(int(x["est_minutes"] or 0) for x in steps),
                        "done": sum(1 for x in steps if x["status"] == "done"),
-                       "tiers": {t: sum(1 for x in steps if x["tier"] == t)
-                                 for t in PCURR.TIERS}},
+                       # Rehearsal steps are counted apart from the study tiers
+                       # (ADR 0008); they still sit in `steps`, the denominator.
+                       "tiers": {t: sum(1 for x in steps if x["tier"] == t
+                                        and not PREHEARSE.is_rehearsal(x["step_id"]))
+                                 for t in PCURR.TIERS},
+                       "rehearse": sum(1 for x in steps
+                                       if PREHEARSE.is_rehearsal(x["step_id"])),
+                       "rehearsed": sum(1 for x in steps
+                                        if PREHEARSE.is_rehearsal(x["step_id"])
+                                        and x["status"] == "done")},
         # The plan itself, only once there is one to teach from. Same rule the
         # gap list follows one key up: withholding it at the learn stage would
         # make the screen that exists to render it fetch twice to draw once, and
@@ -172,6 +181,7 @@ def _step_list(handle, steps):
         pinned = grouped.get(row["step_id"], [])
         out.append({
             "key": row["step_id"],
+            "rehearse": PREHEARSE.is_rehearsal(row["step_id"]),
             "ord": int(row["ord"]),
             "title": row["title"],
             "objective": row["objective"],

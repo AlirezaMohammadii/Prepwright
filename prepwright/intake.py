@@ -432,6 +432,71 @@ def _title_for(posting):
     return (role or employer or "Untitled posting")[:200]
 
 
+_TEX_SECTION = re.compile(r"\\section\*?\{([^}]*)\}")
+_TEX_ENTRY = re.compile(r"\\entry\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}")
+_TEX_ITEM = re.compile(r"^\s*\\item\s+(.*)$")
+_TEX_SKIP = re.compile(r"^\s*\\(?:begin|end|vspace|hspace|entrygap|newpage|noindent"
+                       r"|centering|hfill|smallskip|medskip|bigskip)\b")
+_CONTACT = re.compile(r"\S+@\S+|https?://\S+|www\.\S+|(?:linkedin|github)\.com/\S*"
+                      r"|\+?\d[\d ()-]{7,}\d", re.I)
+
+
+def _tex_plain(line):
+    """One LaTeX source line as the words it prints, near enough to quote."""
+    s = re.sub(r"(?<!\\)%.*$", "", line)
+    for a, b in (("``", '"'), ("''", '"'), ("~", " "), ("\\%", "%"), ("\\&", "&"),
+                 ("\\_", "_"), ("\\$", "$"), ("---", "\u2014"), ("--", "\u2013")):
+        s = s.replace(a, b)
+    for _ in range(3):
+        s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}", r"\1", s)
+    s = re.sub(r"\\[a-zA-Z]+\*?", "", s).replace("{", "").replace("}", "")
+    return " ".join(_CONTACT.sub("", s).split())
+
+
+def resume_evidence(tex_text):
+    """The resume's sections and bullets as markdown, from its first \\section on.
+
+    Everything before the first section is the header, which is where the
+    contact block lives, so it is never read. Contact-shaped strings anywhere
+    else are removed as well. One `## ` section per resume section and one per
+    experience entry, so a rehearsal step can be pinned to the lines it asks
+    about and cite them.
+    """
+    text = str(tex_text or "")
+    first = _TEX_SECTION.search(text)
+    if not first:
+        return ""
+    blocks, head, lines = [], None, []
+    for raw in text[first.start():].split("\n"):
+        sec = _TEX_SECTION.search(raw)
+        entry = _TEX_ENTRY.search(raw)
+        if sec or entry:
+            if head and lines:
+                blocks.append((head, lines))
+            if sec:
+                name = _tex_plain(sec.group(1)).title()
+                head, lines = name, []
+                section = name
+            else:
+                title, dates, org = (_tex_plain(g) for g in entry.groups())
+                head, lines = ("%s: %s, %s (%s)" % (section, title, org, dates))[:120], []
+            continue
+        if raw.strip().startswith("\\end{document}"):
+            break
+        if _TEX_SKIP.match(raw):
+            continue
+        item = _TEX_ITEM.match(raw)
+        words = _tex_plain(item.group(1) if item else raw)
+        if len(words) >= 12 and head:
+            lines.append(("- " + words) if item else words)
+    if head and lines:
+        blocks.append((head, lines))
+    if not blocks:
+        return ""
+    return "# Your resume\n\n" + "\n\n".join(
+        "## %s\n\n%s" % (h, "\n".join(ls)) for h, ls in blocks) + "\n"
+
+
 def create_from_posting(posting, application=None, lib=None):
     """One posting, optionally one application folder, into one new track.
 
@@ -499,6 +564,15 @@ def create_from_posting(posting, application=None, lib=None):
                 if got and got.get("text"):
                     S.atomic_write(os.path.join(intake_dir, got["name"]),
                                    CO.redact(got["text"]))
+            # The resume's own lines, for rehearsal: the fit report summarises
+            # a claim, and the panel asks for the numbers behind it. Taken now
+            # because the folder is never opened again.
+            tex = (application.get("files") or {}).get("resume_tex")
+            evidence = resume_evidence(tex.get("text")) if tex else ""
+            if evidence:
+                S.atomic_write(
+                    os.path.join(intake_dir, application["base"] + C.RESUME_EVIDENCE_SUFFIX),
+                    CO.redact(evidence))
         handle.set_intake(kind, text, source_path=source_path,
                           source_sha256=source_sha)
     finally:

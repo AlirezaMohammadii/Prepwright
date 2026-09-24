@@ -503,6 +503,8 @@ ul.tight li{margin:2px 0;font-size:12.5px}
 }
 @media (prefers-reduced-motion:reduce){ .sidetoggle,.sidetoggle svg{transition:none} }
 .stepcard{padding:24px}
+.brief{margin-top:14px}.brief h3{margin:0 0 8px}.brief h4{margin:14px 0 6px}
+.brief p{margin:4px 0}.brief .brief-ans{margin-left:18px}
 .steptag{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--text-faint)}
 .steptitle{font-size:1.34rem;font-weight:800;margin:6px 0 6px;letter-spacing:-.02em}
 .chatlog{display:flex;flex-direction:column;margin-top:6px}
@@ -792,6 +794,7 @@ ul.tight li{margin:2px 0;font-size:12.5px}
 .tier-core{border-color:var(--gate);color:var(--gate);background:var(--gate-glow)}
 .tier-depth{border-color:var(--signal-dim);color:var(--signal)}
 .tier-reference{border-color:var(--line);color:var(--text-faint)}
+.tier-rehearse{border-color:var(--win);color:var(--win)}
 .reslist{margin:8px 0 2px;display:flex;flex-direction:column;gap:8px}
 .resitem{background:var(--surface-2);border:1px solid var(--line);border-left:2px solid var(--signal-dim);
   border-radius:8px;padding:9px 12px;font-size:.86rem}
@@ -1836,7 +1839,9 @@ function stageSteps(n){
   Object.entries(DATA.checks).filter(([,c])=>c.s===n).forEach(([id,c])=>steps.push({key:mint(c,"check",id),type:"check",id,stage:n}));
   return steps;
 }
+function isRehearsal(s){ return !!(s&&s.type==="topic"&&DATA.topics[s.id]&&DATA.topics[s.id].rehearse); }
 function stepDone(s){
+  if(isRehearsal(s)) return DATA.topics[s.id].status==="done";
   if(s.type==="topic") return !!(state.topics[s.id]&&state.topics[s.id].done);
   if(s.type==="practice") return !!(state.practice[s.id]&&state.practice[s.id].status==="done");
   return !!(state.checks[s.id]&&(state.checks[s.id].result==="pass"||state.checks[s.id].result==="retaken"));
@@ -1923,8 +1928,8 @@ function stepFromKey(k){
  * reference = recognise it, answer in one sentence, never sit a whole session
  * Practice and checks inherit the strongest tier present in their stage, because
  * a practice piece is exactly as load-bearing as the topics that feed it.           */
-const TIER_LABEL={core:"Core",depth:"Depth",reference:"Reference"};
-const TIER_RANK={core:3,depth:2,reference:1};
+const TIER_LABEL={core:"Core",depth:"Depth",reference:"Reference",rehearse:"Rehearse"};
+const TIER_RANK={core:3,depth:2,reference:1,rehearse:4};
 function stageTier(n){
   let best="";
   Object.values(DATA.topics).forEach(t=>{
@@ -1947,7 +1952,7 @@ function coreSpine(){
 function stepMeta(s){
   if(s.type==="topic"){ const t=DATA.topics[s.id];
     return {kind:"Topic "+s.id,title:t.concept,citation:t.citation||"",
-      prompt:(t.citation?("Read "+t.citation+" in the corpus. "):"")+t.question,
+      prompt:(t.citation&&!t.rehearse?("Read "+t.citation+" in the corpus. "):"")+t.question,
       hint:t.teach,deliver:"I can explain this",tier:t.tier||"",res:t.res||[]}; }
   if(s.type==="practice"){ const h=DATA.practice[s.id];
     return {kind:"Practice "+s.id+(h.portfolio?" · portfolio piece":""),title:h.label,citation:"",
@@ -2615,7 +2620,9 @@ const TIER_BLOCKS=[
   {tier:"depth",    name:"Depth",
    focus:"Where a follow-up question goes once the core answer lands. Enough to stay credible when pushed."},
   {tier:"reference",name:"Reference",
-   focus:"Recognise, answer in a sentence, move on. Not worth an hour before the interview."}
+   focus:"Recognise, answer in a sentence, move on. Not worth an hour before the interview."},
+  {tier:"rehearse", name:"Rehearse",
+   focus:"The interview itself: the panel's likeliest questions, answered out loud and graded against your own evidence. A step is delivered by a passing answer, never by a tick."}
 ];
 let adoptedSig="";
 
@@ -2632,7 +2639,10 @@ function seedFor(bucket, ids, blank){
 }
 
 function adoptCurriculum(f){
-  const list=(f && Array.isArray(f.stepList)) ? f.stepList : [];
+  /* A rehearsal step is stored as a core topic; the page gives it its own block
+   * and its own card (ADR 0008), keyed off the bridge's `rehearse` flag. */
+  const list=((f && Array.isArray(f.stepList)) ? f.stepList : [])
+    .map(s=>s.rehearse?Object.assign({},s,{tier:"rehearse"}):s);
   if(!list.length) return false;
   /* Rebuild only when the plan actually changed. loadFlow runs after every
    * pipeline action as well as at boot, and rebuilding DATA under a view that is
@@ -2660,6 +2670,7 @@ function adoptCurriculum(f){
     const label=s.tier?(s.tier.charAt(0).toUpperCase()+s.tier.slice(1)):"Step";
     topics[id]={
       s:stageOf[s.tier]||1, tier:s.tier||"core", key:s.key, ord:s.ord,
+      rehearse:!!s.rehearse, status:s.status||"",
       concept:s.title||("Step "+s.ord),
       /* The document a reader would open first, named the way the ledger names
        * it. Never a filename the candidate has no way to resolve. */
@@ -2870,7 +2881,9 @@ function preparedCard(){
       <button class="btn navlink" data-view="recap">Drill the recap bank</button>
       <button class="btn btn-ghost navlink" data-view="continue">Back to the steps</button>
       <button class="btn btn-ghost navlink" data-view="curriculum">See the whole plan</button>
+      <button class="btn btn-ghost" id="btnBrief">Day-before brief</button>
     </div>
+    ${briefBox()}
   </div>`;
 }
 
@@ -3100,11 +3113,36 @@ function learnCard(){
       shortens this: what you can already explain does not become a step.</p>`:""}
     <p class="muted">Every step shows what it was allowed to read, and says so when
     the tutor names something that was not there.</p>
+    ${rehearsalLine(c)}
     <div class="row">
       <button class="btn btn-primary" onclick="location.hash='#continue'">Start the first step</button>
       <button class="btn" onclick="location.hash='#curriculum'">See the whole plan</button>
+      ${c.rehearse?"":`<button class="btn" id="btnRehearsePlan">Add interview rehearsal</button>`}
+      <button class="btn btn-ghost" id="btnBrief">Day-before brief</button>
     </div>
+    ${briefBox()}
   </div>`;
+}
+function rehearsalLine(c){
+  if(!c.rehearse) return `<p class="muted small">No rehearsal yet. It adds the panel's likeliest
+    questions, from your application and the posting, graded against your own evidence.</p>`;
+  return `<p class="muted"><b>${esc(String(c.rehearsed||0))}</b> of <b>${esc(String(c.rehearse))}</b>
+    rehearsal question(s) answered well enough to deliver. They are part of the plan, so the
+    track is not prepared until they are.</p>`;
+}
+/* The day-before brief. Built by the bridge from the store alone; rendered here
+ * from its markdown with every piece escaped first. */
+let briefText="";
+function briefBox(){
+  if(!briefText) return "";
+  const html=briefText.split("\n").map(l=>{
+    if(l.startsWith("# ")) return "<h3>"+esc(l.slice(2))+"</h3>";
+    if(l.startsWith("## ")) return "<h4>"+esc(l.slice(3))+"</h4>";
+    if(l.startsWith("- ")) return "<p class=\"brief-li\">\u2022 "+esc(l.slice(2))+"</p>";
+    if(l.startsWith("  ")) return "<p class=\"brief-ans muted\">"+esc(l.trim())+"</p>";
+    return l.trim()?"<p>"+esc(l)+"</p>":"";
+  }).join("");
+  return `<div class="card pad brief" id="briefBox">${html}</div>`;
 }
 
 /* ---- the actions -------------------------------------------------------- */
@@ -3148,6 +3186,23 @@ document.addEventListener("click", async function(ev){
       opened=true;
     });
     if(opened){ dropAppLink(); location.reload(); }
+    return;
+  }
+  if(t.id==="btnRehearsePlan"){
+    await withBusy("Planning the panel's questions…", async function(){
+      const d=await apiPost("/api/rehearse",{action:"plan"});
+      flow=d.flow||flow; adoptCurriculum(flow);
+      toast((d.added||0)+" rehearsal question(s) added to the plan.");
+    });
+    return;
+  }
+  if(t.id==="btnBrief"){
+    await withBusy("Writing the brief…", async function(){
+      const r=await fetch(API+"/api/brief",{cache:"no-store",headers:{"x-tutor-bridge":"1"}});
+      let d={}; try{ d=await r.json(); }catch(_){}
+      if(!r.ok) throw new Error(d.error||("HTTP "+r.status));
+      briefText=d.markdown||"";
+    });
     return;
   }
   if(t.id==="btnIntake"){
@@ -3350,7 +3405,55 @@ function resBlock(s,m){
           : `<span class="ru">${esc(x.u)}</span>`):""}
       </div>`).join("")}</div></div></div>`;
 }
+function rehearseCard(s){
+  const m=stepMeta(s), log=stepLogOf(s.key), isDone=stepDone(s);
+  return `<div class="card stepcard">
+    <div class="steptag">Rehearsal ${esc(s.id)}${tierChip("rehearse")}</div>
+    <h2 class="steptitle">${esc(m.title)}</h2>
+    <div class="chatlog">
+      <div class="bubble tutor"><div class="who">The panel</div>${esc(m.prompt)}</div>
+      <div class="bubble hint"><div class="who">How it is graded</div>Grounded in your
+        application or the corpus · your own numbers · one shape a listener can follow ·
+        about 250 words spoken. 6 of 8 with no zero delivers the step.</div>
+      ${resBlock(s,m)}
+      ${log.map(bubbleFor).join("")}
+      ${pending[s.key]?`<div class="bubble assistant think"><div class="who">Grading your answer</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
+    </div>
+    <div class="composer">
+      <textarea class="inp" id="rehMsg" rows="6" placeholder="Answer as you would out loud, in the room. Then Send (⌘/Ctrl+Enter)."></textarea>
+      <button class="btn btn-primary" id="rehSend" data-stepkey="${esc(s.key)}" ${pending[s.key]?"disabled":""}>Send</button>
+    </div>
+    <div class="deliver-row">
+      <span class="hint" id="rehCount">0 words</span>
+      ${isDone?`<span class="chip pass">Delivered ✓ by a graded answer</span>`
+              :`<span class="hint">Delivered by an answer graded 6 of 8 or better, not by a tick.</span>`}
+    </div>
+  </div>`;
+}
+async function answerPanel(key){
+  const ta=$("#rehMsg"), txt=((ta&&ta.value)||"").trim();
+  if(!txt){ toast("Answer the question first"); ta&&ta.focus(); return; }
+  state.stepLog=state.stepLog||{};
+  (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"me",text:txt});
+  if(ta) ta.value="";
+  focusStepKey=key; pending[key]=true; save(); renderContinue($("#view-continue"));
+  try{
+    const d=await apiPost("/api/rehearse",{action:"answer",stepKey:key,answer:txt,
+      provider:activeProvider()});
+    const cit=d.citations||{};
+    state.stepLog[key].push({ts:Date.now(),role:"assistant",provider:(d.provider||""),
+      model:(d.model||""),usage:(d.usage||null),grounded:(d.grounded===true),
+      cites:(Array.isArray(d.cites)?d.cites:[]),
+      cited:(Array.isArray(cit.valid)?cit.valid:[]),
+      invented:(Array.isArray(cit.invented)?cit.invented:[]),
+      packSha16:(d.packSha16||""),text:(d.text||"(no grade came back)")});
+    if(d.flow){ flow=d.flow; adoptCurriculum(flow); }
+  }catch(e){ pushSys(key,String((e&&e.message)||e)); }
+  pending[key]=false; save();
+  if($("#view-continue").classList.contains("active")) renderContinue($("#view-continue"));
+}
 function stepChat(s){
+  if(isRehearsal(s)) return rehearseCard(s);
   const m=stepMeta(s), log=stepLogOf(s.key), isDone=stepDone(s);
   return `<div class="card stepcard">
     <div class="steptag">${esc(m.kind)}${tierChip(m.tier)}</div>
@@ -3898,6 +4001,7 @@ document.addEventListener("click",e=>{
   const nav=t.closest(".navlink"); if(nav){ location.hash="#"+nav.dataset.view; closeRail(); return; }
 
   // continue: send a response into the step log
+  if(t.id==="rehSend"){ answerPanel(t.dataset.stepkey); return; }
   if(t.id==="stepSend"){ const key=t.dataset.stepkey, ta=$("#stepMsg"), txt=((ta&&ta.value)||"").trim();
     if(!txt){ toast("Write something first"); ta&&ta.focus(); return; }
     state.stepLog=state.stepLog||{};
@@ -4044,6 +4148,10 @@ document.addEventListener("change",e=>{
 
 // notes autosave
 document.addEventListener("input",e=>{
+  if(e.target&&e.target.id==="rehMsg"){
+    const n=(e.target.value.trim().match(/\S+/g)||[]).length, c=$("#rehCount");
+    if(c){ c.textContent=n+" words"+(n>250?" \u2014 over the two minutes a panel gives you":""); }
+  }
   const n=e.target.closest("[data-notes]");
   if(n){ state.practice[n.dataset.notes].notes=n.value; clearTimeout(n._t); n._t=setTimeout(save,400); }
 });
@@ -4053,6 +4161,9 @@ document.addEventListener("keydown",e=>{
   if(e.key==="Escape"){ closeModal(); closeRail(); }
   if((e.metaKey||e.ctrlKey)&&e.key==="Enter"&&e.target&&e.target.id==="stepMsg"){
     e.preventDefault(); const btn=$("#stepSend"); btn&&btn.click();
+  }
+  if((e.metaKey||e.ctrlKey)&&e.key==="Enter"&&e.target&&e.target.id==="rehMsg"){
+    e.preventDefault(); const btn=$("#rehSend"); btn&&btn.click();
   }
 });
 

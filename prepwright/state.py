@@ -1476,6 +1476,16 @@ class TrackHandle(object):
                 "SELECT step_id, COUNT(*) AS n FROM turn GROUP BY step_id"):
             turns[r["step_id"]] = int(r["n"])
 
+        # A rehearsal step is delivered by a graded answer, never by a tick
+        # (ADR 0008): its best rehearsal grade decides, so `prepared` means the
+        # candidate answered the panel well, not that they clicked twenty times.
+        rehearsal = re.compile(C.REHEARSAL_STEP_RE)
+        best = {}
+        for r in self.conn.execute(
+                "SELECT step_id, MAX(score) AS best FROM assessment"
+                " WHERE rubric LIKE ? GROUP BY step_id", (C.REHEARSAL_RUBRIC + "%",)):
+            best[r["step_id"]] = float(r["best"] or 0.0)
+
         now = utc_now()
         with self.lock, _Txn(self.conn):
             for row in steps:
@@ -1483,7 +1493,10 @@ class TrackHandle(object):
                 if status == "skipped":
                     continue
                 sets, args, kinds = [], [], []
-                done = bool(ticked.get(row["gap_id"]))
+                if rehearsal.match(step_id):
+                    done = best.get(step_id, 0.0) >= C.REHEARSAL_PASS
+                else:
+                    done = bool(ticked.get(row["gap_id"]))
                 touched = turns.get(step_id, 0) > 0
 
                 if done and status != "done":
@@ -1507,7 +1520,8 @@ class TrackHandle(object):
                     sets.append("completed_utc=?")
                     args.append(now)
 
-                score = scored.get(step_id)
+                score = (best.get(step_id) if rehearsal.match(step_id)
+                         else scored.get(step_id))
                 if score is not None and row["score"] != score:
                     sets.append("score=?")
                     args.append(score)
