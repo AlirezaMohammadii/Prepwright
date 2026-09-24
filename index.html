@@ -3230,6 +3230,11 @@ document.addEventListener("click", async function(ev){
     await withBusy("Building the plan…", async function(){
       const d=await apiPost("/api/curriculum",{});
       flow=d.flow||flow;
+      /* Adopted here, not at the next loadFlow. Without it the page kept its
+       * placeholder plan until a reload, "Start the first step" opened the
+       * placeholder's step, and the first paid turn taught a step the plan
+       * does not have (2026-09-24 walk: 1:topic:T1 beside 1:topic:S01). */
+      adoptCurriculum(flow);
       /* Pinning changes which steps a document serves, and that is a column on
        * the Sources screen. */
       ledger=null;

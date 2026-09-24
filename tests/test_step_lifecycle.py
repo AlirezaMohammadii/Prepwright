@@ -495,5 +495,41 @@ class TheGradePanelIsRebuiltFromTheStore(Base):
         self.assertEqual(self.h.latest_assessments(), [])
 
 
+class ATurnOnAStepThePlanLacksIsRefused(Base):
+    """The page kept its placeholder plan after "Build the plan" until a reload,
+    because the handler set `flow` and never adopted it. On the 2026-09-24 walk
+    "Start the first step" opened the placeholder, the first paid turn ($0.07)
+    taught 1:topic:T1, which the written plan does not contain, and the turn
+    created that step, so a one-step plan counted two. The page now adopts the
+    plan it built, and /api/chat refuses a topic the written plan lacks before
+    any model is called."""
+
+    def test_only_the_written_plan_s_topics_are_taught(self):
+        from prepwright import serve as SERVE
+        self.assertTrue(SERVE._step_in_written_plan(self.h, "1:topic:S01"))
+        self.assertFalse(SERVE._step_in_written_plan(self.h, "1:topic:T1"))
+        self.h.ensure_step("1:topic:T1", "a placeholder the page minted")
+        self.assertFalse(SERVE._step_in_written_plan(self.h, "1:topic:T1"),
+                         "a placeholder row passed for a written step")
+        self.assertTrue(SERVE._step_in_written_plan(self.h, "1:practice:PR1"))
+        self.assertTrue(SERVE._step_in_written_plan(self.h, "1:check:CK1"))
+
+    def test_a_track_with_no_written_plan_teaches_the_page_s_keys(self):
+        from prepwright import serve as SERVE
+        tid = T.create_track("No plan yet")
+        h = S.open_track(tid)
+        self.addCleanup(h.close)
+        self.assertTrue(SERVE._step_in_written_plan(h, "1:topic:T1"))
+
+    def test_building_the_plan_adopts_it_before_anything_is_taught(self):
+        with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as fh:
+            page = fh.read()
+        handler = page[page.index('if(t.id==="btnPlan"){'):]
+        handler = handler[:handler.index("return;")]
+        self.assertIn("adoptCurriculum(flow);", handler)
+        self.assertLess(handler.index("flow=d.flow||flow;"),
+                        handler.index("adoptCurriculum(flow);"))
+
+
 if __name__ == "__main__":
     unittest.main()

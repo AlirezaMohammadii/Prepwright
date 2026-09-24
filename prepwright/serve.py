@@ -283,6 +283,25 @@ def _file_report(report, error=None):
     }, report.get("dropped") or [])
 
 
+def _step_in_written_plan(handle, step_key):
+    """False only for a topic key that a written plan does not contain.
+
+    A page that had not adopted the plan it just built taught its placeholder
+    step: on the 2026-09-24 walk the first paid turn went to 1:topic:T1, which
+    the plan does not contain, beside the planned 1:topic:S01. Every topic of a
+    written plan is a step row with a gap. Practice and check keys are minted by
+    the page per stage and have no row until first used, and a track with no
+    written plan still teaches the page's own keys, so both pass as before.
+    """
+    if step_key.split(":")[1:2] != ["topic"]:
+        return True
+    conn = handle.conn
+    if conn.execute("SELECT 1 FROM step WHERE gap_id IS NOT NULL LIMIT 1").fetchone() is None:
+        return True
+    return conn.execute("SELECT 1 FROM step WHERE step_id=? AND gap_id IS NOT NULL",
+                        (step_key,)).fetchone() is not None
+
+
 def _track_for_application(folder):
     """The newest active track built from this application folder, or None."""
     lib = PSTATE.open_library()
@@ -1789,6 +1808,10 @@ class Handler(SimpleHTTPRequestHandler):
             # against exactly what was sent.
             handle = open_state_track(take_lease=False)
             try:
+                if not _step_in_written_plan(handle, step_key):
+                    return self._json(409, {"error": (
+                        "That step is not in the plan this track was built with. "
+                        "Reload the page to see the plan.")})
                 pack = evidence_pack(handle, step_key)
             finally:
                 handle.close()
