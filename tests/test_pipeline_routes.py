@@ -22,6 +22,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,6 +51,9 @@ class Bridge(object):
 
     def __init__(self):
         self.home = tempfile.mkdtemp(prefix="pw-routes-")
+        # The only folders a folder-only intake may read (config.APPLICATIONS_ROOT).
+        self.apps = os.path.realpath(os.path.join(self.home, "applications"))
+        os.makedirs(self.apps)
         # A port derived from the pid, so two suites on one machine do not race
         # for the same one and neither sees the other's tracks.
         self.port = 8100 + (os.getpid() % 700)
@@ -57,6 +61,7 @@ class Bridge(object):
         # trip. The routes that call a model all report honestly that they could
         # not reach one, which is the behaviour under test here anyway.
         env = dict(os.environ, PREPWRIGHT_HOME=self.home,
+                   PREPWRIGHT_APPLICATIONS=self.apps,
                    PREPWRIGHT_PORT=str(self.port),
                    PREPWRIGHT_NO_MODEL="1",
                    # A file chooser is a modal window on a real screen. A
@@ -244,6 +249,63 @@ class IntakeOverHttp(Base):
         status, flow = self.b.call("GET", "/api/flow")
         self.assertEqual(status, 200)
         self.assertEqual(flow["trackId"], body["track_id"])
+
+
+class AFinishedApplicationOpensOverHttp(Base):
+    """Resume Studio's Prep button deep-links a finished application, and this
+    route refused the folder on its own ("Give me a job link or paste the
+    description") although the folder keeps the posting it was built against.
+    A folder-only intake now opens a track for that role, a second click reopens
+    it instead of copying it, and a folder outside the applications root or
+    without a job description is refused with a reason."""
+
+    def _folder(self, base, posting=True, date="2026-09-24"):
+        root = os.path.join(self.b.apps, "%s__%s" % (date, base))
+        os.makedirs(root)
+        with open(os.path.join(root, base + "_A_Mohammadi.tex"), "w") as fh:
+            fh.write("\\documentclass{article}")
+        if posting:
+            meta = {"source_url": "https://jobs.example.test/",
+                    "position": "Research Fellow", "company": "University of Example"}
+            with open(os.path.join(root, base + "_JobDescription.md"), "w") as fh:
+                fh.write("# Job description\n\n## Provenance\n\n```json\n%s\n```\n\n"
+                         "## Posting\n\n%s\n" % (json.dumps(meta), POSTING))
+        return root
+
+    def test_a_folder_alone_opens_its_role_once(self):
+        root = self._folder("Research_Fellow_University_Of_Example")
+        status, seen = self.b.call(
+            "GET", "/api/application?folder=" + urllib.parse.quote(root))
+        self.assertEqual(status, 200, seen)
+        self.assertEqual((seen["title"], seen["trackId"]),
+                         ("Research Fellow at University of Example", None))
+        status, body = self.b.call("POST", "/api/intake", {"applicationFolder": root})
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["title"], body["employer"], body["source_kind"]),
+                         ("Research Fellow at University of Example",
+                          "University of Example", "imported"))
+        self.assertEqual(body["flow"]["stage"], "diagnose")
+        status, again = self.b.call("POST", "/api/intake", {"applicationFolder": root})
+        self.assertEqual(status, 200, again)
+        self.assertEqual((again["track_id"], again.get("reused")), (body["track_id"], True))
+        status, seen = self.b.call(
+            "GET", "/api/application?folder=" + urllib.parse.quote(root))
+        self.assertEqual(seen["trackId"], body["track_id"])
+
+    def test_a_folder_it_may_not_read_is_refused_with_a_reason(self):
+        interim = self._folder("Research_Fellow_ML_Security_UniExample_INTERIM",
+                               posting=False, date="2026-09-23")
+        status, body = self.b.call("POST", "/api/intake", {"applicationFolder": interim})
+        self.assertEqual(status, 400)
+        self.assertIn("kept no job description", body["error"])
+        for bad in (self.b.home, os.path.join(self.b.apps, "..", "tracks"), "/etc"):
+            status, body = self.b.call("POST", "/api/intake", {"applicationFolder": bad})
+            self.assertEqual(status, 400, bad)
+            self.assertIn("is not an application folder under", body["error"])
+        status, body = self.b.call("GET", "/api/application?folder=%2Fetc")
+        self.assertEqual(status, 400)
+        status, _ = self.b.call("GET", "/api/application?folder=x", cookie="pw=forged")
+        self.assertEqual(status, 403)
 
 
 class TheFlowIsDerivedFromTheStoreNotStored(Base):

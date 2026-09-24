@@ -435,5 +435,112 @@ class TheApplicationFolderIsReadOnceAndHashed(Base):
             I.read_application_folder(os.path.join(self.tmp, "no-such-folder"))
 
 
+class AFinishedApplicationOpensAsItsOwnRole(Base):
+    """Resume Studio's Prep button could not open a finished application. The
+    intake route refused a folder with no link or text ("Give me a job link"),
+    intake_from_application had no caller, and the employer and role came from
+    splitting the folder name at its last underscore: the real folder
+    2026-09-24__Research_Fellow_University_Of_Example opened as employer
+    "Melbourne", role "Research Fellow University Of", and Northwind_Research as
+    employer "Research". The folder named in a URL is also untrusted input
+    naming a local path, so it must resolve under the applications root."""
+
+    BASE = "Research_Fellow_University_Of_Example"
+    POSTED = ("Research Fellow (Level A) - School of Computing, "
+              "University of Example, Exampleville.\n\n" + POSTING)
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.realpath(os.path.join(self.tmp, "applications"))
+        os.makedirs(self.root)
+        self._saved_root = I.APPLICATIONS_ROOT
+        I.APPLICATIONS_ROOT = self.root
+
+    def tearDown(self):
+        I.APPLICATIONS_ROOT = self._saved_root
+        super().tearDown()
+
+    def _folder(self, base=BASE, meta=None, with_posting=True, date="2026-09-24"):
+        root = os.path.join(self.root, "%s__%s" % (date, base))
+        os.makedirs(root)
+        with open(os.path.join(root, base + "_A_Mohammadi.tex"), "w") as fh:
+            fh.write("\\documentclass{article}")
+        if with_posting:
+            block = dict({"source_url": "https://jobs.example.test/"}, **(meta or {}))
+            with open(os.path.join(root, base + "_JobDescription.md"), "w") as fh:
+                fh.write("# Job description\n\n## Provenance\n\n```json\n%s\n```\n\n"
+                         "## Posting\n\n%s\n" % (json.dumps(block), self.POSTED))
+        return root
+
+    def _who(self, root):
+        p = I.posting_from_application(I.read_application_folder(root))
+        return p["role_title"], p["employer"]
+
+    def test_the_provenance_names_the_employer_and_the_role(self):
+        root = self._folder(meta={"position": "Research Fellow",
+                                  "company": "University of Example"})
+        self.assertEqual(self._who(root), ("Research Fellow", "University of Example"))
+
+    def test_an_older_folder_is_read_against_its_posting(self):
+        self.assertEqual(self._who(self._folder()),
+                         ("Research Fellow", "University Of Example"))
+        self.assertEqual(I.split_application_base("Research_Engineer_Northwind_Research",
+                                                  "Northwind Research builds ..."),
+                         ("Research Engineer", "Northwind Research"))
+        self.assertEqual(I.split_application_base("Analyst_Wingtip", "no employer named"),
+                         ("Analyst", "Wingtip"))
+        self.assertEqual(I.split_application_base("Resume", "x"), (None, None))
+
+    def test_only_a_folder_under_the_root_is_read(self):
+        inside = self._folder()
+        self.assertEqual(I.check_application_folder(inside, need_posting=True), inside)
+        outside = os.path.join(self.tmp, "elsewhere", "2026-09-24__" + self.BASE)
+        os.makedirs(outside)
+        for bad in (outside, os.path.join(inside, "..", "..", "elsewhere",
+                                          "2026-09-24__" + self.BASE),
+                    self.root, "", "/etc"):
+            with self.assertRaises(I.IntakeRefused, msg=bad) as cm:
+                I.check_application_folder(bad)
+            self.assertIn("is not an application folder under", str(cm.exception))
+        link = os.path.join(self.root, "2026-09-24__Linked")
+        os.symlink(outside, link)
+        with self.assertRaises(I.IntakeRefused):
+            I.check_application_folder(link)
+
+    def test_a_folder_with_no_job_description_is_refused_by_name(self):
+        interim = self._folder(base="Research_Fellow_ML_Security_UniExample_INTERIM",
+                               with_posting=False, date="2026-09-23")
+        self.assertEqual(I.check_application_folder(interim), interim)
+        with self.assertRaises(I.IntakeRefused) as cm:
+            I.check_application_folder(interim, need_posting=True)
+        self.assertEqual(str(cm.exception),
+                         I.NO_POSTING % "Research_Fellow_ML_Security_UniExample_INTERIM")
+        self.assertIn("kept no job description", str(cm.exception))
+
+    def test_the_preview_says_which_role_it_would_open(self):
+        root = self._folder(meta={"position": "Research Fellow",
+                                  "company": "University of Example"})
+        got = I.application_preview(root)
+        self.assertEqual((got["folder"], got["employer"], got["roleTitle"], got["title"]),
+                         (root, "University of Example", "Research Fellow",
+                          "Research Fellow at University of Example"))
+
+    def test_the_real_folders_open_as_the_right_employer(self):
+        real = os.path.expanduser("~/Desktop/Thesis/Job Applications/applications")
+        want = {"2026-09-24__Research_Fellow_University_Of_Example":
+                ("Research Fellow", "University Of Example"),
+                "2026-09-23__Research_Engineer_Northwind_Research":
+                ("Research Engineer", "Northwind Research")}
+        if not all(os.path.isdir(os.path.join(real, d)) for d in want):
+            self.skipTest("the real application folders are not on this machine")
+        I.APPLICATIONS_ROOT = os.path.realpath(real)
+        for name, who in want.items():
+            got = I.application_preview(os.path.join(real, name))
+            self.assertEqual((got["roleTitle"], got["employer"]), who, name)
+        with self.assertRaises(I.IntakeRefused):
+            I.application_preview(os.path.join(
+                real, "2026-09-23__Research_Fellow_ML_Security_UniExample_INTERIM"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -359,6 +359,27 @@ def read_application_folder(path):
     }
 
 
+def split_application_base(base, posting=""):
+    """(role, employer) read out of `<Position>_<Company>`, or (None, None).
+
+    The name marks no boundary, so it is read against the posting, as Resume
+    Studio's own _split_application_base does: the longest suffix of at most four
+    tokens the posting carries is the employer's name, and with no such suffix
+    the last token is the only reading the name supports. The last-token split
+    alone gave "Melbourne" for University_Of_Example and "Research" for
+    Northwind_Research.
+    """
+    tokens = [t for t in str(base or "").split("_") if t]
+    if len(tokens) < 2:
+        return None, None
+    take = 1
+    text = " ".join(str(posting or "").split()).lower()
+    for n in range(2, min(4, len(tokens) - 1) + 1):
+        if " ".join(tokens[-n:]).lower() in text:
+            take = n
+    return " ".join(tokens[:-take]), " ".join(tokens[-take:])
+
+
 def posting_from_application(application):
     """The posting a finished application was built against, if it kept one.
 
@@ -376,15 +397,22 @@ def posting_from_application(application):
             meta = json.loads(text.split("```json", 1)[1].split("```", 1)[0])
         except (ValueError, IndexError):
             meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
     body = text.split("## Posting", 1)[-1].lstrip("\n").strip() if "## Posting" in text else ""
     if not body or body.startswith("(No posting text"):
         return None
-    role = employer = None
+    # Resume Studio writes `position` and `company` into the provenance block
+    # since 2026-09-24. They are read first: the folder name marks no boundary
+    # between the two, and splitting it at the last underscore opened
+    # 2026-09-24__Research_Fellow_University_Of_Example as employer
+    # "Melbourne", role "Research Fellow University Of".
+    role = str(meta.get("position") or "").strip()[:200] or None
+    employer = str(meta.get("company") or "").strip()[:200] or None
     name = application.get("base") or ""
-    if "_" in name:
-        # applications/<date>__<Position>_<Company>/: the company is the tail.
-        role = name.rsplit("_", 1)[0].replace("_", " ").strip() or None
-        employer = name.rsplit("_", 1)[1].replace("_", " ").strip() or None
+    if not (role and employer):
+        # An older folder: applications/<date>__<Position>_<Company>/.
+        role, employer = split_application_base(name, body)
     return dict(
         posting_from_text(body, employer=employer, role_title=role,
                           url=meta.get("source_url") or "",
@@ -511,6 +539,51 @@ def intake_from_text(text, employer=None, role_title=None, location=None,
     return create_from_posting(posting, application=app, lib=lib)
 
 
+# Read here, where check_application_folder reads it, so a test patches it here.
+APPLICATIONS_ROOT = C.APPLICATIONS_ROOT
+NO_POSTING = ("%s kept no job description, so there is nothing to study against."
+              " Paste the posting, and pass this folder alongside it.")
+
+
+def check_application_folder(path, need_posting=False):
+    """The real path of an application folder intake may read, or IntakeRefused.
+
+    The folder can arrive in a URL (Resume Studio's Prep button deep-links
+    ?application=<folder>), so it is untrusted input naming a local path. Its real
+    path has to sit under APPLICATIONS_ROOT, which neither `..` nor a symlink
+    can leave. A folder-only intake also needs the posting the application was
+    built against: a folder without a *_JobDescription.md (the INTERIM folders
+    Resume Studio leaves behind a run that never finished) is refused with the
+    message intake_from_application already gives.
+    """
+    root = APPLICATIONS_ROOT
+    real = os.path.realpath(os.path.expanduser(str(path or "").strip()))
+    if not (real.startswith(root + os.sep) and os.path.isdir(real)):
+        raise IntakeRefused(
+            "%s is not an application folder under %s" % (path, root))
+    base = os.path.basename(real).split("__", 1)[-1]
+    if need_posting:
+        try:
+            kept = [n for n in os.listdir(real) if n.endswith("_JobDescription.md")
+                    and os.path.isfile(os.path.join(real, n))
+                    and not os.path.islink(os.path.join(real, n))]
+        except OSError:
+            kept = []
+        if not kept:
+            raise IntakeRefused(NO_POSTING % base)
+    return real
+
+
+def application_preview(folder):
+    """What a folder-only intake would open, read before anyone confirms it."""
+    real = check_application_folder(folder, need_posting=True)
+    posting = posting_from_application(read_application_folder(real))
+    if posting is None:
+        raise IntakeRefused(NO_POSTING % os.path.basename(real).split("__", 1)[-1])
+    return {"folder": real, "employer": posting.get("employer"),
+            "roleTitle": posting.get("role_title"), "title": _title_for(posting)}
+
+
 def intake_from_application(folder, lib=None):
     """Build a track from a finished application folder alone.
 
@@ -521,8 +594,5 @@ def intake_from_application(folder, lib=None):
     app = read_application_folder(folder)
     posting = posting_from_application(app)
     if posting is None:
-        raise IntakeRefused(
-            "%s kept no job description, so there is nothing to study against."
-            " Paste the posting, and pass this folder alongside it."
-            % app["base"])
+        raise IntakeRefused(NO_POSTING % app["base"])
     return create_from_posting(posting, application=app, lib=lib)

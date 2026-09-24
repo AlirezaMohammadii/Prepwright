@@ -42,11 +42,22 @@ binary to run it with.
 Seven parts, in order. The build status of each is marked, and only the parts marked
 built are described in the present tense.
 
-**1. Intake.** *(not built)* You paste a job description into a box, or point
-Prepwright at a per-job folder written by a separate resume-tailoring app. The
-external folder is read exactly once, copied into the track, and hashed. After that
-it is provenance and is never reopened, so a later edit on the other side cannot
-retroactively change what a track was built from.
+**1. Intake.** *(built)* A link, the description pasted into a box, or a finished
+application from Resume Studio. Resume Studio's Prep button opens
+`http://localhost:8010/?application=<folder>`, and the page shows which role that
+folder would open and creates nothing until you confirm. The folder's real path
+must sit under the applications root (`config.APPLICATIONS_ROOT`, moved with
+`PREPWRIGHT_APPLICATIONS`), and a folder-only intake also needs its
+`*_JobDescription.md`: the INTERIM folders an unfinished run leaves behind have
+none and are refused by name. The employer and role come from that file's
+provenance block (`position`, `company`, written since 2026-09-24). An older folder
+is read against its posting, the longest name suffix the posting carries being the
+employer, because the last-underscore split opened
+`Research_Fellow_University_Of_Example` as employer "Example". A second Prep on
+the same folder reopens its track. The external folder is read exactly once, copied
+into the track, and hashed. After that it is provenance and is never reopened, so a
+later edit on the other side cannot retroactively change what a track was built
+from.
 
 **2. Diagnostic.** *(not built)* A conversation, not a quiz. The tutor probes what
 you actually understand against what the posting demands, and records where you are

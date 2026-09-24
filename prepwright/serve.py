@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import SimpleHTTPRequestHandler
 
 from prepwright import assess as PASSESS
@@ -280,6 +281,18 @@ def _file_report(report, error=None):
         "failed": report.get("failed") or [],
         "overflow": int(report.get("overflow") or 0),
     }, report.get("dropped") or [])
+
+
+def _track_for_application(folder):
+    """The newest active track built from this application folder, or None."""
+    lib = PSTATE.open_library()
+    try:
+        row = lib.execute(
+            "SELECT track_id FROM track WHERE lifecycle='active' AND source_path=?"
+            " ORDER BY created_utc DESC LIMIT 1", (folder,)).fetchone()
+    finally:
+        lib.close()
+    return row["track_id"] if row else None
 
 
 def _switch_track(track_id):
@@ -742,6 +755,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._failure(500, "Assessments", exc)
             finally:
                 handle.close()
+        if route == "/api/application":
+            # What the Prep deep link would open, before the candidate confirms.
+            if not self._authorized():
+                return self._json(403, {"error": "Tutor session authorization required."})
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                preview = PINTAKE.application_preview((query.get("folder") or [""])[0][:1000])
+                preview["trackId"] = _track_for_application(preview["folder"])
+            except PINTAKE.IntakeRefused as exc:
+                return self._json(400, {"error": str(exc)})
+            except (PSTATE.StoreError, sqlite3.Error, OSError) as exc:
+                return self._failure(500, "Application", exc)
+            return self._json(200, preview)
         if route == "/api/tracks":
             if not self._authorized():
                 return self._json(403, {"error": "Tutor session authorization required."})
@@ -950,7 +976,8 @@ class Handler(SimpleHTTPRequestHandler):
             handle.close()
 
     def _route_intake(self, payload):
-        """Build a track from a URL or from pasted text. Both are first-class.
+        """Build a track from a URL, from pasted text, or from a finished
+        application folder alone (Resume Studio's Prep button). All first-class.
 
         The URL path fetches through `research`, which is the only module with
         network access, so this route inherits its whole SSRF guard rather than
@@ -963,8 +990,13 @@ class Handler(SimpleHTTPRequestHandler):
         text = str(payload.get("text") or "")[:PC.INTAKE_MAX_BYTES * 2]
         folder = payload.get("applicationFolder")
         folder = str(folder)[:1000] if isinstance(folder, str) and folder.strip() else None
-        if not url and not text.strip():
-            raise ValueError("Give me a job link or paste the description.")
+        alone = not url and not text.strip()
+        if folder:
+            folder = PINTAKE.check_application_folder(folder, need_posting=alone)
+        if alone:
+            if not folder:
+                raise ValueError("Give me a job link or paste the description.")
+            return self._intake_application(folder)
 
         if text.strip():
             posting = PINTAKE.posting_from_text(
@@ -988,6 +1020,29 @@ class Handler(SimpleHTTPRequestHandler):
 
         app = PINTAKE.read_application_folder(folder) if folder else None
         track_id, report = PINTAKE.create_from_posting(posting, application=app)
+        _switch_track(track_id)
+        handle = open_state_track(take_lease=False)
+        try:
+            report["flow"] = flow_state(handle)
+        finally:
+            handle.close()
+        return self._json(200, report)
+
+    def _intake_application(self, folder):
+        """A finished application alone, from Resume Studio's Prep button.
+
+        intake_from_application had no caller: this route refused a request
+        carrying only the folder with "Give me a job link", although the folder
+        holds the posting the application was built against. A folder that
+        already has an active track reopens it, so a second click on Prep does
+        not start the candidate over on a copy.
+        """
+        reused = _track_for_application(folder)
+        if reused:
+            track_id, report = reused, {"track_id": reused, "reused": True,
+                                        "application": folder}
+        else:
+            track_id, report = PINTAKE.intake_from_application(folder)
         _switch_track(track_id)
         handle = open_state_track(take_lease=False)
         try:

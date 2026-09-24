@@ -11,6 +11,9 @@ prep --no-browser    # same, without opening one
 ```
 
 `prep` is on PATH and works from any directory (`cd ~/Music && prep --help`).
+Resume Studio's Prep button opens `http://localhost:8010/?application=<folder>` for
+the finished application on its screen; confirm once and the track opens.
+
 Stop it with Ctrl+C. Nothing here needs pip, and no API key exists anywhere:
 the tutor answers through the `claude` CLI you are already logged in to.
 
@@ -48,6 +51,7 @@ bank, and a terminal `prepared` stage.
 | Page and store agree after a reload | page 11 turns == store 11, `curriculum.done` 0 == 0 done steps, 20 == 20 total |
 | The eviction ladder can reach a completed step | `tests/test_step_lifecycle.py::TheEvictionLadderCanReachACompletedStep`, 5 tests |
 | Only the tutor role takes the shared model preference | in one walk the tutor ran on `claude-sonnet-5` and the grader on `claude-haiku-4-5` |
+| Resume Studio's Prep button opens a finished application as its own role (2026-09-24) | `?application=<the real 2026-09-24__Research_Fellow_University_Of_Example folder>` on a throwaway :8011 instance: the card read "Prepare for Research Fellow at University Of Example", one click made one `imported` track with that employer and role, the page landed on the diagnostic, 0 console errors. Tests: `AFinishedApplicationOpensAsItsOwnRole`, `AFinishedApplicationOpensOverHttp` |
 
 **Not verified. Say so rather than assuming.**
 

@@ -28,6 +28,15 @@ HOME = os.path.realpath(
 
 LAYOUT_GENERATION = "1"          # contents of HOME/VERSION, read before any open
 
+# Resume Studio files each finished application into a folder under here, and its
+# Prep button deep-links one of them (?application=<folder>). A folder named by a
+# URL is untrusted input naming a local path, so intake reads only folders whose
+# real path sits under this root. PREPWRIGHT_APPLICATIONS moves it, for tests and
+# for anyone who keeps the applications elsewhere.
+APPLICATIONS_ROOT = os.path.realpath(
+    os.environ.get("PREPWRIGHT_APPLICATIONS")
+    or os.path.expanduser("~/Desktop/Thesis/Job Applications/applications"))
+
 VERSION_FILE = os.path.join(HOME, "VERSION")
 LIBRARY_DB = os.path.join(HOME, "library.db")
 LIBRARY_LOCK = os.path.join(HOME, "library.lock")

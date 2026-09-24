@@ -2426,6 +2426,45 @@ async function recheckProgress(){
  * the reply to the action that advanced it, never because the click succeeded.
  * ==========================================================================*/
 let flow=null, flowErr="", flowBusy="";
+/* Resume Studio's Prep button deep-links the finished application on screen
+ * (?application=<folder>). It opened this page bare before, and the candidate
+ * had to find the folder again. The link only pre-fills: nothing is created
+ * until the confirming click, which posts from this origin like any other. */
+let appLink=new URLSearchParams(location.search).get("application")||"", appPreview=null;
+async function loadAppPreview(){
+  if(!appLink) return;
+  try{
+    const r=await fetch(API+"/api/application?folder="+encodeURIComponent(appLink),
+      {cache:"no-store",headers:{"x-tutor-bridge":"1"}});
+    let d={}; try{ d=await r.json(); }catch(_){}
+    appPreview=r.ok?d:{error:d.error||("HTTP "+r.status)};
+  }catch(e){ appPreview={error:String((e&&e.message)||e)}; }
+  const el=$("#view-start");
+  if(el&&el.classList.contains("active")) renderStart(el);
+}
+function dropAppLink(){
+  appLink=""; appPreview=null;
+  history.replaceState(null,"",location.pathname+location.hash);
+}
+function appLinkCard(){
+  if(!appLink) return "";
+  if(!appPreview) return `<div class="card pad busy"><span class="dots"><i></i><i></i><i></i></span> Reading the application…</div>`;
+  if(appPreview.error) return `<div class="card pad stagecard" role="alert">
+    <h2>That application cannot be opened here</h2>
+    <p class="muted">${esc(appPreview.error)}</p>
+    <div class="row"><button class="btn" id="btnAppDismiss">Dismiss</button></div></div>`;
+  const reuse=!!appPreview.trackId;
+  return `<div class="card pad stagecard">
+    <h2>Prepare for ${esc(appPreview.title||"this application")}</h2>
+    <p class="muted">From the application you finished in Resume Studio. The posting,
+      the fit report and the evaluation it kept are read once and hashed.</p>
+    <p class="muted small mono">${esc(appPreview.folder||appLink)}</p>
+    ${reuse?`<p class="muted small">You already have a track for this application. It opens where you left it.</p>`:""}
+    <div class="row">
+      <button class="btn btn-primary" id="btnAppIntake">${reuse?"Open its track":"Prepare for this job"}</button>
+      <button class="btn btn-ghost" id="btnAppDismiss">Not now</button>
+    </div></div>`;
+}
 const STAGE_LABEL={
   intake:"Add the job", confirm:"Check what we read", diagnose:"A short conversation",
   approve:"Approve the gaps", research:"Add your sources", curriculum:"Your plan",
@@ -2751,6 +2790,7 @@ function renderStart(el){
     </div>
     ${stage==="intake"?"":stageRail(stage)}
     ${flowBusy?`<div class="card pad busy"><span class="dots"><i></i><i></i><i></i></span> ${esc(flowBusy)}</div>`:""}
+    ${flowBusy?"":appLinkCard()}
     <div id="stageBody">${stageBody(stage)}</div>
     ${trackSwitcher()}`;
   if(trackList===null) loadTracks().then(()=>{
@@ -3092,6 +3132,22 @@ document.addEventListener("click", async function(ev){
         rev:parseInt(gapBtn.getAttribute("data-rev"),10)});
       flow=d.flow||flow; if(flow) flow.gapList=d.gaps||[];
     });
+    return;
+  }
+  if(t.id==="btnAppDismiss"){ dropAppLink(); renderStart($("#view-start")); return; }
+  if(t.id==="btnAppIntake"){
+    /* The intake points this bridge at another track, so it keeps the track
+     * switch's order below: flush the outgoing document, switch, reload. */
+    const folder=appLink; let opened=false;
+    await withBusy("Opening the application…", async function(){
+      if(syncState==="pending"||syncState==="saving"||syncState==="error"){
+        clearTimeout(syncTimer);
+        try{ await pushState({}); }catch(_){ /* reported by the sync pill */ }
+      }
+      await apiPost("/api/intake",{applicationFolder:folder});
+      opened=true;
+    });
+    if(opened){ dropAppLink(); location.reload(); }
     return;
   }
   if(t.id==="btnIntake"){
@@ -4472,6 +4528,7 @@ window.addEventListener("hashchange",routeFromHash);
   routeFromHash();
   pingBridge();              // detect the live tutor bridge, update the status pill
   loadFlow();                // ask the bridge which stage this track is in
+  loadAppPreview();          // a Prep deep link from Resume Studio, if one came
   reconcileWithDisk();       // adopt the disk copy if it is newer, else push ours up
 })();
 </script>
