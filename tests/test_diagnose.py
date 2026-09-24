@@ -421,5 +421,33 @@ class NothingActsOnAGapTheCandidateHasNotSeen(Base):
         self.assertEqual(sum(got["by_level"].values()), len(rows))
 
 
+
+class AFitReportRequirementIsThePostingsNotAClaim(Base):
+    """A requirement the fit report says the posting states, with no evidence
+    in the application, reached the gap table with no jd_span, because only a
+    posting bullet carries a character span. The approve screen therefore
+    labelled it "your application claims", and curriculum.tier_for, which reads
+    jd_span as "the posting states it", tiered an unlearned posting requirement
+    as "depth" instead of "core". On the 2026-09-24 walk the UniExample PhD and
+    CCS/S&P requirements were both labelled as his own claims."""
+
+    def test_a_weak_fit_row_keeps_where_it_was_read_from_and_tiers_as_the_posting_s(self):
+        from prepwright import curriculum as CU
+        fit = D.claims_from_fit_report(FIT)
+        plan, _cut = D.probe_plan([], fit, limit=24)
+        rows = D.proposals_from(plan, [])
+        weak = [r for r in rows if r["source"] == "posting"]
+        self.assertTrue(weak)
+        for r in weak:
+            self.assertEqual(r["jd_span"], r["ref"])
+            self.assertTrue(r["jd_span"].startswith("fit:"))
+            self.assertEqual(CU.tier_for(r), "core",
+                             "an unlearned posting requirement was tiered below core")
+        claims = [r for r in rows if r["source"] == "resume"]
+        self.assertTrue(claims)
+        self.assertTrue(all(r["jd_span"] is None for r in claims),
+                        "a claim of his own was labelled as the posting's")
+
+
 if __name__ == "__main__":
     unittest.main()

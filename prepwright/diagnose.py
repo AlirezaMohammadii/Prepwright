@@ -512,7 +512,15 @@ def proposals_from(plan, verdicts):
             "why": why or "the candidate could not evidence this",
             "level": level,
             "source": probe["source"],
-            "jd_span": probe.get("span"),
+            # A requirement the fit report says the posting states, and the
+            # application could not evidence, has no character span of its own:
+            # the fit report paraphrases it. Its row is where it was read from.
+            # Without this every such gap was labelled "your application claims"
+            # and tiered as one (curriculum.tier_for reads jd_span as "the
+            # posting states it"): on the 2026-09-24 walk the PhD and CCS/S&P
+            # requirements of the UniExample posting were both labelled so.
+            "jd_span": probe.get("span") or (
+                probe.get("ref") if probe["source"] == "posting" else None),
             "ref": probe.get("ref"),
             "kind": probe.get("kind") or "",
         })
