@@ -1,6 +1,6 @@
 # Prepwright — what it is, how to run it, and what is not proved
 
-Written 2026-09-10 at the end of session 11. Every claim below names the
+Written 2026-09-10 at the end of session 11, updated 2026-09-24. Every claim below names the
 command that backs it. Where a number appears, it was measured.
 
 ## 1. Run it
@@ -17,7 +17,7 @@ the finished application on its screen; confirm once and the track opens.
 Stop it with Ctrl+C. Nothing here needs pip, and no API key exists anywhere:
 the tutor answers through the `claude` CLI you are already logged in to.
 
-The launcher verifies `MANIFEST.sha256` and refuses to start if any of the 20
+The launcher verifies `MANIFEST.sha256` and refuses to start if any of the 21
 pinned files differs. After editing `bridge.py`, `index.html` or
 `prepwright/*.py`, run `./tools/make_manifest.sh` or it will not start.
 
@@ -28,9 +28,12 @@ teaches only from sources you supplied or approved, cites them, and refuses
 rather than inventing. Storage is an append-only SQLite database per track under
 `~/.prepwright`. The page never sends a document, only a delta of ops.
 
-The whole flow is built and runs: intake, the diagnostic, gap approval,
+The whole flow is built and runs: intake (a link, pasted text, or a finished
+application from Resume Studio's Prep button), the diagnostic, gap approval,
 research, curriculum, teaching, grading, the end-of-session review, the recap
-bank, and a terminal `prepared` stage.
+bank, rehearsal of the panel's questions graded against your own record, the
+day-before brief, and a terminal `prepared` stage that needs passing rehearsal
+answers (ADR 0008).
 
 ## 3. State, and how much of it is verified
 
@@ -38,9 +41,9 @@ bank, and a terminal `prepared` stage.
 
 | Claim | Command |
 |---|---|
-| 499 tests pass on three interpreters, no network, model or dialog call, under 15 s | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
-| The manifest verifies over 20 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
-| No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 36 files |
+| 525 tests pass on three interpreters, no network, model or dialog call, under 16 s (2026-09-24) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
+| No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
 | `bridge.py` is a 137-line composition root, and the four stubs are gone | `wc -l bridge.py prepwright/*.py` |
 | The design doc's file inventory equals the manifest | `diff` of the two lists, sorted, is empty |
@@ -54,6 +57,28 @@ bank, and a terminal `prepared` stage.
 | Rehearsal works on a real application (2026-09-24, ADR 0008) | fresh throwaway home, the UniExample folder by deep link: the plan came out as 1 study step and 8 rehearsal steps R01–R08, the resume and the fit report were stored as "Your application" D03/D04 (vetting primary). R01, the red-team objection, graded 6/8 on claude-sonnet-5 ($0.051), with every sentence of the strong answer cited to D03/D04, and the step went to `done` from the grade alone. On R06 the grader caught an answer that said "no number for FakeAVCeleb" against his resume's 96.8% AUC, which is the false line the blind tutor had coached ($0.031). The brief rendered with 0 console errors |
 | Resume Studio's Prep button opens a finished application as its own role (2026-09-24) | `?application=<the real 2026-09-24__Research_Fellow_University_Of_Example folder>` on a throwaway :8011 instance: the card read "Prepare for Research Fellow at University Of Example", one click made one `imported` track with that employer and role, the page landed on the diagnostic, 0 console errors. Tests: `AFinishedApplicationOpensAsItsOwnRole`, `AFinishedApplicationOpensOverHttp` |
 
+**Found on the 2026-09-24 live walk and not fixed.** Each is a measured fact
+from the throwaway walk on the UniExample application.
+
+- Discovery kept an arXiv `/abs/` page as seven sections of page chrome
+  ("Submission history", "Access Paper:", "BibTeX", "Bookmark") and dropped the
+  abstract, which has no heading. It passed the coverage floor and was vetted
+  secondary with trust 4, so the tutor honestly had nothing to teach from it.
+- `curriculum.tier_for` ranks by gap level and by whether the posting states the
+  gap. It has no term for how strongly the posting stresses a gap or how likely a
+  panel is to probe it. Three of four approved gaps had no source and were set
+  aside. (Fixed the same day: a fit-report requirement had no `jd_span`, so it was
+  labelled "your application claims" and tiered as one. It now carries its
+  `fit:<n>` row; `AFitReportRequirementIsThePostingsNotAClaim`.)
+- The page sends its own tutor model on every turn (default `claude-opus-5`),
+  which overrides the shared preference file. `_role_choice` reads the shared
+  model only when the request names none.
+- A turn on a step the plan lacks makes a step row through `ensure_step`, and
+  that row counts in the "finished" denominator. `bcc3b57` removed the cause
+  (the page now adopts the plan it builds) and `/api/chat` refuses such a topic.
+  A track that already holds one keeps it. Excluding such rows from the plan
+  would re-open the settled denominator rule in §5, so it waits for the owner.
+
 **Not verified. Say so rather than assuming.**
 
 - **The native file chooser has never been opened.** Three sessions could not
@@ -63,7 +88,9 @@ bank, and a terminal `prepared` stage.
   no dialog could open), and the route returns `cancelled: true` on a non-zero
   `osascript` exit, which the page handles silently. The dialog between them is
   what nobody has watched. See §6.
-- The Codex provider path has never run: no `codex` binary on this machine.
+- The Codex provider path has never run. Prepwright looks on PATH and in
+  `/opt/homebrew/bin` and finds no `codex`. One ships inside the VS Code ChatGPT
+  extension (Resume Studio uses it); Prepwright does not look there.
 - `prep iphone` has never run.
 - The `prepared` stage has not been reached on a real track. It needs every
   study step ticked and every rehearsal step answered at 6 of 8 or better (ADR
@@ -94,7 +121,9 @@ bank, and a terminal `prepared` stage.
 - `MIN_TERMS` scales to the goal: `min(MIN_TERMS, len(terms(goal)))`.
 - Persistence through `TrackHandle`, one database per track, append-only.
 - No agentic orchestration inside the app. It is a page and a bridge.
-- Research fetches sources you supplied. The model never finds them.
+- The model may nominate sources (`research.discover`, search on); the fetch
+  decides. Every nominated URL is fetched through the same guard as a pasted link
+  and stored only if it answers and covers its gap. Nothing becomes corpus unread.
 - The 17 probes on `t-454d410f0522` stay parked.
 
 ## 6. The one thing left for you

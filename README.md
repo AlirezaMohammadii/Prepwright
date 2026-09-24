@@ -23,24 +23,25 @@ Read this before anything else. The whole flow above is written and runs. Intake
 the diagnostic, gap approval, research, curriculum generation, teaching, grading,
 the end-of-session review and the recap bank all exist, and the page calls each of
 them: `grep -n 'api/' index.html` names every route it uses, and every one is
-handled in `prepwright/serve.py`. Progress lives in per-track SQLite under
+handled in `prepwright/serve.py`. Rehearsal (ADR 0008) and the day-before brief
+followed on 2026-09-24. Progress lives in per-track SQLite under
 `~/.prepwright`, delta-only, with caps enforced inside the transaction that causes
 them; the second store this file used to describe, `progress/state.json`, is gone,
-imported once and renamed. 487 tests pass on three interpreters, including under
-the launcher's `/usr/bin/python3 -I -S`.
+imported once and renamed. 525 tests pass on three interpreters, including under
+the launcher's `/usr/bin/python3 -I -S` (2026-09-24).
 
 What is *not* proved is a smaller and more specific list, and it is in **Known
 limitations** below. Two things there are worth knowing before you rely on this:
 the native file-picker dialog has never been opened, because no test may open one,
-and the Codex provider path has never run on this machine for want of a `codex`
-binary to run it with.
+and the Codex provider path has never run: Prepwright looks for `codex` on PATH and
+in `/opt/homebrew/bin`, and there is none in either place on this machine.
 
 ---
 
 ## The intended flow
 
-Seven parts, in order. The build status of each is marked, and only the parts marked
-built are described in the present tense.
+Eight parts, in order. All eight are built, and each one below says what it does
+today.
 
 **1. Intake.** *(built)* A link, the description pasted into a box, or a finished
 application from Resume Studio. Resume Studio's Prep button opens
@@ -59,32 +60,38 @@ into the track, and hashed. After that it is provenance and is never reopened, s
 later edit on the other side cannot retroactively change what a track was built
 from.
 
-**2. Diagnostic.** *(not built)* A conversation, not a quiz. The tutor probes what
-you actually understand against what the posting demands, and records where you are
-solid, where you are shaky, and where you are empty.
+**2. Diagnostic.** *(built)* A conversation, not a quiz. The probes come from the
+posting's requirements, from the fit report's weak rows, from the claims your
+application makes, and from its red-team objection. The judge grades your answers
+into solid, shaky or empty. With no model available it still produces a list and
+says it graded by length only.
 
-**3. Gap list, which you approve.** *(not built)* The diagnostic produces a proposed
+**3. Gap list, which you approve.** *(built)* The diagnostic produces a proposed
 list of gaps. You edit it and approve it. Nothing is researched or taught until you
 have said yes, because a curriculum built on a misread of your background wastes the
 days you do not have.
 
-**4. Research.** *(not built)* Each approved gap is researched into distilled corpus
-documents, each carrying its origin URL, hashes of the fetched bytes, a vetting tier,
-and a verbatim quoted fragment of the source span every section was distilled from.
-Raw pages are not retained. Those quoted fragments are what let a citation be
-falsified years later, at 560 bytes per document instead of 400 KB.
+**4. Research.** *(built)* Sources come three ways: links you paste, a file you
+choose, or "Find sources for my gaps". There the model nominates URLs through
+search, and each one is fetched through the same guard as a pasted link. It is kept
+only if it answers and covers the gap, so a page the model named is never trusted
+unread. Each stored document carries its origin URL, hashes of the fetched bytes, a
+vetting tier, and a verbatim quoted fragment of the source span every section was
+distilled from. Raw pages are not retained.
 
-**5. Curriculum.** *(not built)* Steps are generated across the stages, cut to the
-subset of concepts carrying most of the value, and each step is pinned to the exact
-corpus sections it will be taught from.
+**5. Curriculum.** *(built)* Each approved gap becomes a step, tiered core, depth or
+reference by its level and by whether the posting states it, and pinned to the
+exact corpus sections it will be taught from. A gap no stored source covers is set
+aside and named, not dropped.
 
-**6. Teaching.** *(built, against a hand-placed corpus)* One step at a time,
+**6. Teaching.** *(built)* One step at a time,
 Socratic, a few sentences and one question. Every factual claim comes from the corpus
 sections supplied with the turn, and the tutor names the source. When something is
 missing it says so in one sentence rather than filling the gap from memory. The
 prompt assembly, history trimming, corpus retrieval, provider invocation, and the
-no-errands rule are written. What fills the corpus is not, so today the tutor teaches
-from whatever documents are placed in `corpus/` by hand.
+no-errands rule are written. The corpus is what research stored for the step. The
+tutor does not see your application, so defending your own record is rehearsal's
+job, not teaching's (ADR 0008).
 
 **8. Rehearsal.** *(built, ADR 0008)* After the teaching, the panel's likeliest
 questions become steps of their own: the red-team objection first, then what the
@@ -433,9 +440,11 @@ Not a to-do list. These are decisions, and each one has a reason.
   `osascript`, so no test can open it: a test that did would wait on a human, and a
   hung one parks the bridge for 240 seconds. The typed-path route into the same
   `resolve()` and `gate()` is tested; the dialog itself is not.
-- **The Codex provider path has never run.** There is no `codex` binary on this
-  machine. The argv builder, the JSONL parser and the model whitelist are unit
-  tested; nothing has watched the process itself answer.
+- **The Codex provider path has never run.** Prepwright looks for `codex` on PATH
+  and in `/opt/homebrew/bin`, and neither has one. A copy ships inside the VS Code
+  ChatGPT extension, which Resume Studio finds and Prepwright does not look for.
+  The argv builder, the JSONL parser and the model whitelist are unit tested;
+  nothing has watched the process itself answer.
 - **`prep iphone` has never run**, so remote mode is implemented and untried.
 
 ---
@@ -466,10 +475,10 @@ prepwright/               one module per concern, all written and tested
   prompt.py               a pointer at corpus.py and teach.py; holds no code
 prep-launcher.sh          the `prep` command: preflight, manifest check, iPhone mode
 index.html                the page: 12 views, no framework, no build step
-MANIFEST.sha256           20 pinned files. The launcher refuses to start on any
+MANIFEST.sha256           21 pinned files. The launcher refuses to start on any
                           mismatch, so an edited file must be re-pinned
 tools/                    make_manifest.sh, orphan_scan.py
-tests/                    487 tests: python3 -m unittest discover -s tests
+tests/                    525 tests: python3 -m unittest discover -s tests
 docs/adr/                 the decisions that are settled, and why
 DESIGN-state-corpus.md    the accepted persistence and corpus design
 HANDOFF.md                the state of the product, every claim naming its command
