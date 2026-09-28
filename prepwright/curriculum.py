@@ -428,7 +428,9 @@ def _clauses(posting):
     "Essential"."""
     heading, out = "", []
     for line in str(posting or "").split("\n"):
-        if D._looks_like_a_heading(line):
+        # "Desirable:" is a heading here; diagnose's detector reads a trailing
+        # colon as a sentence end, and the desirable rule then never fired.
+        if D._looks_like_a_heading(line.rstrip().rstrip(":")):
             heading = line.strip()
             continue
         out += [(heading, " ".join(c.split())) for c in _CLAUSE.split(line)
@@ -437,9 +439,11 @@ def _clauses(posting):
 
 
 def is_process(text):
-    """Application logistics or eligibility (config.PROCESS_PHRASES)."""
-    low = " ".join(_PLAIN.findall(str(text or "").lower()))
-    return any(" ".join(_PLAIN.findall(p)) in low for p in C.PROCESS_PHRASES)
+    """Application logistics or eligibility (config.PROCESS_PHRASES), in whole
+    words: "submit" is not "submitting first-author papers", and "visa" is not
+    "advisable" (review of f03b5c4, 2026-09-28)."""
+    low = " %s " % " ".join(_PLAIN.findall(str(text or "").lower()))
+    return any(" %s " % " ".join(_PLAIN.findall(p)) in low for p in C.PROCESS_PHRASES)
 
 
 def emphasis(gap, posting="", fit=None):
@@ -454,12 +458,14 @@ def emphasis(gap, posting="", fit=None):
     - Every clause that matched marks it desirable: -1.
 
     A claim is read as the requirement it answers, from the fit report's
-    matrix. Logistics are never pressed. `tier_for` reads only whether the sum
-    reaches 1; the reasons are for the candidate.
+    matrix. Logistics are never pressed, but an objection is never screened as
+    logistics: one that mentions the paperwork is still the question the panel
+    will raise (ADR 0008, and rehearse.questions does the same). `tier_for`
+    reads only whether the sum reaches 1; the reasons are for the candidate.
     """
     fit = fit or {}
     label = (gap.get("label") or "").strip()
-    if not label or is_process(label):
+    if not label:
         return 0, []
     red = [str(r or "").strip() for r in fit.get("red_team") or ()]
     for i, risk in enumerate(red, start=1):

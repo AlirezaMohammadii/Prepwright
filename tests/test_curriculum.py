@@ -514,16 +514,38 @@ class WhatThePanelPressesMovesUpOneTier(Base):
         gap = {"label": "Submit resume and selection criteria responses",
                "jd_span": "fit:1", "level": "shaky"}
         self.assertEqual(K.emphasis(gap, "", fit), (0, []))
-        # An objection about eligibility is not a question to rehearse either,
-        objection = "Nothing on the page establishes work rights."
-        self.assertEqual(K.emphasis({"label": objection, "jd_span": None},
-                                    "", {"red_team": [objection]}), (0, []))
-        # and a claim is read as the requirement it answers.
+        # A claim is read as the requirement it answers.
         fit = {"met": [{"requirement": "Valid work rights, no sponsorship",
                         "evidence": "Hobart-based permanent resident"}],
                "red_team": ["Valid work rights without sponsorship are unproven."]}
         self.assertEqual(K.emphasis({"label": "Hobart-based permanent resident",
                                      "jd_span": None}, "", fit), (0, []))
+
+    def test_an_objection_that_mentions_the_paperwork_is_still_the_objection(self):
+        """ADR 0008: objections are not screened as logistics. Review of
+        f03b5c4: a short objection naming the selection criteria in passing was
+        classed as logistics, and the panel's likeliest question was never
+        pressed."""
+        objection = ("No PhD in hand and no funding record; the selection criteria"
+                     " responses do not address either.")
+        self.assertEqual(K.emphasis({"label": objection, "jd_span": None}, "",
+                                    {"red_team": [objection]}),
+                         (1, ["red team objection 1: the panel is expected to raise it"]))
+
+    def test_a_word_that_holds_a_process_word_is_not_logistics(self):
+        """Review of f03b5c4: "submit" matched "submitting" and "visa" matched
+        "advisable", so real requirements were never pressed."""
+        fit = {"rows": [{"requirement": "Track record of submitting first-author"
+                                        " papers to CCS or S&P"}],
+               "red_team": ["No first-author CCS paper is on the page."]}
+        gap = {"label": fit["rows"][0]["requirement"], "jd_span": "fit:1",
+               "level": "shaky"}
+        stress, _why = K.emphasis(gap, "", fit)
+        self.assertEqual(stress, 1)
+        self.assertFalse(K.is_process("Knowing when a manual review is advisable"))
+        self.assertTrue(K.is_process("Visa sponsorship is not available"))
+        from prepwright import rehearse as RH      # one rule for both modules
+        self.assertFalse(RH._is_process("Track record of submitting papers"))
 
     def test_what_the_posting_marks_desirable_is_not_moved_up(self):
         posting = ("Desirable\n\n"
@@ -534,6 +556,10 @@ class WhatThePanelPressesMovesUpOneTier(Base):
         self.assertEqual(stress, 0)
         self.assertIn("the posting marks it desirable", why)
         self.assertEqual(K.tier_for(gap, stress), "depth")
+        # A heading ending in a colon is still a heading (review of f03b5c4).
+        for head in ("Desirable:", "Preferred Qualifications:"):
+            colon = posting.replace("Desirable", head, 1)
+            self.assertEqual(K.emphasis(gap, colon)[0], 0, head)
 
     def test_it_moves_one_tier_at_most_never_above_core_and_never_down(self):
         for level in ("none", "shaky", "solid"):

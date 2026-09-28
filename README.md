@@ -27,7 +27,7 @@ handled in `prepwright/serve.py`. Rehearsal (ADR 0008) and the day-before brief
 followed on 2026-09-24. Progress lives in per-track SQLite under
 `~/.prepwright`, delta-only, with caps enforced inside the transaction that causes
 them; the second store this file used to describe, `progress/state.json`, is gone,
-imported once and renamed. 557 tests pass on three interpreters, including under
+imported once and renamed. 559 tests pass on three interpreters, including under
 the launcher's `/usr/bin/python3 -I -S` (2026-09-24).
 
 What is *not* proved is a smaller and more specific list, and it is in **Known
@@ -487,7 +487,7 @@ index.html                the page: 12 views, no framework, no build step
 MANIFEST.sha256           21 pinned files. The launcher refuses to start on any
                           mismatch, so an edited file must be re-pinned
 tools/                    make_manifest.sh, orphan_scan.py
-tests/                    557 tests: python3 -m unittest discover -s tests
+tests/                    559 tests: python3 -m unittest discover -s tests
 docs/adr/                 the decisions that are settled, and why
 DESIGN-state-corpus.md    the accepted persistence and corpus design
 HANDOFF.md                the state of the product, every claim naming its command

@@ -48,8 +48,7 @@ RUBRIC = (
 )
 
 # Application logistics and eligibility are not interview questions
-# (config.PROCESS_PHRASES says why).
-_PROCESS = C.PROCESS_PHRASES
+# (config.PROCESS_PHRASES says why; _is_process reads it through curriculum).
 _BEHAVIOUR = ("support", "mentor", "collaborate", "lead", "manage", "communicate", "explain",
               "present", "supervise", "coordinate", "work with", "engage", "influence",
               "build relationships", "teach", "negotiate", "resolve")
@@ -67,8 +66,7 @@ def _flat(text):
 
 
 def _is_process(text):
-    low = _flat(text)
-    return any(_flat(p) in low for p in _PROCESS)
+    return CU.is_process(text)     # whole words, one rule for both modules
 
 
 def _is_behavioural(requirement):

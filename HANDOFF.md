@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 557 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 559 tests pass on three interpreters, no network, model or dialog call, 13 to 20 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -112,7 +112,12 @@ answers (ADR 0008).
   real UniExample files (15 probes): graded shaky, 8 move up (five weak rows the red
   team names, two claims the posting repeats, the objection); graded none, 3 move
   (the two claims and the objection; the rest are already core). The "submit
-  resume" row stays put. Tests: `WhatThePanelPressesMovesUpOneTier`,
+  resume" row stays put. An independent review the same day found three more,
+  now fixed: the process filter matched inside words ("submit" in
+  "submitting", "visa" in "advisable") and is whole-word, shared with
+  rehearsal; an objection is never screened as logistics (ADR 0008's rule,
+  which rehearsal already kept); and "Desirable:" with a colon is read as a
+  heading. Five edits reverted, five failures. Tests: `WhatThePanelPressesMovesUpOneTier`,
   `ThePlanRouteHandsThePostingToTheTiers`; eleven edits reverted, one test failed
   each time. (Also fixed 2026-09-24: a fit-report requirement had no `jd_span`,
   so it was labelled "your application claims"; `AFitReportRequirementIsThePostingsNotAClaim`.)
