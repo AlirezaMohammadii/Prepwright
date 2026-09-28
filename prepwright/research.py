@@ -248,7 +248,31 @@ def text_of(fetched):
     raw = body.decode("utf-8", "replace")
     if "html" in (fetched.get("content_type") or "") or raw.lstrip()[:1] == "<":
         raw = html_to_text(raw)
-    return CO.redact(raw)
+    return CO.redact(keep_lead(raw))
+
+
+LEAD_HEADING = "Opening"
+
+
+def keep_lead(text):
+    """Prose above the first `## ` becomes a section of its own, "Opening".
+
+    `corpus.parse_loose` drops it, which is right for a hand-written document
+    and wrong for a fetched page. An arXiv abstract, a Wikipedia lead and a
+    blog's opening definition all sit under the page's h1 and above its first
+    h2, so the page was stored as its chrome and the one paragraph that taught
+    was the one thrown away. A page with no `## ` at all is left alone and is
+    still refused as having nothing citable, and a lead that is only an h1
+    line adds nothing: a heading on its own is not text to teach from.
+    """
+    lines = str(text or "").split("\n")
+    first = next((i for i, ln in enumerate(lines) if ln.startswith("## ")), None)
+    if first is None:
+        return text
+    top = 1 if lines[0].startswith("# ") else 0
+    if not any(ln.strip() and not ln.startswith("# ") for ln in lines[top:first]):
+        return text
+    return "\n".join(lines[:top] + ["", "## " + LEAD_HEADING, ""] + lines[top:])
 
 
 # ---- HTML to prose ---------------------------------------------------------
@@ -296,6 +320,7 @@ def html_to_text(markup):
     s = str(markup or "")
     found = _TITLE_TAG.search(s)
     title = _flatten(found.group(1)) if found else ""
+    s = _TITLE_TAG.sub(" ", s)
     s = _SCRIPT.sub(" ", s)
     s = _COMMENT.sub(" ", s)
     s = _H1.sub(lambda m: "\n\n# %s\n\n" % _flatten(m.group(1)), s)
@@ -310,7 +335,7 @@ def html_to_text(markup):
     s = _BLANKS.sub("\n\n", s).strip()
     # A page with no h1 still needs a title, or every such document is stored as
     # "(untitled)" and nothing downstream can tell two of them apart.
-    if title and not s.startswith("# "):
+    if title:
         s = "# %s\n\n%s" % (title[:200], s)
     return s
 
@@ -604,7 +629,12 @@ def verify(candidate, want_terms, fetch_fn=None):
                 "why": "the page carried %d characters of readable text, which is"
                        " a stub or a wrapper rather than something to learn from"
                        % len(text.strip())}
-    hits, ratio, sample = coverage(text, want_terms)
+    kept = CO.fit_sections(CO.parse_loose(text)[1])
+    if not kept:
+        return {"ok": False, "url": url, "stage": "sections",
+                "why": "nothing citable: the page has no headings"}
+    hits, ratio, sample = coverage(
+        "\n".join("%s\n%s" % (k["heading"], k["body"]) for k in kept), want_terms)
     if hits < COVERAGE_MIN_TERMS or ratio < COVERAGE_MIN_RATIO:
         return {"ok": False, "url": url, "stage": "coverage",
                 "why": "the page answered but does not cover this: it shares %d"

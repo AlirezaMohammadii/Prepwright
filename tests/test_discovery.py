@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from prepwright import research as R          # noqa: E402
+from prepwright import corpus as CO          # noqa: E402
 
 
 GAPS = [{"gap_id": "g%02d" % i,
@@ -282,6 +283,128 @@ class OnlyHttpsUrlsSurviveCleaning(unittest.TestCase):
         out = R.discover(GAPS[:1], nominate, lambda f, g: None, fetch_fn=fetch)
         self.assertEqual(fetched, [], "a non-https nomination reached the fetcher")
         self.assertEqual(out["stored"], 0)
+
+
+# An arXiv /abs/ page as the fetch sees it: the paper's own block (title h1,
+# authors, the abstract in a <blockquote>, the metadata table) sits above the
+# first h2, and every h2 and h3 below it is page chrome.
+ARXIV_GAP = {"gap_id": "g01",
+             "label": "Audio deepfake detection and spoofing countermeasures",
+             "why": "the role asks for self-supervised speech front ends and"
+                    " equal error rate evaluation"}
+ARXIV_ABS = (
+    '<!DOCTYPE html><html lang="en"><head>'
+    '<title>[2403.01234] Detecting Audio Deepfakes with Self-Supervised Features</title>'
+    '<meta name="citation_title" content="Detecting Audio Deepfakes with Self-Supervised Features"/>'
+    '<meta name="citation_abstract" content="Audio deepfake detection models ..."/>'
+    '</head><body><header><a href="#content">Skip to main content</a>'
+    '<form action="https://arxiv.org/search"><input name="query"></form></header>'
+    '<main><div id="abs-outer"><div class="leftcolumn">'
+    '<div class="subheader"><h1>Computer Science &gt; Sound</h1></div>'
+    '<div id="abs"><div class="dateline">[Submitted on 2 Mar 2024]</div>'
+    '<h1 class="title mathjax"><span class="descriptor">Title:</span>'
+    'Detecting Audio Deepfakes with Self-Supervised Features</h1>'
+    '<div class="authors"><span class="descriptor">Authors:</span>'
+    '<a href="/a/doe_j_1">Jane Doe</a>, <a href="/a/roe_r_1">Richard Roe</a></div>'
+    '<blockquote class="abstract mathjax"><span class="descriptor">Abstract:</span>'
+    'Audio deepfake detection models trained on one spoofing corpus generalise'
+    ' poorly to unseen attacks. We evaluate self-supervised speech'
+    ' representations as front ends for spoofing countermeasures. A frozen front'
+    ' end reduces the equal error rate on In-the-Wild from 37.8% to 7.4%.'
+    '</blockquote>'
+    '<div class="metatable"><table><tr><td>Subjects:</td>'
+    '<td>Sound (cs.SD); Cryptography and Security (cs.CR)</td></tr></table></div>'
+    '</div><div class="submission-history"><h2>Submission history</h2>'
+    'From: Jane Doe [view email]<br/>[v1] Sat, 2 Mar 2024 10:11:12 UTC (812 KB)'
+    '</div></div><div class="extra-services"><div class="full-text">'
+    '<h2>Access Paper:</h2><ul><li><a href="/pdf/2403.01234">View PDF</a></li>'
+    '<li><a href="/src/2403.01234">TeX Source</a></li></ul></div>'
+    '<div class="extra-ref-cite"><h3>References &amp; Citations</h3><ul>'
+    '<li>NASA ADS</li><li>Google Scholar</li><li>Semantic Scholar</li></ul></div>'
+    '<div class="bib-modal" hidden="true"><h2>BibTeX formatted citation</h2>'
+    'loading... Data provided by:</div>'
+    '<div class="bookmarks"><div><h3>Bookmark</h3></div>'
+    '<a href="https://www.bibsonomy.org/"><img alt="BibSonomy logo"/></a></div>'
+    '</div></div><div id="labstabs"><h1>arXivLabs: experimental projects with'
+    ' community collaborators</h1><p>arXivLabs is a framework that allows'
+    ' collaborators to develop and share new arXiv features directly on our'
+    ' website.</p></div></main><footer><a href="/about">About</a></footer>'
+    '</body></html>')
+
+
+def _one_arxiv_run(body):
+    stored_texts = []
+
+    def nominate(_s, _p, _sch):
+        return candidates("https://arxiv.org/abs/2403.01234", vetting="primary")
+
+    def ingest(found, _gap):
+        stored_texts.append(found["text"])
+        return "D01" if CO.parse_loose(found["text"])[1] else None
+
+    out = R.discover([ARXIV_GAP], nominate, ingest,
+                     fetch_fn=lambda u: page(u, body, ctype="text/html"))
+    return out, stored_texts
+
+
+class AnAbstractAboveTheFirstHeadingIsKeptNotDropped(unittest.TestCase):
+    """The 2026-09-24 walk stored an arXiv /abs/ page as seven sections of chrome
+    ("Submission history", "Access Paper:", "BibTeX", "Bookmark") and dropped the
+    abstract: it sits under the page's h1, above the first h2, and
+    `corpus.parse_loose` drops prose before the first `## `."""
+
+    def test_an_arxiv_abs_page_is_stored_with_its_abstract_first(self):
+        out, texts = _one_arxiv_run(ARXIV_ABS)
+        self.assertEqual(out["stored"], 1, out["discarded"])
+        title, pairs = CO.parse_loose(texts[0])
+        self.assertEqual(title, "[2403.01234] Detecting Audio Deepfakes with"
+                                " Self-Supervised Features")
+        self.assertEqual(pairs[0][0], R.LEAD_HEADING)
+        self.assertIn("equal error rate", pairs[0][1])
+        # The host rule still decides the label: arxiv.org is not institutional.
+        landed = out["gaps"][0]["stored"][0]
+        self.assertEqual((landed["vetting"], landed["trust"]), ("secondary", 4))
+
+    def test_a_blog_s_opening_definition_is_kept(self):
+        text = R.text_of(page("https://example.com/dp", (
+            "<html><head><title>Differential privacy explained</title></head>"
+            "<body><article><h1>Differential privacy explained</h1>"
+            "<p>Differential privacy bounds what one record can change.</p>"
+            "<h2>Related posts</h2><ul><li>Our newsletter</li></ul>"
+            "</article></body></html>"), ctype="text/html"))
+        pairs = CO.parse_loose(text)[1]
+        self.assertEqual(pairs[0][0], R.LEAD_HEADING)
+        self.assertIn("bounds what one record can change", pairs[0][1])
+
+    def test_the_title_tag_is_not_read_as_page_text(self):
+        text = R.text_of(page("https://arxiv.org/abs/2403.01234", ARXIV_ABS,
+                              ctype="text/html"))
+        pairs = CO.parse_loose(text)[1]
+        self.assertEqual(pairs[0][0], R.LEAD_HEADING)
+        self.assertNotIn("[2403.01234]", pairs[0][1])
+
+    def test_a_page_with_no_second_level_heading_is_still_refused(self):
+        text = R.text_of(page("https://example.com/flat", (
+            "<html><head><title>T</title></head><body><h1>Epsilon</h1><p>"
+            + "Differential privacy bounds the privacy loss. " * 20
+            + "</p></body></html>"), ctype="text/html"))
+        self.assertEqual(CO.parse_loose(text)[1], [])
+
+
+class TheCoverageFloorMeasuresWhatTheStoreKeeps(unittest.TestCase):
+    """The same page passed the coverage floor on its whole text, abstract
+    included, while the store kept none of the text that matched."""
+
+    def test_a_page_whose_gap_words_are_only_in_its_title_is_discarded(self):
+        chrome = ("<h2>Access Paper:</h2><ul><li>View PDF</li><li>TeX Source</li>"
+                  "</ul><h3>Bookmark</h3><p>Share this on BibSonomy, Reddit and"
+                  " Mendeley, or export a citation.</p>") * 6
+        body = ("<html><head><title>Audio deepfake detection and spoofing"
+                " countermeasures with self-supervised speech front ends</title>"
+                "</head><body>" + chrome + "</body></html>")
+        out, _texts = _one_arxiv_run(body)
+        self.assertEqual(out["stored"], 0)
+        self.assertEqual(out["discarded"][0]["stage"], "coverage")
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 525 tests pass on three interpreters, no network, model or dialog call, under 16 s (2026-09-24) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 530 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -57,13 +57,24 @@ answers (ADR 0008).
 | Rehearsal works on a real application (2026-09-24, ADR 0008) | fresh throwaway home, the UniExample folder by deep link: the plan came out as 1 study step and 8 rehearsal steps R01–R08, the resume and the fit report were stored as "Your application" D03/D04 (vetting primary). R01, the red-team objection, graded 6/8 on claude-sonnet-5 ($0.051), with every sentence of the strong answer cited to D03/D04, and the step went to `done` from the grade alone. On R06 the grader caught an answer that said "no number for FakeAVCeleb" against his resume's 96.8% AUC, which is the false line the blind tutor had coached ($0.031). The brief rendered with 0 console errors |
 | Resume Studio's Prep button opens a finished application as its own role (2026-09-24) | `?application=<the real 2026-09-24__Research_Fellow_University_Of_Example folder>` on a throwaway :8011 instance: the card read "Prepare for Research Fellow at University Of Example", one click made one `imported` track with that employer and role, the page landed on the diagnostic, 0 console errors. Tests: `AFinishedApplicationOpensAsItsOwnRole`, `AFinishedApplicationOpensOverHttp` |
 
-**Found on the 2026-09-24 live walk and not fixed.** Each is a measured fact
-from the throwaway walk on the UniExample application.
+**Found on the 2026-09-24 live walk and fixed on 2026-09-28.**
 
 - Discovery kept an arXiv `/abs/` page as seven sections of page chrome
   ("Submission history", "Access Paper:", "BibTeX", "Bookmark") and dropped the
-  abstract, which has no heading. It passed the coverage floor and was vetted
-  secondary with trust 4, so the tutor honestly had nothing to teach from it.
+  abstract. It sits under the page's h1, above the first h2, and
+  `corpus.parse_loose` drops prose before the first `## `. The coverage floor was
+  measured on the whole page, so it passed on text the store then threw away.
+  Now `research.keep_lead` keeps a fetched page's opening prose as a section
+  called "Opening", `html_to_text` no longer reads the `<title>` as body text,
+  and `verify` measures coverage on the sections the store will keep.
+  `parse_loose` is unchanged, because it also parses the résumé, whose opening
+  lines are the contact block. Tests: `AnAbstractAboveTheFirstHeadingIsKeptNotDropped`,
+  `TheCoverageFloorMeasuresWhatTheStoreKeeps`; each of the four edits was
+  reverted once, and a test failed each time.
+
+**Found on the 2026-09-24 live walk and not fixed.** Each is a measured fact
+from the throwaway walk on the UniExample application.
+
 - `curriculum.tier_for` ranks by gap level and by whether the posting states the
   gap. It has no term for how strongly the posting stresses a gap or how likely a
   panel is to probe it. Three of four approved gaps had no source and were set
