@@ -209,6 +209,16 @@ REHEARSAL_RUBRIC = "rehearsal:"      # the assessment.rubric prefix of a rehears
 REHEARSAL_PASS = 0.75                # 6 of 8 rubric points
 REHEARSAL_MAX = 8                    # steps planned per track
 REHEARSAL_SPOKEN_WORDS = 250         # about two minutes out loud
+# Application logistics and eligibility are not interview questions, and a
+# posting that repeats them is not stressing a skill. The fit report for the
+# University of Example role carries "Submit resume, cover letter, and
+# selection-criteria responses" as a requirement row, and the walk asked the
+# candidate to defend his work rights with "what did you build". Read by
+# rehearse (no question) and curriculum.emphasis (no promotion).
+PROCESS_PHRASES = ("submit", "upload", "cover letter", "selection criteria",
+                   "selection-criteria", "work rights", "sponsorship", "visa",
+                   "how to apply", "application form", "right to work", "police check",
+                   "working with children")
 RESUME_EVIDENCE_SUFFIX = "_ResumeEvidence.md"
 
 # A track in one of these outcomes is never touched by an automatic transition,

@@ -47,13 +47,9 @@ RUBRIC = (
     ("concise", "About %d words or fewer spoken, which is about two minutes." % SPOKEN_WORDS),
 )
 
-# Application logistics and eligibility are not interview questions. The fit
-# report for the University of Example role carries "Submit resume, cover
-# letter, and selection-criteria responses" as a requirement row, and the walk
-# asked the candidate to defend his work rights with "what did you build".
-_PROCESS = ("submit", "upload", "cover letter", "selection criteria", "selection-criteria",
-            "work rights", "sponsorship", "visa", "how to apply", "application form",
-            "right to work", "police check", "working with children")
+# Application logistics and eligibility are not interview questions
+# (config.PROCESS_PHRASES says why).
+_PROCESS = C.PROCESS_PHRASES
 _BEHAVIOUR = ("support", "mentor", "collaborate", "lead", "manage", "communicate", "explain",
               "present", "supervise", "coordinate", "work with", "engage", "influence",
               "build relationships", "teach", "negotiate", "resolve")

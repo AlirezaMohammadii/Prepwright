@@ -1690,7 +1690,12 @@ class Handler(SimpleHTTPRequestHandler):
                 " to teach from. Add the sources you trust first.")
         edges = payload.get("edges")
         edges = edges if isinstance(edges, list) else ()
-        built = PCURR.build(handle, gaps, edges=edges)
+        # The posting and the fit report move tiers, never what is planned
+        # (curriculum.emphasis). Both are this track's own intake copies.
+        intake = handle.intake()
+        built = PCURR.build(handle, gaps, edges=edges,
+                            posting=intake["body"] if intake else "",
+                            fit=self._fit_report_for(handle))
         # The rehearsal steps follow the study plan in the same written plan
         # (ADR 0008). A failure here costs the rehearsal, never the plan.
         try:

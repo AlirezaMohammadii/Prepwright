@@ -222,6 +222,53 @@ class EveryApprovedGapSurvivesTheBuild(Base):
                          built["written"])
 
 
+class EmphasisMovesATierAndNeverAGap(Base):
+    """curriculum.emphasis (2026-09-28) reads the posting and the red team to
+    move a step up one tier. The owner's ruling above says which gaps get
+    studied is never decided by importance, so a posting that presses the tail
+    of the list must leave what is planned, deferred and cut exactly as it was.
+    """
+
+    _assert_conserved = EveryApprovedGapSurvivesTheBuild._assert_conserved
+
+    def _shaky(self, subjects):
+        # Shaky, so a pressed step has a tier to move to; _track grades "none",
+        # which is already core and would make this test unable to see a move.
+        track_id, _ = I.intake_from_text(
+            "Requirements\n\n- Build and evaluate agentic AI systems.\n",
+            employer="Example", role_title="Consultant")
+        handle = S.open_track(track_id, client_label="capacity-test")
+        self.addCleanup(handle.close)
+        G.ingest_file(handle, self._file("handbook.md", resource_text(COVERED)),
+                      goal="", depth="broad", vetting="primary", trust=5)
+        for i, (_slug, words) in enumerate(subjects, start=1):
+            handle.add_gap("g%02d" % i, i, words, words,
+                           level="shaky", jd_span="%d:%d" % (i, i + 10))
+            D.approve(handle, "g%02d" % i)
+        return handle
+
+    def test_a_posting_that_presses_the_tail_changes_no_planned_or_cut_gap(self):
+        pressed = SUBJECTS[:3] + SUBJECTS[10:]
+        posting = "Requirements\n\n" + "".join(
+            "- %s.\n- Daily work with %s.\n" % (w, w) for _s, w in pressed)
+        quiet = self._shaky(SUBJECTS)
+        loud = self._shaky(SUBJECTS)
+        a = K.build(quiet, D.approved(quiet), max_steps=10)
+        b = K.build(loud, D.approved(loud), max_steps=10, posting=posting)
+        self._assert_conserved(quiet, a)
+        self._assert_conserved(loud, b)
+        self.assertEqual([s["gap_id"] for s in a["steps"]],
+                         [s["gap_id"] for s in b["steps"]])
+        self.assertEqual([(d["gap_id"], d["reason"]) for d in a["deferred"]],
+                         [(d["gap_id"], d["reason"]) for d in b["deferred"]])
+        # Not vacuous: the posting did move the planned steps it presses.
+        moved = [s["gap_id"] for s, t in zip(a["steps"], b["steps"])
+                 if s["tier"] != t["tier"]]
+        self.assertEqual(moved, ["g01", "g02", "g03"])
+        self.assertTrue(all(d["pressed"] for d in b["deferred"]
+                            if d["gap_id"] != "g%02d" % len(SUBJECTS)))
+
+
 class TheStoreCapIsACeilingNotACliff(Base):
     """MAX_STEPS is enforced by the store mid-write, with no transaction across
     the batch. A caller that asks for more than the store will take must be cut

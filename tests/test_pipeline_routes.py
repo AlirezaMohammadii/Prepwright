@@ -455,6 +455,73 @@ class CurriculumOverHttp(Base):
         self.assertIn("no corpus", body["error"])
 
 
+PRESSED_POSTING = """Skills, Experience & Role Fit
+
+- Awareness of AI governance frameworks (NIST AI RMF).
+- Structure every assessment against NIST AI RMF governance frameworks.
+- Familiarity with data protection and privacy principles.
+"""
+GOVERNANCE = """# AI Governance Notes
+
+## NIST AI RMF functions
+The NIST AI RMF organises governance frameworks into Govern, Map, Measure and
+Manage, and an assessment is structured against those four functions. Govern
+sets accountability, Map frames the context, Measure evaluates trustworthiness
+and Manage treats the risks the other three surface.
+
+## Privacy principles
+Data protection and privacy principles limit the collection, use and disclosure
+of personal information, and familiarity with them is tested in assessments.
+Consent, purpose limitation, minimisation and retention are the four an
+assessor asks about first, then cross-border disclosure.
+"""
+
+
+class ThePlanRouteHandsThePostingToTheTiers(Base):
+    """curriculum.emphasis reads the posting and the fit report, and the only
+    caller that can hand it this track's own copies is the curriculum route. A
+    route that kept calling build(handle, gaps, edges=edges) would leave every
+    other test green and the feature dead on the page."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tmp = tempfile.mkdtemp(prefix="prepwright-route-emphasis-")
+        cls.notes = os.path.join(cls.tmp, "governance.md")
+        with open(cls.notes, "w", encoding="utf-8") as handle:
+            handle.write(GOVERNANCE)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        super().tearDownClass()
+
+    def test_a_requirement_the_posting_repeats_is_planned_one_tier_up(self):
+        status, body = self.b.call("POST", "/api/intake", {
+            "text": PRESSED_POSTING, "employer": "Example Corp", "roleTitle": "Analyst"})
+        self.assertEqual(status, 200, body)
+        _s, plan = self.b.call("POST", "/api/diagnose", {"action": "plan"})
+        verdicts = [{"probe_id": p["probe_id"], "level": "shaky",
+                     "why": "read about it, never applied it"} for p in plan["probes"]]
+        _s, body = self.b.call("POST", "/api/diagnose",
+                               {"action": "propose", "verdicts": verdicts})
+        for gap in body["gaps"]:
+            self.b.call("POST", "/api/gap", {"gapId": gap["gap_id"], "status": "approved"})
+        status, body = self.b.call("POST", "/api/research", {
+            "action": "ingest_file", "path": self.notes,
+            "goal": "NIST AI RMF governance frameworks privacy principles"})
+        self.assertEqual(status, 200, body)
+        status, built = self.b.call("POST", "/api/curriculum", {})
+        self.assertEqual(status, 200, built)
+        tiers = {s["title"].split(" (")[0].split(" and")[0]: (s["tier"], s["pressed"])
+                 for s in built["steps"]}
+        self.assertEqual(tiers.get("Awareness of AI governance frameworks"),
+                         ("core", ["the posting comes back to it 2 times"]),
+                         (tiers, built["deferred"]))
+        self.assertEqual(tiers.get("Familiarity with data protection"), ("depth", []),
+                         (tiers, built["deferred"]))
+
+
 class ResearchOverHttp(Base):
     def test_it_will_not_run_without_urls_from_a_person(self):
         self._intake()

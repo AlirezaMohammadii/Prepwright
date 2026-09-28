@@ -27,7 +27,7 @@ handled in `prepwright/serve.py`. Rehearsal (ADR 0008) and the day-before brief
 followed on 2026-09-24. Progress lives in per-track SQLite under
 `~/.prepwright`, delta-only, with caps enforced inside the transaction that causes
 them; the second store this file used to describe, `progress/state.json`, is gone,
-imported once and renamed. 536 tests pass on three interpreters, including under
+imported once and renamed. 547 tests pass on three interpreters, including under
 the launcher's `/usr/bin/python3 -I -S` (2026-09-24).
 
 What is *not* proved is a smaller and more specific list, and it is in **Known
@@ -81,8 +81,10 @@ distilled from. Raw pages are not retained.
 
 **5. Curriculum.** *(built)* Each approved gap becomes a step, tiered core, depth or
 reference by its level and by whether the posting states it, and pinned to the
-exact corpus sections it will be taught from. A gap no stored source covers is set
-aside and named, not dropped.
+exact corpus sections it will be taught from. A gap the posting comes back to, or the
+fit report's red team expects a panel to raise, moves up one tier
+(`curriculum.emphasis`); it never changes which gaps are planned, set aside or cut. A
+gap no stored source covers is set aside and named, not dropped.
 
 **6. Teaching.** *(built)* One step at a time,
 Socratic, a few sentences and one question. Every factual claim comes from the corpus
@@ -485,7 +487,7 @@ index.html                the page: 12 views, no framework, no build step
 MANIFEST.sha256           21 pinned files. The launcher refuses to start on any
                           mismatch, so an edited file must be re-pinned
 tools/                    make_manifest.sh, orphan_scan.py
-tests/                    536 tests: python3 -m unittest discover -s tests
+tests/                    547 tests: python3 -m unittest discover -s tests
 docs/adr/                 the decisions that are settled, and why
 DESIGN-state-corpus.md    the accepted persistence and corpus design
 HANDOFF.md                the state of the product, every claim naming its command

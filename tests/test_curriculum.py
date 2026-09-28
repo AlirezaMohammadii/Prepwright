@@ -438,6 +438,117 @@ class TiersAndTheCut(Base):
         self.assertEqual(len(D.gap_list(handle)), len(GAPS))
 
 
+# A posting that comes back to g02's requirement twice, and fit reports shaped
+# like the University of Example walk's (a requirement matrix, one red team).
+PRESSING = ("Skills\n\n"
+            "- Awareness of AI governance frameworks (NIST AI RMF).\n"
+            "- Structure every assessment against NIST AI RMF governance frameworks.\n")
+UNIEXAMPLE_FIT = {
+    "rows": [{"requirement": "PhD in Computer Science or related discipline"},
+             {"requirement": "Identify or support research funding"},
+             {"requirement": "Research publications in leading venues"},
+             {"requirement": "Subject development and teaching"}],
+    "met": [{"requirement": "Subject development and teaching",
+             "evidence": "Unit Coordinator responsible for Python curriculum"}],
+    "red_team": ["The PhD-in-hand wording is the clearest rejection risk, and there"
+                 " is no funding development record."],
+}
+
+
+class WhatThePanelPressesMovesUpOneTier(Base):
+    """`tier_for` ranked by gap level and by whether the posting states the gap.
+    On the 2026-09-24 walk (UniExample) nothing in the rank said how hard the
+    posting leans on a gap or whether the red team expects a panel to raise it.
+    `emphasis` counts both, and a pressed gap moves up one tier."""
+
+    def test_a_gap_the_posting_comes_back_to_moves_up_one_tier(self):
+        pressed = self._track()
+        built = K.build(pressed, D.approved(pressed), posting=PRESSING)
+        g02 = next(s for s in built["steps"] if s["gap_id"] == "g02")
+        self.assertEqual(g02["tier"], "core")
+        self.assertEqual(g02["pressed"], ["the posting comes back to it 2 times"])
+        stored = {r["gap_id"]: r["tier"] for r in K.steps_of(pressed)}
+        self.assertEqual(stored["g02"], "core")
+        plain = self._track()
+        built = K.build(plain, D.approved(plain))
+        self.assertEqual(next(s["tier"] for s in built["steps"]
+                              if s["gap_id"] == "g02"), "depth")
+
+    def test_a_weak_row_the_red_team_names_moves_up_on_one_word_of_its_own(self):
+        gap = {"label": "Identify or support research funding", "jd_span": "fit:2",
+               "level": "shaky"}
+        self.assertEqual(K.emphasis(gap, "", UNIEXAMPLE_FIT),
+                         (1, ["red team objection 1 names funding"]))
+        self.assertEqual(K.tier_for(gap, 1), "core")
+
+    def test_a_word_two_rows_share_is_no_rows_own(self):
+        """"research" sits in two rows of the matrix, so an objection naming it
+        points at neither of them."""
+        fit = dict(UNIEXAMPLE_FIT, red_team=["There is no research record at this level."])
+        gap = {"label": "Research publications in leading venues", "jd_span": "fit:3",
+               "level": "shaky"}
+        self.assertEqual(K.emphasis(gap, "", fit), (0, []))
+
+    def test_a_hyphenated_objection_still_names_its_requirement(self):
+        gap = {"label": "PhD in Computer Science or related discipline",
+               "jd_span": "fit:1", "level": "shaky"}
+        stress, why = K.emphasis(gap, "", UNIEXAMPLE_FIT)
+        self.assertEqual(stress, 1)
+        self.assertIn("phd", why[0])
+
+    def test_one_shared_word_with_a_claim_is_a_coincidence(self):
+        """The claim answers "Subject development and teaching"; the objection
+        says "funding development". A claim needs the clause floor."""
+        gap = {"label": "Unit Coordinator responsible for Python curriculum",
+               "jd_span": None, "level": "shaky"}
+        self.assertEqual(K.emphasis(gap, "", UNIEXAMPLE_FIT), (0, []))
+
+    def test_an_objection_is_the_question_the_panel_is_expected_to_ask(self):
+        gap = {"label": UNIEXAMPLE_FIT["red_team"][0], "jd_span": None, "level": "shaky"}
+        self.assertEqual(K.emphasis(gap, "", UNIEXAMPLE_FIT),
+                         (1, ["red team objection 1: the panel is expected to raise it"]))
+
+    def test_logistics_are_never_pressed(self):
+        fit = {"rows": [{"requirement": "Submit resume and selection criteria responses"}],
+               "red_team": ["The selection criteria responses are thin."]}
+        gap = {"label": "Submit resume and selection criteria responses",
+               "jd_span": "fit:1", "level": "shaky"}
+        self.assertEqual(K.emphasis(gap, "", fit), (0, []))
+        # An objection about eligibility is not a question to rehearse either,
+        objection = "Nothing on the page establishes work rights."
+        self.assertEqual(K.emphasis({"label": objection, "jd_span": None},
+                                    "", {"red_team": [objection]}), (0, []))
+        # and a claim is read as the requirement it answers.
+        fit = {"met": [{"requirement": "Valid work rights, no sponsorship",
+                        "evidence": "Hobart-based permanent resident"}],
+               "red_team": ["Valid work rights without sponsorship are unproven."]}
+        self.assertEqual(K.emphasis({"label": "Hobart-based permanent resident",
+                                     "jd_span": None}, "", fit), (0, []))
+
+    def test_what_the_posting_marks_desirable_is_not_moved_up(self):
+        posting = ("Desirable\n\n"
+                   "- Awareness of AI governance frameworks (NIST AI RMF).\n"
+                   "- NIST AI RMF governance frameworks experience.\n")
+        gap = {"label": GAPS[1][1], "jd_span": "30:60", "level": "shaky"}
+        stress, why = K.emphasis(gap, posting)
+        self.assertEqual(stress, 0)
+        self.assertIn("the posting marks it desirable", why)
+        self.assertEqual(K.tier_for(gap, stress), "depth")
+
+    def test_it_moves_one_tier_at_most_never_above_core_and_never_down(self):
+        for level in ("none", "shaky", "solid"):
+            for span in ("1:2", None):
+                gap = {"level": level, "jd_span": span}
+                base = K.tier_for(gap)
+                for stress in (-1, 0, 1, 5):
+                    got = K.tier_for(gap, stress)
+                    rank = K.TIERS.index
+                    self.assertLessEqual(rank(got), rank(base))
+                    self.assertLessEqual(rank(base) - rank(got), 1)
+                    if stress < 1:
+                        self.assertEqual(got, base)
+
+
 class NothingIsPlannedFromAGapTheCandidateHasNotApproved(Base):
     def test_a_proposed_gap_is_refused_by_name_before_any_write(self):
         """step.gap_id carries a foreign key and foreign keys are on, so an

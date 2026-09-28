@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 536 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 547 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -82,15 +82,31 @@ answers (ADR 0008).
   Test: `AnUntouchedBarLetsTheTutorRoleDecide`; six edits reverted, one test
   failed each time.
 
+- `curriculum.tier_for` ranked by gap level and by whether the posting states the
+  gap, with no term for how hard the posting leans on it or whether a panel will
+  probe it. `curriculum.emphasis` now counts both from the posting and the fit
+  report the route already holds: a red-team objection (+1), two or more posting
+  clauses carrying the gap's words (+1), an objection naming it (+1; a weak fit
+  row needs one word no other row uses), every match under a desirable heading
+  (-1). A total of 1 or more moves the step up one tier, never above core. It
+  never touches what is planned, set aside or cut (`EmphasisMovesATierAndNeverAGap`
+  in `test_capacity.py` guards the owner's ruling). Logistics are never pressed;
+  the phrase list is `config.PROCESS_PHRASES`, shared with rehearsal. Every step
+  and deferral in the `/api/curriculum` reply carries its `pressed` reasons; the
+  page does not show them yet, and the store keeps only the tier. Measured on the
+  real UniExample files (15 probes): graded shaky, 8 move up (five weak rows the red
+  team names, two claims the posting repeats, the objection); graded none, 3 move
+  (the two claims and the objection; the rest are already core). The "submit
+  resume" row stays put. Tests: `WhatThePanelPressesMovesUpOneTier`,
+  `ThePlanRouteHandsThePostingToTheTiers`; eleven edits reverted, one test failed
+  each time. (Also fixed 2026-09-24: a fit-report requirement had no `jd_span`,
+  so it was labelled "your application claims"; `AFitReportRequirementIsThePostingsNotAClaim`.)
+  Three of four approved gaps on the walk had no source and were set aside; that
+  is discovery, not ranking, and the arXiv fix above is the part of it found.
+
 **Found on the 2026-09-24 live walk and not fixed.** Each is a measured fact
 from the throwaway walk on the UniExample application.
 
-- `curriculum.tier_for` ranks by gap level and by whether the posting states the
-  gap. It has no term for how strongly the posting stresses a gap or how likely a
-  panel is to probe it. Three of four approved gaps had no source and were set
-  aside. (Fixed the same day: a fit-report requirement had no `jd_span`, so it was
-  labelled "your application claims" and tiered as one. It now carries its
-  `fit:<n>` row; `AFitReportRequirementIsThePostingsNotAClaim`.)
 - A turn on a step the plan lacks makes a step row through `ensure_step`, and
   that row counts in the "finished" denominator. `bcc3b57` removed the cause
   (the page now adopts the plan it builds) and `/api/chat` refuses such a topic.

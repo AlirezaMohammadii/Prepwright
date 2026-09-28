@@ -9,7 +9,9 @@ Three rules shape everything here.
 **Order by dependency, not by importance.** A concept whose prerequisite is
 unlearned is unteachable, so the most important gap on the list is often not the
 one to teach first. Importance decides what gets cut; dependency decides the
-order of what survives.
+order of what survives. What the posting and its red team press moves a step's
+tier by one at most (`emphasis`), and never whether it is planned, deferred or
+cut.
 
 **A step pins the sections it teaches from, and no others.** `corpus.pin_all` was
 the placeholder: every section of every ready document, pinned to every step.
@@ -30,6 +32,7 @@ approved.
 import re
 
 from . import config as C
+from . import diagnose as D
 
 
 class CurriculumRefused(ValueError):
@@ -378,20 +381,116 @@ def order_gaps(gaps, edges=()):
 TIERS = ("core", "depth", "reference")
 
 
-def tier_for(gap):
-    """Level first, then where the gap came from.
+def tier_for(gap, stress=0):
+    """Level first, then where the gap came from, then what the panel presses.
 
     An unlearned requirement the posting states loses the interview at the
     screen. An undefended claim on the candidate's own resume loses the room
-    once they are already in it, which is later and therefore second.
+    once they are already in it, which is later and therefore second. A gap the
+    posting keeps coming back to, or the red team expects a panel to raise,
+    moves up one tier (`emphasis`): never above core, never down.
     """
     level = (gap.get("level") or "none").lower()
     from_posting = bool(gap.get("jd_span"))
     if level == "none":
-        return "core" if from_posting else "depth"
-    if level == "shaky":
-        return "depth" if from_posting else "reference"
-    return "reference"
+        tier = "core" if from_posting else "depth"
+    elif level == "shaky":
+        tier = "depth" if from_posting else "reference"
+    else:
+        tier = "reference"
+    return _UP[tier] if stress >= 1 else tier
+
+
+# ---- what the panel presses -------------------------------------------------
+# Level and source say how much a gap would cost. They said nothing about how
+# hard this posting leans on it, or whether the red team expects a panel to
+# probe it, and the 2026-09-24 walk on the University of Example role showed
+# that half of the rank missing. Both are counted here, never judged.
+_UP = {"reference": "depth", "depth": "core", "core": "core"}
+_CLAUSE = re.compile(r";|\n|(?<=[.!?])\s+")
+_PLAIN = re.compile(r"[a-z0-9]+")
+
+
+def _marks(text):
+    """terms() for matching one line against another. A trailing '.' goes, and
+    a hyphenated word also counts as its parts, or the red team's "PhD-in-hand"
+    never meets the posting's "PhD" and "funding." never meets "funding"."""
+    out = set()
+    for w in terms(text):
+        w = w.strip(".-")
+        out.update(t for t in [w] + w.split("-") if len(t) > 2 and t not in _STOP)
+    return out
+
+
+def _clauses(posting):
+    """(heading, clause) for every clause of the posting, with the heading it
+    sits under, so a line under "Desirable" can be told from one under
+    "Essential"."""
+    heading, out = "", []
+    for line in str(posting or "").split("\n"):
+        if D._looks_like_a_heading(line):
+            heading = line.strip()
+            continue
+        out += [(heading, " ".join(c.split())) for c in _CLAUSE.split(line)
+                if len(c.strip()) >= 12]
+    return out
+
+
+def is_process(text):
+    """Application logistics or eligibility (config.PROCESS_PHRASES)."""
+    low = " ".join(_PLAIN.findall(str(text or "").lower()))
+    return any(" ".join(_PLAIN.findall(p)) in low for p in C.PROCESS_PHRASES)
+
+
+def emphasis(gap, posting="", fit=None):
+    """(stress, reasons): how hard the posting and the red team press a gap.
+
+    - A red-team objection is the question the panel is expected to ask: +1.
+    - Two or more posting clauses carrying enough of the gap's words: +1.
+    - A red-team objection naming it: +1. For a weak fit row one word of its
+      own is enough, a word no other row of the matrix uses; for a claim it
+      takes the same floor a clause does, because a claim shares ordinary
+      words with any objection.
+    - Every clause that matched marks it desirable: -1.
+
+    A claim is read as the requirement it answers, from the fit report's
+    matrix. Logistics are never pressed. `tier_for` reads only whether the sum
+    reaches 1; the reasons are for the candidate.
+    """
+    fit = fit or {}
+    label = (gap.get("label") or "").strip()
+    if not label or is_process(label):
+        return 0, []
+    red = [str(r or "").strip() for r in fit.get("red_team") or ()]
+    for i, risk in enumerate(red, start=1):
+        if risk and risk[:200] == label[:200]:
+            return 1, ["red team objection %d: the panel is expected to raise it" % i]
+    about = next((str(r.get("requirement") or "") for r in fit.get("met") or ()
+                  if str(r.get("evidence") or "").strip()[:200] == label[:200]), label)
+    want = _marks(about)
+    if not want or is_process(about):
+        return 0, []
+    floor = min(MIN_TERMS, len(want))
+    stress, why = 0, []
+    hits = [(h, c) for h, c in _clauses(posting) if len(want & _marks(c)) >= floor]
+    if len(hits) >= 2:
+        stress += 1
+        why.append("the posting comes back to it %d times" % len(hits))
+    one_word = str(gap.get("jd_span") or "").startswith("fit:")
+    rows = [_marks(r.get("requirement")) for r in fit.get("rows") or ()]
+    own = {t for t in want if sum(t in r for r in rows) <= 1}
+    for i, risk in enumerate(red, start=1):
+        shared = want & _marks(risk)
+        if len(shared) >= floor or (one_word and shared & own):
+            stress += 1
+            why.append("red team objection %d names %s"
+                       % (i, ", ".join(sorted((shared & own) or shared)[:3])))
+            break
+    if hits and all(any(w in D._flat(h + " " + c) for w in D._NICE_WORDS)
+                    for h, c in hits):
+        stress -= 1
+        why.append("the posting marks it desirable")
+    return stress, why
 
 
 # A step id is a STEP KEY, and the two sides have to agree or the plan cannot be
@@ -409,12 +508,16 @@ def step_key(ordinal):
     return "%d:%s:S%02d" % (min(99, max(1, int(ordinal))), STEP_KIND, int(ordinal))
 
 
-def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
+def plan(gaps, index, edges=(), max_steps=None, est_minutes=25, posting="", fit=None):
     """The ordered, tiered, sliced plan, plus everything it could not build.
 
     Deferral is never deletion. A gap with no usable corpus keeps its row and is
     returned in `deferred` with the reason, which is also the research list: the
     curriculum is the thing that knows what is missing.
+
+    `posting` and `fit` (the parsed fit report) feed `emphasis`, which moves a
+    tier and nothing else. Each step and each deferral carries its `pressed`
+    reasons, so the research list says which missing source the panel presses.
     """
     if not gaps:
         raise CurriculumRefused(
@@ -451,9 +554,11 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
         query = ("%s %s" % (title, why)) if informative else title
         scored = score_sections(index, query, df=df) if index else []
         slices = relevant(scored)
+        stress, pressed = emphasis(gap, posting, fit)
         if not slices:
             deferred.append({"gap_id": gap["gap_id"], "label": title,
-                             "reason": "no corpus in this track teaches it yet"})
+                             "reason": "no corpus in this track teaches it yet",
+                             "pressed": pressed})
             continue
         steps.append({
             "gap_id": gap["gap_id"],
@@ -466,7 +571,8 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
                           " follow-up on it."
                           + ((" What is thin about it now: " + why)
                              if informative else "")),
-            "tier": tier_for(gap),
+            "tier": tier_for(gap, stress),
+            "pressed": pressed,
             "est_minutes": int(est_minutes),
             "slices": slices,
         })
@@ -479,7 +585,7 @@ def plan(gaps, index, edges=(), max_steps=None, est_minutes=25):
                        " for" % (C.MAX_STEPS, requested))
         for step in steps[max_steps:]:
             deferred.append({"gap_id": step["gap_id"], "label": step["title"],
-                             "reason": reason})
+                             "reason": reason, "pressed": step["pressed"]})
         steps = steps[:max_steps]
 
     for i, step in enumerate(steps, start=1):
@@ -544,11 +650,12 @@ def check_gaps(handle, gaps):
             % ", ".join(unapproved))
 
 
-def build(handle, gaps, edges=(), max_steps=None):
+def build(handle, gaps, edges=(), max_steps=None, posting="", fit=None):
     """Approved gaps plus this track's corpus into a written plan."""
     check_gaps(handle, gaps)
     index = corpus_index(handle)
-    built = plan(gaps, index, edges=edges, max_steps=max_steps)
+    built = plan(gaps, index, edges=edges, max_steps=max_steps,
+                 posting=posting, fit=fit)
     built["written"] = write(handle, built)
     return built
 
