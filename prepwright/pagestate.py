@@ -102,6 +102,11 @@ FIELDS = {
     # because after a reload the "Last checked" line survives and would
     # otherwise attribute a grade to nothing at all.
     "assessModel": ("pref", "scalar"),
+    # True once the candidate moved the tutor bar on this track. Until then a
+    # turn names no model, so the bridge resolves the tutor role: the Tutor row
+    # in Models, else the shared preference, else the shipped default. Without
+    # it the seeded model was sent on every turn and won over both (2026-09-24).
+    "tutorChosen": ("pref", "scalar"),
 }
 # Three names in the page document that this table deliberately leaves out.
 #   assessList  the rows of the last re-check run, kept only to redraw one

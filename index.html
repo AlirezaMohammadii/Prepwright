@@ -1111,6 +1111,24 @@ function modelLabel(id){
 }
 function activeProvider(){ return currentProvider(state&&state.provider); }
 function activeModel(){ return currentModel(state&&state.model,activeProvider()); }
+/* Until the candidate moves the bar on this track (state.tutorChosen), a turn
+ * names no model and the bridge resolves the tutor role: the Tutor row in
+ * Models, else the shared preference Resume Studio writes, else the shipped
+ * default. The bar shows that resolved pair, so what it reads is what runs.
+ * On 2026-09-24 the page sent its seeded model on every turn, which beat both. */
+function resolvedTutor(){
+  if(state&&state.tutorChosen) return null;
+  const r=ROLE_SETTINGS&&(ROLE_SETTINGS.roles||[]).find(x=>x.id==="tutor");
+  return (r&&r.resolved&&r.resolved[activeProvider()])||null;
+}
+function barModel(){
+  const r=resolvedTutor();
+  return r?currentModel(r.model,activeProvider()):activeModel();
+}
+function barEffort(){
+  const r=resolvedTutor();
+  return r?(EFFORT_IDS.indexOf(r.effort)>=0?r.effort:""):effortFor(activeModel());
+}
 function isAssistantRole(role){ return role==="assistant"||role==="claude"; }
 /* ---- reasoning effort -------------------------------------------------------
  * The bridge maps these shared levels to the selected provider's supported CLI
@@ -2055,7 +2073,7 @@ function renderContinueInner(el){
   // The ring reads partial credit; "complete" stays strict, because "Stage N
   // delivered" has to mean every step was actually ticked off.
   const pct=pctOf(steps), complete=done===total;
-  const provider=activeProvider(), model=activeModel(), providerModels=modelsFor(provider);
+  const provider=activeProvider(), model=barModel(), providerModels=modelsFor(provider);
   const bstat=bridgeStatus();
   let cur=null;
   if(focusStepKey) cur=steps.find(s=>s.key===focusStepKey);
@@ -2084,7 +2102,7 @@ function renderContinueInner(el){
         <label class="mlbl" for="tutorEffort">thinking</label>
         <select id="tutorEffort" class="mselect" aria-label="Reasoning effort for this model"
           title="How hard this model reasons before answering. Remembered per model. Not a price setting — more effort often costs less, because the answer gets shorter.">
-          ${EFFORTS.map(e=>`<option value="${esc(e.id)}" ${(effortFor(model)===e.id)?"selected":""}>${esc(e.name)}</option>`).join("")}
+          ${EFFORTS.map(e=>`<option value="${esc(e.id)}" ${(barEffort()===e.id)?"selected":""}>${esc(e.name)}</option>`).join("")}
         </select>
         <span class="bstat ${bstat.cls}"><span class="bdot"></span>${esc(bstat.label)}</span>
         <span id="syncPill" class="syncpill" hidden></span>
@@ -2224,10 +2242,13 @@ async function askTutor(key){
   // The citation goes over as its own field so the bridge can pull that exact
   // corpus document and hand it to a tool-less model, instead of parsing it back
   // out of prose. The field name is the bridge's contract — do not rename it.
-  const body={provider,model,effort:effortFor(model),
+  const body={provider,
               stepKey:step.key,step,
               citation:stepMeta(s).citation||"",
               messages:buildMsgs(stepLogOf(key))};
+  // A model rides along only once the candidate chose one on this track's bar;
+  // otherwise the bridge resolves the tutor role (resolvedTutor, above).
+  if(state.tutorChosen){ body.model=model; body.effort=effortFor(model); }
   try{
     const r=await fetch(API+"/api/chat",{method:"POST",
       headers:{"content-type":"application/json","x-tutor-bridge":"1"},
@@ -2243,7 +2264,7 @@ async function askTutor(key){
       // These ride through client_meta untouched (pagestate.py only reserves
       // text/seq/at), so they persist and survive a reload with no schema change.
       const cit=d.citations||{};
-      (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"assistant",provider:(d.provider||provider),model,resolved:(d.resolved||""),effort:(d.effort||""),usage:(d.usage||null),
+      (state.stepLog[key]=state.stepLog[key]||[]).push({ts:Date.now(),role:"assistant",provider:(d.provider||provider),model:(d.model||model),resolved:(d.resolved||""),effort:(d.effort||""),usage:(d.usage||null),
         grounded:(d.grounded===true),
         cites:(Array.isArray(d.cites)?d.cites:[]),
         cited:(Array.isArray(cit.valid)?cit.valid:[]),
@@ -2491,21 +2512,28 @@ async function apiGet(path){
   return d;
 }
 /* ---- which model does which job --------------------------------------------
- * Five roles, one per model call the bridge makes. Held on the machine rather
+ * Six roles, one per model call the bridge makes. Held on the machine rather
  * than in this page's state, because it is a property of the installation and
  * not of a track: a candidate who moves the grader to Opus means it for every
  * track, and re-picking it per track would be the same tedium the per-model
  * effort memory exists to avoid.
  *
  * The bar above still sets the tutor for the CURRENT track and outranks the
- * tutor row here. That is not an accident of two stores: "this track, now" and
- * "every track, by default" are different questions, and the bridge resolves
- * them in that order.
+ * tutor row here, once it has been moved on that track (state.tutorChosen). That
+ * is not an accident of two stores: "this track, now" and "every track, by
+ * default" are different questions, and the bridge resolves them in that order.
+ * An untouched bar sends no model; it shows what the tutor row resolves to.
  *
  * Loaded lazily when the panel is first opened. Fetching it on every bridge
  * ping would put a request behind a poll that runs while nothing is being read.
  */
 let ROLE_SETTINGS=null;
+async function loadTutorRole(){
+  if(ROLE_SETTINGS) return;
+  try{ ROLE_SETTINGS=await apiGet("/api/settings"); }catch(_){ return; }
+  if(!state.tutorChosen && $("#view-continue").classList.contains("active"))
+    renderContinue($("#view-continue"));
+}
 function roleRow(r,provider){
   const models=modelsFor(provider);
   const cur=(r.resolved&&r.resolved[provider])||{};
@@ -4132,7 +4160,8 @@ document.addEventListener("change",e=>{
   // Re-render on a model change: the effort control shows the level remembered for
   // whichever model is selected, so leaving it stale would show the wrong one.
   if(mdl){ const p=activeProvider(); state.model=currentModel(mdl.value,p);
-    state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model; save();
+    state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model;
+    state.tutorChosen=true; save();
     toast("Tutor model: "+modelLabel(state.model)+" · thinking "+effortLabel(effortFor(state.model)));
     renderContinue($("#view-continue")); return; }
   const rf=e.target.closest("[data-rolefield]");
@@ -4141,7 +4170,12 @@ document.addEventListener("change",e=>{
     saveRoleChoice(rf.dataset.role,activeProvider(),patch); return;
   }
   const eff=e.target.closest("#tutorEffort");
-  if(eff){ const m=activeModel(); setEffortFor(m,eff.value);
+  if(eff){
+    // A first effort pick keeps the model the bar showed, not the seeded one.
+    if(!state.tutorChosen){ const p=activeProvider(); state.model=barModel();
+      state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model;
+      state.tutorChosen=true; }
+    const m=activeModel(); setEffortFor(m,eff.value);
     toast(modelLabel(m)+" thinking: "+effortLabel(eff.value)
       +(eff.value?"":" (no --effort flag sent)")); return; }
 });
@@ -4643,6 +4677,7 @@ window.addEventListener("hashchange",routeFromHash);
   if(!location.hash) location.hash="#start";
   routeFromHash();
   pingBridge();              // detect the live tutor bridge, update the status pill
+  loadTutorRole();           // what the tutor resolves to, for an untouched bar
   loadFlow();                // ask the bridge which stage this track is in
   loadAppPreview();          // a Prep deep link from Resume Studio, if one came
   reconcileWithDisk();       // adopt the disk copy if it is newer, else push ours up

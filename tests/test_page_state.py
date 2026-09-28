@@ -47,7 +47,7 @@ DOCUMENT = {
     "recapBank": [{"id": "c1", "q": "what is max-age", "a": "freshness seconds"}],
     "theme": "dark", "lastView": "stages", "provider": "claude",
     "model": "claude-opus-5", "models": {"claude": "claude-opus-5"},
-    "effort": {}, "assessAt": 0, "assessCost": "",
+    "effort": {}, "assessAt": 0, "assessCost": "", "tutorChosen": True,
     "stepLog": {
         "1:topic:T1": [
             {"ts": 1, "role": "me", "text": "what does max-age promise?"},

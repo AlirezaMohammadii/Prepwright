@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 530 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 536 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -53,7 +53,7 @@ answers (ADR 0008).
 | The grade panel survives a reload | reload, then `state.assessList` → the 0.3 grade with its reason, hydrated by `GET /api/assessments` |
 | Page and store agree after a reload | page 11 turns == store 11, `curriculum.done` 0 == 0 done steps, 20 == 20 total |
 | The eviction ladder can reach a completed step | `tests/test_step_lifecycle.py::TheEvictionLadderCanReachACompletedStep`, 5 tests |
-| Only the tutor role takes the shared model preference | in one walk the tutor ran on `claude-sonnet-5` and the grader on `claude-haiku-4-5` |
+| Only the tutor role takes the shared model preference | resolver: `OneChoiceServesBothTools` (the grader does not move). Whole path, 2026-09-28 on a throwaway :8011: with the shared file at Sonnet 5/high, the untouched bar read Sonnet 5/high and the chat body named no model. The 2026-09-10 row this replaces rested on a walk whose Sonnet came from a bar pick, since the page then always sent a model |
 | Rehearsal works on a real application (2026-09-24, ADR 0008) | fresh throwaway home, the UniExample folder by deep link: the plan came out as 1 study step and 8 rehearsal steps R01–R08, the resume and the fit report were stored as "Your application" D03/D04 (vetting primary). R01, the red-team objection, graded 6/8 on claude-sonnet-5 ($0.051), with every sentence of the strong answer cited to D03/D04, and the step went to `done` from the grade alone. On R06 the grader caught an answer that said "no number for FakeAVCeleb" against his resume's 96.8% AUC, which is the false line the blind tutor had coached ($0.031). The brief rendered with 0 console errors |
 | Resume Studio's Prep button opens a finished application as its own role (2026-09-24) | `?application=<the real 2026-09-24__Research_Fellow_University_Of_Example folder>` on a throwaway :8011 instance: the card read "Prepare for Research Fellow at University Of Example", one click made one `imported` track with that employer and role, the page landed on the diagnostic, 0 console errors. Tests: `AFinishedApplicationOpensAsItsOwnRole`, `AFinishedApplicationOpensOverHttp` |
 
@@ -71,6 +71,16 @@ answers (ADR 0008).
   lines are the contact block. Tests: `AnAbstractAboveTheFirstHeadingIsKeptNotDropped`,
   `TheCoverageFloorMeasuresWhatTheStoreKeeps`; each of the four edits was
   reverted once, and a test failed each time.
+- The page sent its tutor model on every turn, seeded as `claude-opus-5`, which
+  beat the Tutor row and the shared preference, while the effort still came from
+  the shared file. A turn now names a model only after the bar is moved on that
+  track (`tutorChosen`, a per-track pref), and the untouched bar shows the
+  resolved tutor from `GET /api/settings`. Live on a throwaway :8011 with the
+  shared file at Sonnet 5/high: the untouched bar read Sonnet 5/high, the turn's
+  body carried no model and no effort; after picking Haiku on the bar the next
+  body named `claude-haiku-4-5`, and the flag survived a reload as mark seq 18.
+  Test: `AnUntouchedBarLetsTheTutorRoleDecide`; six edits reverted, one test
+  failed each time.
 
 **Found on the 2026-09-24 live walk and not fixed.** Each is a measured fact
 from the throwaway walk on the UniExample application.
@@ -81,9 +91,6 @@ from the throwaway walk on the UniExample application.
   aside. (Fixed the same day: a fit-report requirement had no `jd_span`, so it was
   labelled "your application claims" and tiered as one. It now carries its
   `fit:<n>` row; `AFitReportRequirementIsThePostingsNotAClaim`.)
-- The page sends its own tutor model on every turn (default `claude-opus-5`),
-  which overrides the shared preference file. `_role_choice` reads the shared
-  model only when the request names none.
 - A turn on a step the plan lacks makes a step row through `ensure_step`, and
   that row counts in the "finished" denominator. `bcc3b57` removed the cause
   (the page now adopts the plan it builds) and `/api/chat` refuses such a topic.

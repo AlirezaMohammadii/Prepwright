@@ -125,6 +125,12 @@ takes it: "which model do I want these tools to use" is a statement about the on
 that talks to you, and quietly moving the grader because a resume was tailored on
 Opus would be a bill nobody asked for.
 
+(2026-09-28) For a chat turn this layer was dead until the page learned to stay
+silent. The page always sent its bar's model, seeded as `claude-opus-5`, so the
+request layer won every time. The bar now sends a model only after the candidate
+moves it on that track (`tutorChosen`, a per-track pref); an untouched bar shows
+what the role resolves to. `AnUntouchedBarLetsTheTutorRoleDecide` pins it.
+
 The reader is duplicated in both apps rather than shared, because Prepwright is a
 flat standard-library-only tree that installs nothing and cannot be imported from
 the other side. The format is kept small enough that two copies cannot drift in

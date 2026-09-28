@@ -434,6 +434,84 @@ def _opener(handle):
     return lambda *a, **k: handle
 
 
+class AnUntouchedBarLetsTheTutorRoleDecide(RoleBase):
+    """The 2026-09-24 walk: the page sent its tutor model on every turn, seeded
+    as claude-opus-5 on a track nobody had touched, so `_role_choice` took the
+    request's model and neither the Tutor row in Models nor the shared
+    preference Resume Studio writes ever applied to a chat turn. The effort
+    still came from the shared file, so the turn ran a pairing nobody chose.
+
+    A turn now names a model only once the candidate moved the bar on that
+    track (`state.tutorChosen`, a per-track pref). Otherwise the bridge resolves
+    the tutor role, and the bar shows what that resolves to."""
+
+    def setUp(self):
+        RoleBase.setUp(self)
+        real = PROV.SHARED_PREFS_PATH
+        self.shared = os.path.join(self.home, "model-prefs.json")
+        PROV.SHARED_PREFS_PATH = self.shared
+        self.addCleanup(setattr, PROV, "SHARED_PREFS_PATH", real)
+        with open(self.shared, "w", encoding="utf-8") as fh:
+            json.dump({"provider": "claude", "model": "claude-sonnet-5",
+                       "effort": "high"}, fh)
+        with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as fh:
+            self.page = fh.read()
+
+    def _slice(self, start, end):
+        i = self.page.index(start)
+        return self.page[i:self.page.index(end, i)]
+
+    def test_a_turn_that_names_no_model_takes_the_shared_one(self):
+        # Exactly the arguments the chat route builds from a body with no model.
+        self.assertEqual(PROV._role_choice("claude", "tutor", model="", effort=""),
+                         ("claude-sonnet-5", "high"))
+
+    def test_the_chat_route_resolves_the_raw_request_not_the_filled_default(self):
+        """`_provider` fills in the shipped default model when a body names
+        none. Resolving that filled value would undo the page's silence."""
+        with open(os.path.join(ROOT, "prepwright", "serve.py"),
+                  encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "_role_choice" and len(n.args) > 1
+                 and isinstance(n.args[1], ast.Constant) and n.args[1].value == "tutor"]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        gets = [n for n in ast.walk(kw["model"])
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "get" and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "payload"
+                and isinstance(n.args[0], ast.Constant) and n.args[0].value == "model"]
+        self.assertEqual(len(gets), 1, ast.dump(kw["model"]))
+
+    def test_a_turn_names_a_model_only_once_the_bar_was_moved(self):
+        ask = self._slice("async function askTutor(", 'fetch(API+"/api/chat"')
+        self.assertNotIn("body={provider,model", ask)
+        self.assertNotIn("effort:effortFor(model)", ask)
+        self.assertIn("if(state.tutorChosen){ body.model=model; "
+                      "body.effort=effortFor(model); }", ask)
+
+    def test_only_a_change_on_the_bar_chooses(self):
+        self.assertEqual(self.page.count("state.tutorChosen=true"), 2)
+        self.assertIn("state.tutorChosen=true",
+                      self._slice('closest("#tutorModel")', 'closest("[data-rolefield]")'))
+        self.assertIn("state.tutorChosen=true",
+                      self._slice('closest("#tutorEffort")', "// notes autosave"))
+
+    def test_an_untouched_bar_shows_what_the_role_resolves_to(self):
+        self.assertIn("model=barModel(), providerModels=modelsFor(provider)", self.page)
+        self.assertIn("(barEffort()===e.id)", self.page)
+        resolved = self._slice("function resolvedTutor(){", "function barModel(){")
+        self.assertIn("if(state&&state.tutorChosen) return null;", resolved)
+        self.assertIn('x.id==="tutor"', resolved)
+        self.assertIn("loadTutorRole();", self._slice("(function init(){", "</script>"))
+
+    def test_the_choice_is_kept_per_track(self):
+        from prepwright import pagestate
+        self.assertEqual(pagestate.FIELDS.get("tutorChosen"), ("pref", "scalar"))
+
+
 class _FakeHandle(object):
     """Just enough of a TrackHandle for _persist_assessment: the step ids it
     knows, an assessment sink, and a reconcile it can count."""
