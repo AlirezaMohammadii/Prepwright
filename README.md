@@ -27,7 +27,7 @@ handled in `prepwright/serve.py`. Rehearsal (ADR 0008) and the day-before brief
 followed on 2026-09-24. Progress lives in per-track SQLite under
 `~/.prepwright`, delta-only, with caps enforced inside the transaction that causes
 them; the second store this file used to describe, `progress/state.json`, is gone,
-imported once and renamed. 551 tests pass on three interpreters, including under
+imported once and renamed. 557 tests pass on three interpreters, including under
 the launcher's `/usr/bin/python3 -I -S` (2026-09-24).
 
 What is *not* proved is a smaller and more specific list, and it is in **Known
@@ -280,11 +280,11 @@ value fails closed to the default rather than being passed through, because at l
 one provider CLI accepts an unknown effort value, warns on stderr nobody reads, and
 exits zero. Each reply reports the effort actually applied, not the one requested.
 
-**Which tutor runs.** The chat bar names a model only once you move it on that track.
-Until then a turn sends no model, and the bridge resolves the tutor role: the Tutor row
-under Models, else the preference Resume Studio shares
+**Which tutor runs.** The chat bar names a model only once you move it on that track,
+for that provider. Until then a turn sends no model, and the bridge resolves the tutor
+role: the Tutor row under Models, else the preference Resume Studio shares
 (`~/.config/claude-apps/model-prefs.json`), else the shipped default. The untouched bar
-shows that resolved pair. Before 2026-09-28 the page sent its seeded `claude-opus-5` on
+shows that resolved pair. On a moved bar, "Default" thinking sends no effort flag at all. Before 2026-09-28 the page sent its seeded `claude-opus-5` on
 every turn, so neither the Tutor row nor the shared file ever reached a chat turn.
 
 **Cost is measured after the fact, never predicted.** The bridge reads per-reply
@@ -487,7 +487,7 @@ index.html                the page: 12 views, no framework, no build step
 MANIFEST.sha256           21 pinned files. The launcher refuses to start on any
                           mismatch, so an edited file must be re-pinned
 tools/                    make_manifest.sh, orphan_scan.py
-tests/                    551 tests: python3 -m unittest discover -s tests
+tests/                    557 tests: python3 -m unittest discover -s tests
 docs/adr/                 the decisions that are settled, and why
 DESIGN-state-corpus.md    the accepted persistence and corpus design
 HANDOFF.md                the state of the product, every claim naming its command

@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 551 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 557 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -86,7 +86,16 @@ answers (ADR 0008).
   body carried no model and no effort; after picking Haiku on the bar the next
   body named `claude-haiku-4-5`, and the flag survived a reload as mark seq 18.
   Test: `AnUntouchedBarLetsTheTutorRoleDecide`; six edits reverted, one test
-  failed each time.
+  failed each time. An independent review the same day found six more, now
+  fixed (`AReviewOfTheTutorBarFoundSixMore`): a moved bar at "Default" thinking
+  ran the shared effort (an explicit empty effort now sends no flag,
+  `serve._tutor_choice`); the Models panel refetches on every open, so a save
+  cannot write a stale choice over Resume Studio's; the flag is per provider,
+  so a Claude pick leaves Codex to its own Tutor row; the "thinking" bubble
+  and a saved Tutor row both follow the resolved tutor; and a bar moved off the
+  seed before the flag existed still counts as chosen. Live on :8011: a Codex
+  turn after a Claude pick named no model, two panel opens made two fetches,
+  and an old track's plain `true` became `{claude: true}`.
 
 - `curriculum.tier_for` ranked by gap level and by whether the posting states the
   gap, with no term for how hard the posting leans on it or whether a panel will

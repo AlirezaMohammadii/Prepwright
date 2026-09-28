@@ -86,6 +86,26 @@ claude_bin = PPROV.claude_bin
 codex_bin = PPROV.codex_bin
 run_cli = PPROV.run_cli
 
+
+def _tutor_choice(provider, payload):
+    """(model, effort) for one chat turn, from the body the page sent.
+
+    No model and no effort key: the bar was never moved on this track, so the
+    tutor role decides both (the Tutor row, the shared preference, the shipped
+    default). An effort key that is present and empty is the bar's explicit
+    "Default", which sends no --effort flag. It used to fall through to the role
+    too, so a Haiku picked on the bar at Default ran at the shared file's effort
+    (review of 0970576, 2026-09-28). The raw request is resolved, never the
+    default `_provider` fills in, or the page's silence would be undone.
+    """
+    model, effort = _role_choice(
+        provider, "tutor",
+        model=str(payload.get("model") or "")[:64],
+        effort=str(payload.get("effort") or "")[:12])
+    if payload.get("effort") == "":
+        effort = ""
+    return model, effort
+
 MAX_ASSESS_STEPS = PASSESS.MAX_ASSESS_STEPS
 _persist_assessment = PASSESS._persist_assessment
 assess_via_cli = PASSESS.assess_via_cli
@@ -1897,10 +1917,7 @@ class Handler(SimpleHTTPRequestHandler):
             # who set a tutor model in the settings panel and then reloaded
             # gets it even though the page sent no model on this request.
             # _provider above has already refused anything off the whitelist.
-            model, effort = _role_choice(
-                provider, "tutor",
-                model=str(payload.get("model") or "")[:64],
-                effort=str(payload.get("effort") or "")[:12])
+            model, effort = _tutor_choice(provider, payload)
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
         except RuntimeError as exc:

@@ -489,27 +489,94 @@ class AnUntouchedBarLetsTheTutorRoleDecide(RoleBase):
         ask = self._slice("async function askTutor(", 'fetch(API+"/api/chat"')
         self.assertNotIn("body={provider,model", ask)
         self.assertNotIn("effort:effortFor(model)", ask)
-        self.assertIn("if(state.tutorChosen){ body.model=model; "
+        self.assertIn("if(tutorChosenHere()){ body.model=model; "
                       "body.effort=effortFor(model); }", ask)
 
+    CHOOSE = "state.tutorChosen=Object.assign({},state.tutorChosen,{[p]:true})"
+
     def test_only_a_change_on_the_bar_chooses(self):
-        self.assertEqual(self.page.count("state.tutorChosen=true"), 2)
-        self.assertIn("state.tutorChosen=true",
+        self.assertEqual(self.page.count("state.tutorChosen="), 2)
+        self.assertIn(self.CHOOSE,
                       self._slice('closest("#tutorModel")', 'closest("[data-rolefield]")'))
-        self.assertIn("state.tutorChosen=true",
+        self.assertIn(self.CHOOSE,
                       self._slice('closest("#tutorEffort")', "// notes autosave"))
 
     def test_an_untouched_bar_shows_what_the_role_resolves_to(self):
         self.assertIn("model=barModel(), providerModels=modelsFor(provider)", self.page)
         self.assertIn("(barEffort()===e.id)", self.page)
         resolved = self._slice("function resolvedTutor(){", "function barModel(){")
-        self.assertIn("if(state&&state.tutorChosen) return null;", resolved)
+        self.assertIn("if(tutorChosenHere()) return null;", resolved)
         self.assertIn('x.id==="tutor"', resolved)
-        self.assertIn("loadTutorRole();", self._slice("(function init(){", "</script>"))
+        self.assertIn('if(view==="continue") loadTutorRole();',
+                      self._slice("function render(view,opts){", "$$(\"#nav .navlink\")"))
 
     def test_the_choice_is_kept_per_track(self):
         from prepwright import pagestate
         self.assertEqual(pagestate.FIELDS.get("tutorChosen"), ("pref", "scalar"))
+
+
+class AReviewOfTheTutorBarFoundSixMore(RoleBase):
+    """An independent review of 0970576 (2026-09-28) confirmed six defects: a
+    moved bar at "Default" thinking still ran the shared effort; the Models panel
+    stopped refetching, so a save could write a stale choice over Resume
+    Studio's; the flag was per track, so a Claude pick sent Codex turns the
+    seeded Codex model; the "thinking" bubble named the seeded model; a saved
+    Tutor row left the untouched bar stale; and picks saved before the flag
+    existed reverted to the resolved tutor."""
+
+    def setUp(self):
+        RoleBase.setUp(self)
+        real = PROV.SHARED_PREFS_PATH
+        self.shared = os.path.join(self.home, "model-prefs.json")
+        PROV.SHARED_PREFS_PATH = self.shared
+        self.addCleanup(setattr, PROV, "SHARED_PREFS_PATH", real)
+        with open(self.shared, "w", encoding="utf-8") as fh:
+            json.dump({"provider": "claude", "model": "claude-sonnet-5",
+                       "effort": "high"}, fh)
+        with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as fh:
+            self.page = fh.read()
+
+    _slice = AnUntouchedBarLetsTheTutorRoleDecide._slice
+
+    def test_an_explicit_default_effort_sends_no_flag(self):
+        from prepwright import serve as SERVE
+        self.assertEqual(SERVE._tutor_choice("claude", {}), ("claude-sonnet-5", "high"))
+        self.assertEqual(SERVE._tutor_choice("claude", {"model": "claude-haiku-4-5",
+                                                        "effort": ""}),
+                         ("claude-haiku-4-5", ""))
+        self.assertEqual(SERVE._tutor_choice("claude", {"model": "claude-haiku-4-5",
+                                                        "effort": "low"}),
+                         ("claude-haiku-4-5", "low"))
+        # An unknown level still fails closed to the role, never through raw.
+        self.assertEqual(SERVE._tutor_choice("claude", {"model": "claude-haiku-4-5",
+                                                        "effort": "turbo"}),
+                         ("claude-haiku-4-5", "high"))
+
+    def test_the_models_panel_reads_fresh_on_every_open(self):
+        panel = self._slice("async function openRolePanel(body){",
+                            "async function saveRoleChoice(")
+        self.assertNotIn("if(!ROLE_SETTINGS){", panel)
+        self.assertIn('try{ ROLE_SETTINGS=await apiGet("/api/settings"); }', panel)
+
+    def test_the_choice_is_per_provider(self):
+        here = self._slice("function tutorChosenHere(){", "function resolvedTutor(){")
+        self.assertIn("return !!(c&&c[activeProvider()]);", here)
+
+    def test_the_thinking_bubble_names_what_runs(self):
+        self.assertIn('<div class="who">Tutor · ${esc(providerLabel(activeProvider()))}'
+                      ' · ${esc(modelLabel(barModel()))}</div><span class="dots">', self.page)
+
+    def test_a_saved_tutor_row_moves_the_untouched_bar(self):
+        save = self._slice("async function saveRoleChoice(", "async function apiPost(")
+        self.assertIn('if(role==="tutor"&&provider===activeProvider()&&!tutorChosenHere()){',
+                      save)
+        self.assertIn("if(ms) ms.value=barModel();", save)
+
+    def test_a_pick_saved_before_the_flag_is_still_a_pick(self):
+        hydrate = self._slice("function hydrate(s){", "function load(){")
+        self.assertIn('if(!("tutorChosen" in s)) Object.keys(models).forEach(p=>{', hydrate)
+        self.assertIn("if(models[p]!==DEFAULT_MODELS[p]) chosen[p]=true;", hydrate)
+        self.assertIn("if(chosen===true) chosen={[provider]:true};", hydrate)
 
 
 class _FakeHandle(object):

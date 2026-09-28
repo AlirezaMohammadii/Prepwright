@@ -1116,8 +1116,12 @@ function activeModel(){ return currentModel(state&&state.model,activeProvider())
  * Models, else the shared preference Resume Studio writes, else the shipped
  * default. The bar shows that resolved pair, so what it reads is what runs.
  * On 2026-09-24 the page sent its seeded model on every turn, which beat both. */
+function tutorChosenHere(){
+  const c=state&&state.tutorChosen;
+  return !!(c&&c[activeProvider()]);
+}
 function resolvedTutor(){
-  if(state&&state.tutorChosen) return null;
+  if(tutorChosenHere()) return null;
   const r=ROLE_SETTINGS&&(ROLE_SETTINGS.roles||[]).find(x=>x.id==="tutor");
   return (r&&r.resolved&&r.resolved[activeProvider()])||null;
 }
@@ -1217,7 +1221,9 @@ function seedState(){
     effort:{},
     // Re-check results: assess = key -> {mastery,reason,at} feeding stepScore();
     // assessList = the last run's rows, kept only to redraw the side panel.
-    assess:{}, assessList:[], assessAt:0, assessCost:""
+    assess:{}, assessList:[], assessAt:0, assessCost:"",
+    // provider -> true once the bar was moved for it on this track.
+    tutorChosen:{}
   };
 }
 
@@ -1247,7 +1253,18 @@ function hydrate(s){
   if(!s.models||!s.models.claude) models.claude=currentModel(s.model,"claude");
   models.claude=currentModel(models.claude,"claude");
   models.codex=currentModel(models.codex,"codex");
+  /* Per provider: a Claude pick says nothing about which Codex model to run.
+   * A document saved before the flag existed counts a bar that moved off the
+   * seed as chosen, or its pick would silently revert to the resolved tutor. */
+  let chosen=s.tutorChosen;
+  if(chosen===true) chosen={[provider]:true};
+  if(!chosen||typeof chosen!=="object"){
+    chosen={};
+    if(!("tutorChosen" in s)) Object.keys(models).forEach(p=>{
+      if(models[p]!==DEFAULT_MODELS[p]) chosen[p]=true; });
+  }
   return Object.assign(base,s,{
+    tutorChosen:chosen,
     topics:Object.assign(base.topics,s.topics||{}),
     practice:Object.assign(base.practice,s.practice||{}),
     recap:Object.assign(base.recap,s.recap||{}),
@@ -2001,6 +2018,7 @@ function render(view,opts){
   ({start:renderStart,continue:renderContinue,overview:renderOverview,stages:renderStages,curriculum:renderCurriculum,
     practice:renderPractice,sessions:renderSessions,qa:renderQA,recap:renderRecap,
     questions:renderQuestions,story:renderStory,sources:renderSources}[view])(el);
+  if(view==="continue") loadTutorRole();   // what an untouched bar resolves to now
   $$("#nav .navlink").forEach(a=>a.classList.toggle("active",a.dataset.view===view));
   state.lastView=view;
   if(!opts.silent) save();
@@ -2248,7 +2266,7 @@ async function askTutor(key){
               messages:buildMsgs(stepLogOf(key))};
   // A model rides along only once the candidate chose one on this track's bar;
   // otherwise the bridge resolves the tutor role (resolvedTutor, above).
-  if(state.tutorChosen){ body.model=model; body.effort=effortFor(model); }
+  if(tutorChosenHere()){ body.model=model; body.effort=effortFor(model); }
   try{
     const r=await fetch(API+"/api/chat",{method:"POST",
       headers:{"content-type":"application/json","x-tutor-bridge":"1"},
@@ -2524,14 +2542,20 @@ async function apiGet(path){
  * default" are different questions, and the bridge resolves them in that order.
  * An untouched bar sends no model; it shows what the tutor row resolves to.
  *
- * Loaded lazily when the panel is first opened. Fetching it on every bridge
- * ping would put a request behind a poll that runs while nothing is being read.
+ * Fetched on each visit to Continue (for the untouched bar), when the bridge
+ * answers after a failed fetch, and on every open of the panel: a Tutor-row save
+ * builds the shared block from what the panel shows, and Resume Studio may have
+ * moved the shared choice since. Never behind the bridge-ping poll, which runs
+ * while nothing is being read.
  */
-let ROLE_SETTINGS=null;
+let ROLE_SETTINGS=null, tutorRoleLoading=false;
 async function loadTutorRole(){
-  if(ROLE_SETTINGS) return;
-  try{ ROLE_SETTINGS=await apiGet("/api/settings"); }catch(_){ return; }
-  if(!state.tutorChosen && $("#view-continue").classList.contains("active"))
+  if(tutorRoleLoading) return;
+  tutorRoleLoading=true;
+  try{ ROLE_SETTINGS=await apiGet("/api/settings"); }
+  catch(_){ return; }
+  finally{ tutorRoleLoading=false; }
+  if(!tutorChosenHere() && $("#view-continue").classList.contains("active"))
     renderContinue($("#view-continue"));
 }
 function roleRow(r,provider){
@@ -2569,13 +2593,11 @@ function modelRolesPanel(){
     </div>`;
 }
 async function openRolePanel(body){
-  if(!ROLE_SETTINGS){
-    body.innerHTML=`<div class="rolenote">Reading the model settings…</div>`;
-    try{ ROLE_SETTINGS=await apiGet("/api/settings"); }
-    catch(err){
-      body.innerHTML=`<div class="rolenote">Model settings need the live bridge. ${esc(err.message||"")}</div>`;
-      return;
-    }
+  if(!ROLE_SETTINGS) body.innerHTML=`<div class="rolenote">Reading the model settings…</div>`;
+  try{ ROLE_SETTINGS=await apiGet("/api/settings"); }
+  catch(err){
+    body.innerHTML=`<div class="rolenote">Model settings need the live bridge. ${esc(err.message||"")}</div>`;
+    return;
   }
   body.innerHTML=modelRolesPanel();
 }
@@ -2613,6 +2635,12 @@ async function saveRoleChoice(role,provider,patch){
    * whitelist refused reverts here in words instead of appearing to stick. */
   toast(r.label+": "+modelLabel(got.model)+" · thinking "+effortLabel(got.effort));
   if(body&&!body.hidden) body.innerHTML=modelRolesPanel();
+  // An untouched bar shows the tutor row, so a saved row changes what it reads.
+  if(role==="tutor"&&provider===activeProvider()&&!tutorChosenHere()){
+    const ms=$("#tutorModel"), es=$("#tutorEffort");
+    if(ms) ms.value=barModel();
+    if(es) es.value=barEffort();
+  }
 }
 async function apiPost(path, body){
   const r=await fetch(API+path,{method:"POST",
@@ -3405,6 +3433,7 @@ async function pingBridge(){
      * green while every gated route returned 403. It now says which it is. */
     bridgeSession=(d&&typeof d.session==="boolean")?d.session:true;
     bridgeOnline=!!(bridgeUp&&bridgeSession&&providerAvailable(activeProvider()));
+    if(bridgeUp&&bridgeSession&&!ROLE_SETTINGS) loadTutorRole();   // a failed fetch, retried
     if(bridgeUp&&!bridgeSession&&!staleSessionWarned){
       staleSessionWarned=true;
       toast("This page was open before the Tutor restarted. Reload it to carry on.");
@@ -3493,7 +3522,7 @@ function stepChat(s){
         <div class="bubble hint" data-qbody="hint-${esc(s.key)}" hidden><div class="who">Hint from the curriculum</div>${esc(m.hint)}</div></div>`:""}
       ${resBlock(s,m)}
       ${log.map(bubbleFor).join("")}
-      ${pending[s.key]?`<div class="bubble assistant think"><div class="who">Tutor · ${esc(providerLabel(activeProvider()))} · ${esc(modelLabel(activeModel()))}</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
+      ${pending[s.key]?`<div class="bubble assistant think"><div class="who">Tutor · ${esc(providerLabel(activeProvider()))} · ${esc(modelLabel(barModel()))}</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
       ${reviewing[s.key]?`<div class="bubble review think"><div class="who">Session review · reading this session back</div><span class="dots"><i></i><i></i><i></i></span></div>`:""}
     </div>
     <div class="composer">
@@ -4161,7 +4190,7 @@ document.addEventListener("change",e=>{
   // whichever model is selected, so leaving it stale would show the wrong one.
   if(mdl){ const p=activeProvider(); state.model=currentModel(mdl.value,p);
     state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model;
-    state.tutorChosen=true; save();
+    state.tutorChosen=Object.assign({},state.tutorChosen,{[p]:true}); save();
     toast("Tutor model: "+modelLabel(state.model)+" · thinking "+effortLabel(effortFor(state.model)));
     renderContinue($("#view-continue")); return; }
   const rf=e.target.closest("[data-rolefield]");
@@ -4172,9 +4201,10 @@ document.addEventListener("change",e=>{
   const eff=e.target.closest("#tutorEffort");
   if(eff){
     // A first effort pick keeps the model the bar showed, not the seeded one.
-    if(!state.tutorChosen){ const p=activeProvider(); state.model=barModel();
+    if(!tutorChosenHere()){ const p=activeProvider();
+      state.model=currentModel(($("#tutorModel")||{}).value||barModel(),p);
       state.models=state.models||Object.assign({},DEFAULT_MODELS); state.models[p]=state.model;
-      state.tutorChosen=true; }
+      state.tutorChosen=Object.assign({},state.tutorChosen,{[p]:true}); }
     const m=activeModel(); setEffortFor(m,eff.value);
     toast(modelLabel(m)+" thinking: "+effortLabel(eff.value)
       +(eff.value?"":" (no --effort flag sent)")); return; }
@@ -4677,7 +4707,6 @@ window.addEventListener("hashchange",routeFromHash);
   if(!location.hash) location.hash="#start";
   routeFromHash();
   pingBridge();              // detect the live tutor bridge, update the status pill
-  loadTutorRole();           // what the tutor resolves to, for an untouched bar
   loadFlow();                // ask the bridge which stage this track is in
   loadAppPreview();          // a Prep deep link from Resume Studio, if one came
   reconcileWithDisk();       // adopt the disk copy if it is newer, else push ours up
