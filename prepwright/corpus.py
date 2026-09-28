@@ -110,6 +110,54 @@ def slug_for(name):
     return (s or "document")[:48]
 
 
+def split_body(heading, body):
+    """Cut an over-long body on paragraph edges, numbering the continuations.
+
+    `corpus.fit_sections` truncates past `SECTION_MAX_CHARS` and marks the cut.
+    That is wrong for a book chapter, and for a fetched page's whole lead
+    (research.keep_lead): truncating there discards most of what was supplied,
+    an arXiv abstract's results sentence included. So the body becomes several
+    sections and nothing is lost.
+    """
+    limit = C.SECTION_MAX_CHARS - 40
+    if len(body) <= limit:
+        return [(heading, body)]
+    out, current = [], ""
+    for para in re.split(r"\n\s*\n", body):
+        para = para.strip()
+        if not para:
+            continue
+        while len(para) > limit:
+            # Flush what is already buffered BEFORE emitting this paragraph's
+            # chunks. Appending chunks straight to `out` while earlier
+            # paragraphs sat in `current` put the middle of a long paragraph
+            # first and demoted the opening paragraph, usually the definition,
+            # to a "(cont. N)" section. The heading is assigned to out[0], so
+            # the citation named the chapter and pointed at its middle.
+            if current:
+                out.append(("", current))
+                current = ""
+            cut = para.rfind(" ", 0, limit)
+            out.append(("", para[:cut if cut > limit // 2 else limit].strip()))
+            para = para[cut if cut > limit // 2 else limit:].strip()
+        if not current:
+            current = para
+        elif len(current) + len(para) + 2 <= limit:
+            current += "\n\n" + para
+        else:
+            out.append(("", current))
+            current = para
+    if current:
+        out.append(("", current))
+    return [(heading if i == 0 else "%s (cont. %d)" % (heading, i + 1), text)
+            for i, (_unused, text) in enumerate(out) if text]
+
+
+# Appended where fit_sections cuts a body. A module constant so the coverage
+# floor can strip it: its words are Prepwright's, not the page's.
+TRUNCATION_MARKER = "\n\n[TRUNCATED: section exceeded the per-section cap]"
+
+
 def fit_sections(pairs):
     """Shape parsed pairs into write_doc section dicts, inside the caps.
 
@@ -117,7 +165,7 @@ def fit_sections(pairs):
     complete thought that ends early, which is the confident, well-cited, wrong
     lesson the grounding claim exists to prevent.
     """
-    marker = "\n\n[TRUNCATED: section exceeded the per-section cap]"
+    marker = TRUNCATION_MARKER
     out = []
     for i, (heading, body) in enumerate(pairs[:C.MAX_SECTIONS_PER_DOC], start=1):
         body = redact(body)

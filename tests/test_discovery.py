@@ -332,7 +332,7 @@ ARXIV_ABS = (
     '</body></html>')
 
 
-def _one_arxiv_run(body):
+def _one_arxiv_run(body, gap=None):
     stored_texts = []
 
     def nominate(_s, _p, _sch):
@@ -342,7 +342,7 @@ def _one_arxiv_run(body):
         stored_texts.append(found["text"])
         return "D01" if CO.parse_loose(found["text"])[1] else None
 
-    out = R.discover([ARXIV_GAP], nominate, ingest,
+    out = R.discover([gap or ARXIV_GAP], nominate, ingest,
                      fetch_fn=lambda u: page(u, body, ctype="text/html"))
     return out, stored_texts
 
@@ -389,6 +389,72 @@ class AnAbstractAboveTheFirstHeadingIsKeptNotDropped(unittest.TestCase):
             + "Differential privacy bounds the privacy loss. " * 20
             + "</p></body></html>"), ctype="text/html"))
         self.assertEqual(CO.parse_loose(text)[1], [])
+
+
+# The same page with a realistic abstract: over the 900-character section cap
+# once the dateline, the title and the authors ride in the lead, with the result
+# in its last sentence.
+LONG_ABSTRACT = (
+    "Audio deepfake detection models trained on one spoofing corpus generalise"
+    " poorly to unseen attacks, codecs and recording channels. " * 6
+    + "We evaluate self-supervised speech representations as front ends for"
+    " spoofing countermeasures across four corpora and three back ends. "
+    + "A frozen front end reduces the equal error rate on In-the-Wild from 37.8%"
+    " to 7.4%.")
+_QUOTE = ARXIV_ABS.index("Abstract:</span>") + len("Abstract:</span>")
+ARXIV_LONG = (ARXIV_ABS[:_QUOTE] + LONG_ABSTRACT
+              + ARXIV_ABS[ARXIV_ABS.index("</blockquote>", _QUOTE):])
+
+
+class AReviewOfTheLeadFixFoundThreeMore(unittest.TestCase):
+    """An independent review of cf2a983 (2026-09-28) confirmed three defects in
+    keep_lead and the floor: the lead was one section cut at 900 characters, so
+    a real abstract lost its result sentence; the floor counted words Prepwright
+    writes itself ("Opening" and the truncation marker); and a bare "#" or a
+    byte-order mark counted as prose, spending a section slot on nothing."""
+
+    def test_a_long_abstract_keeps_its_result_sentence(self):
+        self.assertGreater(len(LONG_ABSTRACT), 900)
+        out, texts = _one_arxiv_run(ARXIV_LONG)
+        self.assertEqual(out["stored"], 1, out["discarded"])
+        kept = CO.fit_sections(CO.parse_loose(texts[0])[1])
+        opening = [k for k in kept if k["heading"].startswith(R.LEAD_HEADING)]
+        self.assertGreater(len(opening), 1)
+        self.assertEqual(opening[1]["heading"], R.LEAD_HEADING + " (cont. 2)")
+        lead = "\n".join(k["body"] for k in opening)
+        self.assertIn("from 37.8% to 7.4%", lead)
+        self.assertNotIn("TRUNCATED", lead)
+
+    def test_the_floor_counts_only_the_page_s_own_words(self):
+        gap = {"gap_id": "g01", "label": "Section 13G civil penalty cap under the Privacy Act",
+               "why": "the posting names the opening of a privacy compliance program"}
+        body = ("<html><head><title>Log rotation notes</title></head><body>"
+                "<h1>Log rotation notes</h1><p>We rotate logs weekly; the Privacy Act is"
+                " not discussed here.</p><h2>Rotation</h2><p>"
+                + "Logs rotate at midnight and compress with gzip before shipping. " * 20
+                + "</p></body></html>")
+        out, _texts = _one_arxiv_run(body, gap=gap)
+        self.assertEqual(out["stored"], 0)
+        self.assertEqual(out["discarded"][0]["stage"], "coverage", out["discarded"])
+
+    def test_an_image_only_h1_is_not_a_lead(self):
+        sections = "".join("<h2>Topic %d</h2><p>%s</p>" % (i, "Differential privacy bounds"
+                           " the privacy loss of one record. " * 3) for i in range(10))
+        text = R.text_of(page("https://example.com/dp", (
+            "<html><head><title>DP guide</title></head><body><h1 class=logo>"
+            "<a href='/'><img alt='Acme'></a></h1>" + sections + "</body></html>"),
+            ctype="text/html"))
+        pairs = CO.parse_loose(text)[1]
+        self.assertEqual([h for h, _b in pairs], ["Topic %d" % i for i in range(10)])
+
+    def test_a_byte_order_mark_is_not_a_lead(self):
+        text = R.text_of(page("https://example.com/notes.md",
+                              "\ufeff# Differential privacy notes\n\n## Definition\n"
+                              "Differential privacy bounds what one record can change.\n",
+                              ctype="text/markdown"))
+        title, pairs = CO.parse_loose(text)
+        self.assertEqual(title, "Differential privacy notes")
+        self.assertEqual([h for h, _b in pairs], ["Definition"])
 
 
 class TheCoverageFloorMeasuresWhatTheStoreKeeps(unittest.TestCase):

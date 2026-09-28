@@ -41,7 +41,7 @@ answers (ADR 0008).
 
 | Claim | Command |
 |---|---|
-| 547 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
+| 551 tests pass on three interpreters, no network, model or dialog call, 13 to 18 s (2026-09-28) | `python3 -m unittest discover -s tests`, then the same with `/usr/bin/python3`, then `/usr/bin/python3 -I -S`. Run each **literally**: see trap 1 |
 | The manifest verifies over 21 pinned files | `/usr/bin/shasum -a 256 --strict -c MANIFEST.sha256` |
 | No module reads a name it never binds | `/usr/bin/python3 -I tools/orphan_scan.py bridge.py prepwright/*.py tests/*.py tools/*.py` → 38 files |
 | All 12 views render, 0 console errors | click each nav button, then `playwright-cli console` |
@@ -70,7 +70,13 @@ answers (ADR 0008).
   `parse_loose` is unchanged, because it also parses the résumé, whose opening
   lines are the contact block. Tests: `AnAbstractAboveTheFirstHeadingIsKeptNotDropped`,
   `TheCoverageFloorMeasuresWhatTheStoreKeeps`; each of the four edits was
-  reverted once, and a test failed each time.
+  reverted once, and a test failed each time. An independent review the same
+  day found three more, now fixed: a long lead is split on paragraph edges
+  (`corpus.split_body`, moved from ingest) instead of cut at 900 characters,
+  which had dropped an abstract's result sentence; the floor ignores the words
+  Prepwright writes itself (the "Opening" heading and the truncation marker);
+  and a bare `#` or a byte-order mark no longer counts as lead prose
+  (`AReviewOfTheLeadFixFoundThreeMore`, five edits reverted, five failures).
 - The page sent its tutor model on every turn, seeded as `claude-opus-5`, which
   beat the Tutor row and the shared preference, while the effort still came from
   the shared file. A turn now names a model only after the bar is moved on that

@@ -245,7 +245,9 @@ def text_of(fetched):
     one place a credential must never reach is a provider prompt.
     """
     body = fetched.get("body") or b""
-    raw = body.decode("utf-8", "replace")
+    # utf-8-sig: a byte-order mark is not text. Left in, it made a lone
+    # title line look like prose to keep_lead.
+    raw = body.decode("utf-8-sig", "replace")
     if "html" in (fetched.get("content_type") or "") or raw.lstrip()[:1] == "<":
         raw = html_to_text(raw)
     return CO.redact(keep_lead(raw))
@@ -263,16 +265,30 @@ def keep_lead(text):
     h2, so the page was stored as its chrome and the one paragraph that taught
     was the one thrown away. A page with no `## ` at all is left alone and is
     still refused as having nothing citable, and a lead that is only an h1
-    line adds nothing: a heading on its own is not text to teach from.
+    line adds nothing: a heading on its own is not text to teach from, and
+    neither is a bare "#" (an image-only h1) or a line with no word in it.
+
+    A long lead is split on paragraph edges like a supplied chapter
+    (`corpus.split_body`), as "Opening", "Opening (cont. 2)" and so on. One
+    section was cut at the 900-character cap, and an abstract's last sentence,
+    usually its result, was the part cut.
     """
     lines = str(text or "").split("\n")
     first = next((i for i, ln in enumerate(lines) if ln.startswith("## ")), None)
     if first is None:
         return text
     top = 1 if lines[0].startswith("# ") else 0
-    if not any(ln.strip() and not ln.startswith("# ") for ln in lines[top:first]):
+    if not any(re.search(r"\w", ln) and not ln.startswith("#") for ln in lines[top:first]):
         return text
-    return "\n".join(lines[:top] + ["", "## " + LEAD_HEADING, ""] + lines[top:])
+    out = lines[:top]
+    for heading, body in CO.split_body(LEAD_HEADING, "\n".join(lines[top:first]).strip()):
+        out += ["", "## " + heading, "", body]
+    return "\n".join(out + [""] + lines[first:])
+
+
+def _lead_heading(heading):
+    """True for a heading keep_lead wrote, not the page."""
+    return bool(re.fullmatch(re.escape(LEAD_HEADING) + r"( \(cont\. \d+\))?", heading or ""))
 
 
 # ---- HTML to prose ---------------------------------------------------------
@@ -633,8 +649,12 @@ def verify(candidate, want_terms, fetch_fn=None):
     if not kept:
         return {"ok": False, "url": url, "stage": "sections",
                 "why": "nothing citable: the page has no headings"}
+    # The page's own words only: not a heading keep_lead wrote, and not the
+    # marker fit_sections appends. Both used to count toward the floor.
     hits, ratio, sample = coverage(
-        "\n".join("%s\n%s" % (k["heading"], k["body"]) for k in kept), want_terms)
+        "\n".join("%s\n%s" % ("" if _lead_heading(k["heading"]) else k["heading"],
+                               k["body"].replace(CO.TRUNCATION_MARKER, ""))
+                  for k in kept), want_terms)
     if hits < COVERAGE_MIN_TERMS or ratio < COVERAGE_MIN_RATIO:
         return {"ok": False, "url": url, "stage": "coverage",
                 "why": "the page answered but does not cover this: it shares %d"
