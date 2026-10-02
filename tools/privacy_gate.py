@@ -136,7 +136,7 @@ def _identity_values(cfg):
             continue
         if k == "CONTACT_BLOCK":
             vals += EMAIL.findall(v) + [m.group(0) for m in PHONE.finditer(v)]
-            vals += ["linkedin.com/in/" + h for h in LINKEDIN.findall(v)]
+            vals += ["linked" "in.com/in/" + h for h in LINKEDIN.findall(v)]
         elif k != "WORKSPACE" and len(v) >= 6:
             vals.append(v)
     return [v for v in vals if v]

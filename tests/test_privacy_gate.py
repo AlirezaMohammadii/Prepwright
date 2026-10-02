@@ -116,8 +116,8 @@ class TheGateRefusesARealApplication(unittest.TestCase):
 
     def test_contact_details_are_refused_even_with_no_config(self):
         # Assembled at run time, so this file never holds a contact value itself.
-        email, phone = "jane.doe" + "@" + "gmail.com", "+61 4" + "12 345 678"
-        handle, home = "linkedin.com/in/" + "jane-doe-1234", "/Users/" + "janedoe/files"
+        email, phone = "jane.doe" + "@" + "gmail.com", " ".join(["+61", "412", "345", "678"])
+        handle, home = "linked" "in.com/in/" + "jane-doe-1234", "/Users/" + "janedoe/files"
         r = self._staged("notes.md", "Reach me at %s or %s, %s, %s.\n" % (email, phone, handle, home),
                          config=False)
         self.assertEqual(r.returncode, 1)
@@ -127,8 +127,9 @@ class TheGateRefusesARealApplication(unittest.TestCase):
         self.assertIn("only the path and contact checks ran", r.stdout)
 
     def test_reserved_and_placeholder_values_pass(self):
-        r = self._staged("notes.md", "candidate" + "@example.com, +61 4" + "00 000 000, "
-                                     "linkedin.com/in/" + "candidate-example, /Users/" + "testuser/x\n")
+        phone = " ".join(["+61", "400", "000", "000"])
+        r = self._staged("notes.md", "candidate" + "@example.com, " + phone + ", linked" "in.com/in/"
+                                     + "candidate-example, /Users/" + "testuser/x\n")
         self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_a_push_checks_every_commit_and_its_message(self):
