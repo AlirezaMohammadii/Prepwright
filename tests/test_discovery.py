@@ -407,7 +407,7 @@ ARXIV_LONG = (ARXIV_ABS[:_QUOTE] + LONG_ABSTRACT
 
 
 class AReviewOfTheLeadFixFoundThreeMore(unittest.TestCase):
-    """An independent review of cf2a983 (2026-09-28) confirmed three defects in
+    """An independent review of 072bd11 (2026-09-28) confirmed three defects in
     keep_lead and the floor: the lead was one section cut at 900 characters, so
     a real abstract lost its result sentence; the floor counted words Prepwright
     writes itself ("Opening" and the truncation marker); and a bare "#" or a

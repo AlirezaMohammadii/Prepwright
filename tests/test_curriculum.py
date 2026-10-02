@@ -523,7 +523,7 @@ class WhatThePanelPressesMovesUpOneTier(Base):
 
     def test_an_objection_that_mentions_the_paperwork_is_still_the_objection(self):
         """ADR 0008: objections are not screened as logistics. Review of
-        f03b5c4: a short objection naming the selection criteria in passing was
+        cf1b069: a short objection naming the selection criteria in passing was
         classed as logistics, and the panel's likeliest question was never
         pressed."""
         objection = ("No PhD in hand and no funding record; the selection criteria"
@@ -533,7 +533,7 @@ class WhatThePanelPressesMovesUpOneTier(Base):
                          (1, ["red team objection 1: the panel is expected to raise it"]))
 
     def test_a_word_that_holds_a_process_word_is_not_logistics(self):
-        """Review of f03b5c4: "submit" matched "submitting" and "visa" matched
+        """Review of cf1b069: "submit" matched "submitting" and "visa" matched
         "advisable", so real requirements were never pressed."""
         fit = {"rows": [{"requirement": "Track record of submitting first-author"
                                         " papers to CCS or S&P"}],
@@ -556,7 +556,7 @@ class WhatThePanelPressesMovesUpOneTier(Base):
         self.assertEqual(stress, 0)
         self.assertIn("the posting marks it desirable", why)
         self.assertEqual(K.tier_for(gap, stress), "depth")
-        # A heading ending in a colon is still a heading (review of f03b5c4).
+        # A heading ending in a colon is still a heading (review of cf1b069).
         for head in ("Desirable:", "Preferred Qualifications:"):
             colon = posting.replace("Desirable", head, 1)
             self.assertEqual(K.emphasis(gap, colon)[0], 0, head)

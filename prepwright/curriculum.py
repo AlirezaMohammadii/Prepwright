@@ -441,7 +441,7 @@ def _clauses(posting):
 def is_process(text):
     """Application logistics or eligibility (config.PROCESS_PHRASES), in whole
     words: "submit" is not "submitting first-author papers", and "visa" is not
-    "advisable" (review of f03b5c4, 2026-09-28)."""
+    "advisable" (review of cf1b069, 2026-09-28)."""
     low = " %s " % " ".join(_PLAIN.findall(str(text or "").lower()))
     return any(" %s " % " ".join(_PLAIN.findall(p)) in low for p in C.PROCESS_PHRASES)
 

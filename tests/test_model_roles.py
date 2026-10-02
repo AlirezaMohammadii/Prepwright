@@ -516,7 +516,7 @@ class AnUntouchedBarLetsTheTutorRoleDecide(RoleBase):
 
 
 class AReviewOfTheTutorBarFoundSixMore(RoleBase):
-    """An independent review of 0970576 (2026-09-28) confirmed six defects: a
+    """An independent review of 473e686 (2026-09-28) confirmed six defects: a
     moved bar at "Default" thinking still ran the shared effort; the Models panel
     stopped refetching, so a save could write a stale choice over Resume
     Studio's; the flag was per track, so a Claude pick sent Codex turns the

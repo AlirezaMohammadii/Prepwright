@@ -128,7 +128,7 @@ answers (ADR 0008).
 from the throwaway walk on the UniExample application.
 
 - A turn on a step the plan lacks makes a step row through `ensure_step`, and
-  that row counts in the "finished" denominator. `bcc3b57` removed the cause
+  that row counts in the "finished" denominator. `982c76e` removed the cause
   (the page now adopts the plan it builds) and `/api/chat` refuses such a topic.
   A track that already holds one keeps it. Excluding such rows from the plan
   would re-open the settled denominator rule in §5, so it waits for the owner.

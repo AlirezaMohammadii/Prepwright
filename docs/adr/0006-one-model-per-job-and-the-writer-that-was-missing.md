@@ -22,7 +22,7 @@ questions with no recorded answer. The owner ruled: keep the tables.
 
 The reasoning is short enough to state in full. The user-visible defect was the
 Recap kicker claiming "spaced repetition" over a shuffled bank, and that was
-already fixed in c0c66a7. The tables carry zero rows on all three live tracks
+already fixed in c0ca6c2. The tables carry zero rows on all three live tracks
 and cost nothing at rest. `prepwright/state.py` already carries an UNREACHABLE
 banner at the DDL. Dropping them would invalidate "Isolation layer 8" in
 `DESIGN-state-corpus.md` for no change any user can see.

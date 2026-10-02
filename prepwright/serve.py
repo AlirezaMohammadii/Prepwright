@@ -95,7 +95,7 @@ def _tutor_choice(provider, payload):
     default). An effort key that is present and empty is the bar's explicit
     "Default", which sends no --effort flag. It used to fall through to the role
     too, so a Haiku picked on the bar at Default ran at the shared file's effort
-    (review of 0970576, 2026-09-28). The raw request is resolved, never the
+    (review of 473e686, 2026-09-28). The raw request is resolved, never the
     default `_provider` fills in, or the page's silence would be undone.
     """
     model, effort = _role_choice(
