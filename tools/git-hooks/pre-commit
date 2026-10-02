@@ -1,0 +1,6 @@
+#!/bin/sh
+# Refuses a commit that would add a real application, an employer's name, the
+# owner's resume text or contact details (tools/privacy_gate.py). Enabled with
+#   git config core.hooksPath tools/git-hooks
+# Never bypass it with --no-verify: rewrite the text instead.
+exec /usr/bin/env python3 "$(git rev-parse --show-toplevel)/tools/privacy_gate.py" --staged

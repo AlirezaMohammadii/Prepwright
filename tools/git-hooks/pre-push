@@ -1,0 +1,4 @@
+#!/bin/sh
+# Checks every commit a push would send, messages included (tools/privacy_gate.py).
+# git passes "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin.
+exec /usr/bin/env python3 "$(git rev-parse --show-toplevel)/tools/privacy_gate.py" --push
